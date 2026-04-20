@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Campus Pulse - 校园攻略试玩站</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-left"></div>
+    <div class="ambient ambient-right"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <p class="eyebrow">Campus Pulse</p>
+          <h1>大学生恋爱攻略试玩站</h1>
+          <p class="lead">
+            无需注册，选一个今晚想认真靠近的人，直接开始匿名聊天。系统会结合角色设定、关系阶段、剧情事件和长期记忆，给出不同的回应与路线。
+          </p>
+        </div>
+        <div class="topbar-meta">
+          <div>
+            <span class="meta-label">匿名访客</span>
+            <strong id="visitor-id">初始化中</strong>
+          </div>
+          <button id="refresh-analytics" class="ghost-button">刷新试点数据</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="hero-panel">
+          <div class="poster-copy">
+            <p class="section-kicker">角色选择</p>
+            <h2>先挑一个今晚想认真聊聊的人</h2>
+            <p>
+              五个角色共用同一条智能体链路，但会根据人设、记忆、事件池和关系门槛给出完全不同的互动体验。
+            </p>
+          </div>
+          <div id="agent-grid" class="agent-grid"></div>
+        </section>
+
+        <section class="chat-stage">
+          <div class="chat-head">
+            <div>
+              <p class="section-kicker">聊天主线</p>
+              <h2 id="chat-agent-name">请选择角色</h2>
+              <p id="chat-agent-tagline" class="muted">选定角色后会自动开启匿名会话，并进入聊天。</p>
+            </div>
+            <div class="session-badges">
+              <span id="stage-badge" class="stage-badge">未开始</span>
+              <span id="expiry-badge" class="expiry-badge">记忆未建立</span>
+              <span id="llm-status-badge" class="llm-status-badge is-idle">模型未运行</span>
+            </div>
+          </div>
+
+          <div id="chat-log" class="chat-log">
+            <div class="empty-state">
+              <p>从左侧挑一个角色，系统会自动创建 7 天匿名会话，并送出第一句开场白。</p>
+            </div>
+          </div>
+
+          <section id="choice-panel" class="choice-panel hidden">
+            <div class="choice-copy">
+              <p class="section-kicker">关键节点</p>
+              <h3 id="choice-title">剧情选择</h3>
+              <p id="choice-context" class="muted">当关系推进到关键节点时，这里会出现 2-3 个可选回应。</p>
+            </div>
+            <div id="choice-actions" class="choice-actions"></div>
+          </section>
+
+          <form id="composer" class="composer">
+            <label class="composer-label" for="message-input">把你此刻最想说的一句话放进来</label>
+            <div class="composer-row">
+              <textarea
+                id="message-input"
+                maxlength="240"
+                rows="3"
+                placeholder="比如：我今天真的有点累，但还是想和你多聊一会。"
+              ></textarea>
+              <button id="send-button" type="submit">发送</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="inspector">
+          <section class="panel">
+            <p class="section-kicker">关系状态</p>
+            <div class="score-grid">
+              <div>
+                <span>总好感</span>
+                <strong id="score-total">0</strong>
+              </div>
+              <div>
+                <span>亲近</span>
+                <strong id="score-closeness">0</strong>
+              </div>
+              <div>
+                <span>信任</span>
+                <strong id="score-trust">0</strong>
+              </div>
+              <div>
+                <span>默契</span>
+                <strong id="score-resonance">0</strong>
+              </div>
+            </div>
+            <div class="progress-line">
+              <div id="score-bar" class="progress-fill"></div>
+            </div>
+            <p id="stage-progress-hint" class="panel-note">先把聊天聊顺，关系就会慢慢抬头。</p>
+            <p id="relationship-feedback" class="panel-note">这里会显示最近一轮关系变化的解释。</p>
+            <p id="ending-hint" class="panel-note">当前结局倾向会随着关系阶段和关键事件变化。</p>
+          </section>
+
+          <section class="panel">
+            <p class="section-kicker">长期记忆</p>
+            <div id="memory-summary" class="memory-summary">
+              <p>还没有足够的长期记忆，先聊几轮看看。</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <p class="section-kicker">剧情推进</p>
+            <div id="event-summary" class="event-summary">
+              <p>尚未触发剧情事件。</p>
+            </div>
+          </section>
+
+          <section class="panel analytics-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">试点数据</p>
+                <h3>匿名试玩概览</h3>
+              </div>
+            </div>
+            <div id="analytics-grid" class="analytics-grid"></div>
+            <div id="analytics-list" class="analytics-list"></div>
+          </section>
+
+          <section class="panel">
+            <p class="section-kicker">体验反馈</p>
+            <form id="feedback-form" class="feedback-form">
+              <label>
+                <span>本轮体验打分</span>
+                <input id="feedback-rating" type="number" min="1" max="5" value="4" />
+              </label>
+              <label>
+                <span>最喜欢的点</span>
+                <textarea id="feedback-liked" rows="2" placeholder="比如：角色语气自然、会记得我说过的话。"></textarea>
+              </label>
+              <label>
+                <span>还想优化什么</span>
+                <textarea id="feedback-improve" rows="2" placeholder="比如：希望剧情事件更有推进感。"></textarea>
+              </label>
+              <label class="checkbox-row">
+                <input id="feedback-continue" type="checkbox" checked />
+                <span>我愿意继续玩下去</span>
+              </label>
+              <button id="feedback-submit" type="submit" class="ghost-button">提交反馈</button>
+            </form>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message-meta">
+          <span class="message-role"></span>
+          <span class="message-time"></span>
+        </div>
+        <p class="message-text"></p>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

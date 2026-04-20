@@ -1,0 +1,14 @@
+{
+  "name": "campus-agent-love-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
+    "dev": "powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
+    "test": "powershell -ExecutionPolicy Bypass -File ./test-java.ps1"
+  },
+  "dependencies": {
+    "openai": "^6.34.0"
+  }
+}
