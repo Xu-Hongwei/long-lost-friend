@@ -443,6 +443,9 @@ class VisitorRecord implements Serializable {
     String createdAt;
     String lastActiveAt;
     int initCount;
+    String timezone;
+    String preferredCity;
+    String contextUpdatedAt;
 }
 
 class ConversationMessage implements Serializable {
@@ -450,6 +453,8 @@ class ConversationMessage implements Serializable {
     String sessionId;
     String role;
     String text;
+    String actionText;
+    String speechText;
     String createdAt;
     String emotionTag;
     String confidenceStatus;
@@ -457,6 +462,7 @@ class ConversationMessage implements Serializable {
     boolean fallbackUsed;
     String triggeredEventId;
     Integer affectionDelta;
+    String replySource;
 }
 
 class MemorySummary implements Serializable {
@@ -473,9 +479,13 @@ class MemorySummary implements Serializable {
     List<String> temporaryMemories = new ArrayList<>();
     Map<String, Integer> memoryMentionCounts = new LinkedHashMap<>();
     Map<String, String> memoryTouchedAt = new LinkedHashMap<>();
+    List<String> callbackCandidates = new ArrayList<>();
+    List<String> assistantOwnedThreads = new ArrayList<>();
     String lastUserMood;
     String lastUserIntent;
     String lastResponseCadence;
+    String lastMemoryUseMode;
+    String lastMemoryRelevanceReason;
     String updatedAt;
 }
 
@@ -514,9 +524,13 @@ class SessionRecord implements Serializable {
     RelationshipState relationshipState;
     MemorySummary memorySummary;
     StoryEventProgress storyEventProgress;
+    EmotionState emotionState;
+    PlotState plotState;
+    PresenceState presenceState;
     String pendingChoiceEventId;
     List<ChoiceOption> pendingChoices = new ArrayList<>();
     String pendingEventContext;
+    String lastProactiveMessageAt;
 }
 
 class UserFeedback implements Serializable {
@@ -630,6 +644,12 @@ class LlmRequest {
     final String responseDirective;
     final StoryEvent event;
     final String userMessage;
+    final TimeContext timeContext;
+    final WeatherContext weatherContext;
+    final String sceneFrame;
+    final MemoryUsePlan memoryUsePlan;
+    final EmotionState emotionState;
+    final String replySource;
 
     LlmRequest(
             AgentProfile agent,
@@ -642,7 +662,13 @@ class LlmRequest {
             String responseCadence,
             String responseDirective,
             StoryEvent event,
-            String userMessage
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String sceneFrame,
+            MemoryUsePlan memoryUsePlan,
+            EmotionState emotionState,
+            String replySource
     ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
@@ -655,6 +681,12 @@ class LlmRequest {
         this.responseDirective = responseDirective;
         this.event = event;
         this.userMessage = userMessage;
+        this.timeContext = timeContext;
+        this.weatherContext = weatherContext;
+        this.sceneFrame = sceneFrame;
+        this.memoryUsePlan = memoryUsePlan;
+        this.emotionState = emotionState;
+        this.replySource = replySource;
     }
 }
 
@@ -670,6 +702,8 @@ class ConversationSnippet {
 
 class LlmResponse {
     final String replyText;
+    final String actionText;
+    final String speechText;
     final String emotionTag;
     final String confidenceStatus;
     final int tokenUsage;
@@ -677,14 +711,30 @@ class LlmResponse {
     final boolean fallbackUsed;
     final String provider;
 
-    LlmResponse(String replyText, String emotionTag, String confidenceStatus, int tokenUsage, String errorCode, boolean fallbackUsed, String provider) {
+    LlmResponse(
+            String replyText,
+            String actionText,
+            String speechText,
+            String emotionTag,
+            String confidenceStatus,
+            int tokenUsage,
+            String errorCode,
+            boolean fallbackUsed,
+            String provider
+    ) {
         this.replyText = replyText;
+        this.actionText = actionText;
+        this.speechText = speechText;
         this.emotionTag = emotionTag;
         this.confidenceStatus = confidenceStatus;
         this.tokenUsage = tokenUsage;
         this.errorCode = errorCode;
         this.fallbackUsed = fallbackUsed;
         this.provider = provider;
+    }
+
+    LlmResponse(String replyText, String emotionTag, String confidenceStatus, int tokenUsage, String errorCode, boolean fallbackUsed, String provider) {
+        this(replyText, null, replyText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider);
     }
 }
 

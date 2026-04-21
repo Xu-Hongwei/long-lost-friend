@@ -393,8 +393,140 @@ body {
   white-space: pre-wrap;
 }
 
+.message-body {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.message-action {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.68);
+  letter-spacing: 0.01em;
+}
+
 .hidden {
   display: none !important;
+}
+
+.context-form {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.context-form-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.context-form-row input {
+  min-width: 12rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f8f6f2;
+  padding: 0.7rem 0.9rem;
+}
+
+.context-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.context-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.9rem 1rem;
+}
+
+.context-card-label {
+  display: block;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.58);
+  margin-bottom: 0.35rem;
+}
+
+.presence-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.5rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.presence-badge.is-online {
+  background: rgba(93, 195, 126, 0.16);
+  color: #c8ffd7;
+}
+
+.presence-badge.is-offline {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.emotion-summary,
+.plot-summary {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.emotion-meter-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.emotion-meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.progress-line.is-mini {
+  height: 8px;
+}
+
+.message-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.message-badge {
+  display: none;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.message-badge.is-visible {
+  display: inline-flex;
+}
+
+@media (max-width: 960px) {
+  .context-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .context-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .context-form-row input {
+    min-width: 0;
+  }
 }
 
 .choice-panel {

@@ -48,6 +48,7 @@ final class EventNarrativeRegistry {
         List<String> followups = followupsForEvent(event.id);
         boolean keyChoiceEvent = routeEvent || event.keyChoiceEvent || event.affectionBonus >= 4;
         String nextDirection = nextDirectionForRole(roleId, event, "neutral", routeEvent);
+
         return new StoryEvent(
                 event.id,
                 event.title,
@@ -76,8 +77,8 @@ final class EventNarrativeRegistry {
         if (routeEvent) {
             return switch (roleId) {
                 case "healing" -> List.of(
-                        new ChoiceOption(eventId + "_warm", "把心意认真说清楚", "温柔确认双向关系", "success"),
-                        new ChoiceOption(eventId + "_soft", "先承认你也在意她", "保留一点余地继续靠近", "neutral"),
+                        new ChoiceOption(eventId + "_warm", "认真把心意说清楚", "温柔确认双向关系", "success"),
+                        new ChoiceOption(eventId + "_soft", "先承认你也在意她", "保留一点继续靠近的余地", "neutral"),
                         new ChoiceOption(eventId + "_miss", "把话题轻轻带开", "容易错过确认时机", "fail")
                 );
                 case "lively" -> List.of(
@@ -87,7 +88,7 @@ final class EventNarrativeRegistry {
                 );
                 case "cool" -> List.of(
                         new ChoiceOption(eventId + "_warm", "郑重给出回应", "让克制变成确定", "success"),
-                        new ChoiceOption(eventId + "_soft", "先说你愿意继续靠近", "保留一点观察", "neutral"),
+                        new ChoiceOption(eventId + "_soft", "先说你愿意继续靠近", "保留一点观察空间", "neutral"),
                         new ChoiceOption(eventId + "_miss", "装作没听懂", "会让气氛退回去", "fail")
                 );
                 case "artsy" -> List.of(
@@ -159,7 +160,7 @@ final class EventNarrativeRegistry {
         int trust = switch (outcome) {
             case "success" -> routeEvent ? 4 : ("cool".equals(roleId) || "healing".equals(roleId) ? 3 : 2);
             case "neutral" -> routeEvent ? 1 : 0;
-            default -> "cool".equals(roleId) || "healing".equals(roleId) ? -2 : -1;
+            default -> ("cool".equals(roleId) || "healing".equals(roleId)) ? -2 : -1;
         };
         int resonance = switch (outcome) {
             case "success" -> routeEvent ? 4 : Math.max(2, event.affectionBonus);
@@ -220,11 +221,13 @@ final class EventNarrativeRegistry {
                 default -> "这次互动不只是顺利，而是真的让关系往前推了一小步。";
             };
         }
+
         if ("neutral".equals(outcome)) {
             return routeEvent
                     ? "你没有把话说死，但也让对方知道这段关系仍值得继续靠近。"
                     : "气氛被留住了，只是还差一点更明确的回应。";
         }
+
         return routeEvent
                 ? "你把最该接住的话轻轻放掉了，关系会先慢下来观察。"
                 : "这次回应有些错拍，关系没有立刻掉下去，但热度被按住了。";
@@ -236,8 +239,8 @@ final class EventNarrativeRegistry {
                 return switch (roleId) {
                     case "healing" -> "再给她一点稳定回应，你们就会进入真正双向确认。";
                     case "lively" -> "接下来只要继续把热意落到行动里，关系会非常明亮。";
-                    case "cool" -> "后续重点不再是试探，而是让确定感持续稳定下来。";
-                    case "artsy" -> "接下来别让情绪只停在氛围里，让现实行动继续跟上。";
+                    case "cool" -> "后续重点不再是试探，而是让确定感持续稳下来。";
+                    case "artsy" -> "接下来别让情绪只停在气氛里，让现实行动继续跟上。";
                     default -> "接下来把默契继续延长到日常里，关系会更自然地站稳。";
                 };
             }
@@ -247,11 +250,13 @@ final class EventNarrativeRegistry {
                 default -> "关系已经抬头了，下一步可以更主动一点。";
             };
         }
+
         if ("neutral".equals(outcome)) {
             return routeEvent
-                    ? "还没到最后确认的时候，但这条线还能继续往前。"
-                    : "先把氛围守住，再找更合适的时机推进。";
+                    ? "还没到最后确认的时候，但这条线还能够继续往前。"
+                    : "先把气氛守住，再找更合适的时机推进。";
         }
+
         return routeEvent
                 ? "先别急着追赶进度，等情绪回稳后再找修复机会。"
                 : "下一步先修复节奏，再谈推进。";

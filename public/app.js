@@ -1,7 +1,8 @@
 const storageKeys = {
   visitorId: "campus-agent-visitor-id",
   sessionId: "campus-agent-session-id",
-  agentId: "campus-agent-agent-id"
+  agentId: "campus-agent-agent-id",
+  preferredCity: "campus-agent-preferred-city"
 };
 
 const state = {
@@ -12,17 +13,25 @@ const state = {
   analytics: null,
   pendingChoiceEvent: null,
   relationshipFeedback: "",
-  endingCandidate: ""
+  endingCandidate: "",
+  presenceTimer: null,
+  bootedPresenceListeners: false
 };
 
 const elements = {
   visitorId: document.getElementById("visitor-id"),
+  cityInput: document.getElementById("city-input"),
+  saveContext: document.getElementById("save-context"),
   agentGrid: document.getElementById("agent-grid"),
   chatAgentName: document.getElementById("chat-agent-name"),
   chatAgentTagline: document.getElementById("chat-agent-tagline"),
   stageBadge: document.getElementById("stage-badge"),
+  presenceBadge: document.getElementById("presence-badge"),
   expiryBadge: document.getElementById("expiry-badge"),
   llmStatusBadge: document.getElementById("llm-status-badge"),
+  timeContext: document.getElementById("time-context"),
+  weatherContext: document.getElementById("weather-context"),
+  sceneContext: document.getElementById("scene-context"),
   chatLog: document.getElementById("chat-log"),
   composer: document.getElementById("composer"),
   messageInput: document.getElementById("message-input"),
@@ -39,6 +48,8 @@ const elements = {
   stageProgressHint: document.getElementById("stage-progress-hint"),
   relationshipFeedback: document.getElementById("relationship-feedback"),
   endingHint: document.getElementById("ending-hint"),
+  emotionSummary: document.getElementById("emotion-summary"),
+  plotSummary: document.getElementById("plot-summary"),
   memorySummary: document.getElementById("memory-summary"),
   eventSummary: document.getElementById("event-summary"),
   analyticsGrid: document.getElementById("analytics-grid"),
@@ -57,6 +68,7 @@ function escapeHtml(value) {
 }
 
 function formatTime(isoString) {
+  if (!isoString) return "--:--";
   return new Date(isoString).toLocaleTimeString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit"
@@ -132,7 +144,11 @@ function getMoodLabel(mood) {
     stressed: "有点紧绷",
     warm: "柔和靠近",
     curious: "继续追问",
-    neutral: "平稳聊天"
+    neutral: "平稳聊天",
+    calm: "安静靠近",
+    teasing: "微微试探",
+    protective: "想接住你",
+    uneasy: "有点谨慎"
   };
   return labels[mood] || "暂未识别";
 }
@@ -157,6 +173,97 @@ function getCadenceLabel(cadence) {
     steady_flow: "自然顺流"
   };
   return labels[cadence] || "自然顺流";
+}
+
+function getReplySourceLabel(replySource) {
+  const labels = {
+    user_turn: "当前回合",
+    plot_push: "顺势推进",
+    silence_heartbeat: "静默接话",
+    long_chat_heartbeat: "长聊心跳",
+    choice_result: "剧情结果",
+    choice: "剧情选择"
+  };
+  return labels[replySource] || "";
+}
+
+function looksLikeActionLine(text) {
+  if (!text) {
+    return false;
+  }
+  const actionCues = [
+    "视线", "目光", "眼神", "眉眼", "指尖", "手心", "手指", "发梢", "衣角", "袖口",
+    "抬眼", "垂眼", "偏头", "侧过", "站在", "靠着", "望向", "看向", "看着", "落在",
+    "轻声", "压低", "停了停", "顿了顿", "笑意", "呼吸", "雨", "风", "窗", "灯", "夜",
+    "门口", "走廊", "桌上", "杯沿", "沉默", "安静", "耳后"
+  ];
+  return actionCues.some((cue) => text.includes(cue));
+}
+
+function splitAssistantMessage(text) {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) {
+    return { actionText: "", speechText: "" };
+  }
+
+  const bracketLead = normalized.match(/^[（(【〔]([^）)】〕]{2,48})[）)】〕]\s*(.+)$/);
+  if (bracketLead) {
+    return {
+      actionText: bracketLead[1].trim(),
+      speechText: bracketLead[2].trim()
+    };
+  }
+
+  const firstQuestionIndex = (() => {
+    const indexes = ["？", "?", "！", "!"]
+      .map((mark) => normalized.indexOf(mark))
+      .filter((index) => index >= 0);
+    return indexes.length ? Math.min(...indexes) : -1;
+  })();
+
+  if (firstQuestionIndex > 0) {
+    const beforeQuestion = normalized.slice(0, firstQuestionIndex).trim();
+    const lastComma = Math.max(beforeQuestion.lastIndexOf("，"), beforeQuestion.lastIndexOf(","));
+    if (lastComma >= 8) {
+      const actionText = beforeQuestion.slice(0, lastComma).trim();
+      const speechText = normalized.slice(lastComma + 1).trim();
+      if (looksLikeActionLine(actionText) && speechText.length >= 4) {
+        return { actionText, speechText };
+      }
+    }
+  }
+
+  const sentences = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
+  if (sentences.length >= 2) {
+    const firstSentence = sentences[0].trim();
+    const rest = sentences.slice(1).join("").trim();
+    if (looksLikeActionLine(firstSentence) && rest) {
+      return {
+        actionText: firstSentence,
+        speechText: rest
+      };
+    }
+  }
+
+  return { actionText: "", speechText: normalized };
+}
+
+function getMessagePresentation(message) {
+  const rawText = String(message?.text ?? "").trim();
+  if (message?.role !== "assistant") {
+    return { actionText: "", speechText: rawText };
+  }
+
+  const explicitAction = String(message?.actionText ?? "").trim();
+  const explicitSpeech = String(message?.speechText ?? "").trim();
+  if (explicitAction || explicitSpeech) {
+    return {
+      actionText: explicitAction,
+      speechText: explicitSpeech || rawText
+    };
+  }
+
+  return splitAssistantMessage(rawText);
 }
 
 function renderMemoryGroup(title, items, tone = "") {
@@ -190,6 +297,8 @@ function renderMemorySummary(memory) {
     renderMemoryGroup("共同经历", memory.sharedMoments, "memory-chip--story"),
     renderMemoryGroup("最近话题", memory.discussedTopics),
     renderMemoryGroup("近期情绪线索", memory.emotionalNotes, "memory-chip--soft"),
+    renderMemoryGroup("角色惦记着的事", memory.assistantOwnedThreads, "memory-chip--story"),
+    renderMemoryGroup("适合主动回调", memory.callbackCandidates, "memory-chip--accent"),
     renderMemoryGroup("关系进展", memory.milestones, "memory-chip--story")
   ].filter(Boolean);
 
@@ -198,14 +307,92 @@ function renderMemorySummary(memory) {
       <span class="memory-meta-pill">最近情绪：${escapeHtml(getMoodLabel(memory.lastUserMood))}</span>
       <span class="memory-meta-pill">最近意图：${escapeHtml(getIntentLabel(memory.lastUserIntent))}</span>
       <span class="memory-meta-pill">回复节奏：${escapeHtml(getCadenceLabel(memory.lastResponseCadence))}</span>
+      <span class="memory-meta-pill">记忆使用：${escapeHtml(memory.lastMemoryUseMode || "hold")}</span>
     </div>
+    <p class="panel-note">${escapeHtml(memory.lastMemoryRelevanceReason || "当前没有需要特意提起的记忆。")}</p>
   `;
 
-  if (!groups.length) {
-    return `${meta}<p>再多聊一点，长期记忆会慢慢成形。</p>`;
+  return `${meta}<div class="memory-groups">${groups.join("")}</div>`;
+}
+
+function renderEmotionSummary(emotion) {
+  if (!emotion) {
+    return "<p>还没有足够的数据来判断角色的情感状态。</p>";
   }
 
-  return `${meta}<div class="memory-groups">${groups.join("")}</div>`;
+  const items = [
+    ["柔软感", emotion.warmth],
+    ["安全感", emotion.safety],
+    ["想靠近", emotion.longing],
+    ["主动性", emotion.initiative],
+    ["愿暴露自己", emotion.vulnerability]
+  ];
+
+  return `
+    <div class="emotion-meter-list">
+      ${items
+        .map(
+          ([label, value]) => `
+            <div class="emotion-meter">
+              <div class="emotion-meter-head">
+                <span>${label}</span>
+                <strong>${value}</strong>
+              </div>
+              <div class="progress-line is-mini">
+                <div class="progress-fill" style="width:${Math.min(100, value)}%"></div>
+              </div>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+    <p class="panel-note">当前心情：${escapeHtml(getMoodLabel(emotion.currentMood))}</p>
+  `;
+}
+
+function renderPlotSummary(plotState) {
+  if (!plotState) {
+    return "<p>剧情还在等待铺开。</p>";
+  }
+
+  const threads = plotState.openThreads?.length
+    ? `<div class="event-chip-list">${plotState.openThreads.map((item) => `<span class="event-chip">${escapeHtml(item)}</span>`).join("")}</div>`
+    : "";
+
+  return `
+    <p><strong>${escapeHtml(plotState.plotProgress || "第 0/10 拍 · 相识")}</strong></p>
+    <p>${escapeHtml(plotState.sceneFrame || "剧情还在缓慢铺开。")}</p>
+    <p class="panel-note">下一步期待：${escapeHtml(plotState.nextBeatHint || "先把日常节奏聊顺。")}</p>
+    ${threads}
+  `;
+}
+
+function renderEventSummary(progress) {
+  if (!progress) {
+    return "<p>尚未触发关键剧情。</p>";
+  }
+
+  const items = [];
+  if (progress.lastTriggeredTitle) {
+    items.push(`<p><strong>最近剧情：</strong>${escapeHtml(progress.lastTriggeredTitle)}</p>`);
+  }
+  if (progress.lastTriggeredTheme) {
+    items.push(`<p><strong>剧情主题：</strong>${escapeHtml(progress.lastTriggeredTheme)}</p>`);
+  }
+  if (progress.currentRouteTheme) {
+    items.push(`<p><strong>当前路线：</strong>${escapeHtml(progress.currentRouteTheme)}</p>`);
+  }
+  if (progress.nextExpectedDirection) {
+    items.push(`<p><strong>可期待方向：</strong>${escapeHtml(progress.nextExpectedDirection)}</p>`);
+  }
+  if (progress.triggeredEventIds?.length) {
+    items.push(
+      `<div class="event-chip-list">${progress.triggeredEventIds
+        .map((item) => `<span class="event-chip">${escapeHtml(item)}</span>`)
+        .join("")}</div>`
+    );
+  }
+  return items.length ? items.join("") : "<p>尚未触发关键剧情。</p>";
 }
 
 function renderAgents() {
@@ -241,6 +428,7 @@ function renderMessages() {
   session.history.forEach((message) => {
     const node = template.content.firstElementChild.cloneNode(true);
     node.classList.add(message.role);
+    const presentation = getMessagePresentation(message);
     node.querySelector(".message-role").textContent =
       message.role === "assistant"
         ? session.agent.name
@@ -248,7 +436,23 @@ function renderMessages() {
           ? "你的选择"
           : "你";
     node.querySelector(".message-time").textContent = formatTime(message.createdAt);
-    node.querySelector(".message-text").textContent = message.text;
+    const actionNode = node.querySelector(".message-action");
+    const speechNode = node.querySelector(".message-text");
+    if (presentation.actionText) {
+      actionNode.textContent = presentation.actionText;
+      actionNode.classList.remove("hidden");
+    } else {
+      actionNode.remove();
+    }
+    speechNode.textContent = presentation.speechText || message.text;
+    const badge = node.querySelector(".message-badge");
+    const label = getReplySourceLabel(message.replySource);
+    if (label && message.role === "assistant") {
+      badge.textContent = label;
+      badge.classList.add("is-visible");
+    } else {
+      badge.remove();
+    }
     elements.chatLog.appendChild(node);
   });
 
@@ -261,16 +465,18 @@ function renderChoicePanel() {
   const eventContext = session?.pendingEventContext || "";
   const lastTitle = session?.storyEventProgress?.lastTriggeredTitle || "剧情选择";
 
-  state.pendingChoiceEvent = pendingChoices.length ? {
-    title: lastTitle,
-    context: eventContext,
-    choices: pendingChoices
-  } : null;
+  state.pendingChoiceEvent = pendingChoices.length
+    ? {
+        title: lastTitle,
+        context: eventContext,
+        choices: pendingChoices
+      }
+    : null;
 
   if (!state.pendingChoiceEvent) {
     elements.choicePanel.classList.add("hidden");
     elements.choiceActions.innerHTML = "";
-    elements.choiceContext.textContent = "当关系推进到关键节点时，这里会出现 2-3 个可选回应。";
+    elements.choiceContext.textContent = "当关系推进到关键节点时，这里会出现 2 到 3 个可选回应。";
     elements.choiceTitle.textContent = "剧情选择";
     elements.messageInput.disabled = false;
     elements.sendButton.disabled = false;
@@ -282,12 +488,14 @@ function renderChoicePanel() {
   elements.choiceTitle.textContent = state.pendingChoiceEvent.title;
   elements.choiceContext.textContent = state.pendingChoiceEvent.context || "你们来到了一个关键节点，这次回应会影响后续路线。";
   elements.choiceActions.innerHTML = state.pendingChoiceEvent.choices
-    .map((choice) => `
-      <button class="choice-button" data-choice-id="${escapeHtml(choice.id)}" type="button">
-        <span class="choice-label">${escapeHtml(choice.label)}</span>
-        <span class="choice-hint">${escapeHtml(choice.toneHint)}</span>
-      </button>
-    `)
+    .map(
+      (choice) => `
+        <button class="choice-button" data-choice-id="${escapeHtml(choice.id)}" type="button">
+          <span class="choice-label">${escapeHtml(choice.label)}</span>
+          <span class="choice-hint">${escapeHtml(choice.toneHint)}</span>
+        </button>
+      `
+    )
     .join("");
 
   elements.choiceActions.querySelectorAll("[data-choice-id]").forEach((button) => {
@@ -299,32 +507,10 @@ function renderChoicePanel() {
   elements.composer.classList.add("is-disabled");
 }
 
-function renderEventSummary(progress) {
-  if (!progress) {
-    return "<p>尚未触发剧情事件。</p>";
-  }
-
-  const items = [];
-  if (progress.lastTriggeredTitle) {
-    items.push(`<p><strong>最近剧情：</strong>${escapeHtml(progress.lastTriggeredTitle)}</p>`);
-  }
-  if (progress.lastTriggeredTheme) {
-    items.push(`<p><strong>剧情主题：</strong>${escapeHtml(progress.lastTriggeredTheme)}</p>`);
-  }
-  if (progress.currentRouteTheme) {
-    items.push(`<p><strong>当前路线：</strong>${escapeHtml(progress.currentRouteTheme)}</p>`);
-  }
-  if (progress.nextExpectedDirection) {
-    items.push(`<p><strong>可期待方向：</strong>${escapeHtml(progress.nextExpectedDirection)}</p>`);
-  }
-  if (progress.triggeredEventIds?.length) {
-    items.push(`
-      <div class="event-chip-list">
-        ${progress.triggeredEventIds.map((item) => `<span class="event-chip">${escapeHtml(item)}</span>`).join("")}
-      </div>
-    `);
-  }
-  return items.length ? items.join("") : "<p>尚未触发剧情事件。</p>";
+function renderPresence(session) {
+  const online = Boolean(session?.presenceState?.online);
+  elements.presenceBadge.textContent = online ? "在线" : "离线";
+  elements.presenceBadge.className = `presence-badge ${online ? "is-online" : "is-offline"}`;
 }
 
 function renderRelationship() {
@@ -336,7 +522,11 @@ function renderRelationship() {
     elements.expiryBadge.textContent = "记忆未建立";
     elements.llmStatusBadge.textContent = "模型未运行";
     elements.llmStatusBadge.className = "llm-status-badge is-idle";
-    elements.llmStatusBadge.title = "当前还没有模型回复";
+    elements.presenceBadge.textContent = "离线";
+    elements.presenceBadge.className = "presence-badge is-offline";
+    elements.timeContext.textContent = "等待会话";
+    elements.weatherContext.textContent = "尚未设置城市";
+    elements.sceneContext.textContent = "剧情尚未铺开";
     elements.scoreTotal.textContent = "0";
     elements.scoreCloseness.textContent = "0";
     elements.scoreTrust.textContent = "0";
@@ -345,8 +535,10 @@ function renderRelationship() {
     elements.stageProgressHint.textContent = "先把聊天聊顺，关系就会慢慢抬头。";
     elements.relationshipFeedback.textContent = "这里会显示最近一轮关系变化的解释。";
     elements.endingHint.textContent = "当前结局倾向会随着关系阶段和关键事件变化。";
+    elements.emotionSummary.innerHTML = renderEmotionSummary(null);
+    elements.plotSummary.innerHTML = renderPlotSummary(null);
     elements.memorySummary.innerHTML = renderMemorySummary(null);
-    elements.eventSummary.innerHTML = "<p>尚未触发剧情事件。</p>";
+    elements.eventSummary.innerHTML = "<p>尚未触发关键剧情。</p>";
     renderChoicePanel();
     return;
   }
@@ -356,13 +548,23 @@ function renderRelationship() {
   state.relationshipFeedback = relationship.relationshipFeedback || "";
   state.endingCandidate = relationship.endingCandidate || relationship.ending || "";
 
-  elements.chatAgentName.textContent = `${session.agent.name} 路 ${session.agent.archetype}`;
+  elements.chatAgentName.textContent = `${session.agent.name} · ${session.agent.archetype}`;
   elements.chatAgentTagline.textContent = session.agent.tagline;
   elements.stageBadge.textContent = relationship.relationshipStage;
   elements.expiryBadge.textContent = `记忆保留至 ${formatDateTime(session.memoryExpireAt)}`;
   elements.llmStatusBadge.textContent = runtimeStatus.label;
   elements.llmStatusBadge.className = `llm-status-badge ${runtimeStatus.className}`;
   elements.llmStatusBadge.title = runtimeStatus.title;
+  renderPresence(session);
+
+  const timeContext = session.timeContext;
+  const weatherContext = session.weatherContext;
+  elements.timeContext.textContent = timeContext ? `${timeContext.dayPart} · ${timeContext.localTime}` : "等待会话";
+  elements.weatherContext.textContent = weatherContext?.city
+    ? `${weatherContext.city} · ${weatherContext.summary || "天气回退"}${weatherContext.temperatureC ?? weatherContext.temperatureC === 0 ? ` · ${weatherContext.temperatureC}°C` : ""}`
+    : "尚未设置城市";
+  elements.sceneContext.textContent = session.plotState?.sceneFrame || "剧情尚未铺开";
+
   elements.scoreTotal.textContent = relationship.affectionScore;
   elements.scoreCloseness.textContent = relationship.closeness;
   elements.scoreTrust.textContent = relationship.trust;
@@ -374,6 +576,8 @@ function renderRelationship() {
     ? `当前结局倾向：${state.endingCandidate}`
     : "当前结局倾向会随着关系阶段和关键事件变化。";
 
+  elements.emotionSummary.innerHTML = renderEmotionSummary(session.emotionState);
+  elements.plotSummary.innerHTML = renderPlotSummary(session.plotState);
   elements.memorySummary.innerHTML = renderMemorySummary(session.memorySummary);
   elements.eventSummary.innerHTML = renderEventSummary(session.storyEventProgress);
   renderChoicePanel();
@@ -397,27 +601,39 @@ function renderAnalytics() {
   ];
 
   elements.analyticsGrid.innerHTML = tiles
-    .map(([label, value]) => `
-      <div class="analytics-tile">
-        <span>${label}</span>
-        <strong>${value}</strong>
-      </div>
-    `)
+    .map(
+      ([label, value]) => `
+        <div class="analytics-tile">
+          <span>${label}</span>
+          <strong>${value}</strong>
+        </div>
+      `
+    )
     .join("");
 
   elements.analyticsList.innerHTML = analytics.agentPreference
-    .map((item) => `
-      <div class="analytics-item">
-        <span>${item.name}</span>
-        <strong>${item.count}</strong>
-      </div>
-    `)
+    .map(
+      (item) => `
+        <div class="analytics-item">
+          <span>${item.name}</span>
+          <strong>${item.count}</strong>
+        </div>
+      `
+    )
     .join("");
 }
 
 async function loadAnalytics() {
   state.analytics = await api("/api/analytics/overview");
   renderAnalytics();
+}
+
+function syncContextInput(session) {
+  const city =
+    session?.visitorContext?.preferredCity ||
+    localStorage.getItem(storageKeys.preferredCity) ||
+    "";
+  elements.cityInput.value = city;
 }
 
 async function hydrateSession(sessionId) {
@@ -427,6 +643,95 @@ async function hydrateSession(sessionId) {
   renderAgents();
   renderMessages();
   renderRelationship();
+  syncContextInput(session);
+  startPresenceLoop();
+}
+
+async function saveVisitorContext() {
+  if (!state.visitorId) return;
+  const preferredCity = elements.cityInput.value.trim();
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
+  const result = await api("/api/visitor/context", {
+    method: "POST",
+    body: JSON.stringify({
+      visitor_id: state.visitorId,
+      timezone,
+      preferred_city: preferredCity
+    })
+  });
+  localStorage.setItem(storageKeys.preferredCity, preferredCity);
+  if (state.currentSession) {
+    state.currentSession.visitorContext = {
+      timezone: result.timezone,
+      preferredCity: result.preferredCity
+    };
+    state.currentSession.timeContext = result.timeContext;
+    state.currentSession.weatherContext = result.weatherContext;
+    renderRelationship();
+  }
+}
+
+function ensurePresenceListeners() {
+  if (state.bootedPresenceListeners) {
+    return;
+  }
+  state.bootedPresenceListeners = true;
+  document.addEventListener("visibilitychange", () => {
+    pingPresence();
+  });
+  window.addEventListener("focus", () => {
+    pingPresence();
+  });
+  window.addEventListener("blur", () => {
+    pingPresence();
+  });
+}
+
+function stopPresenceLoop() {
+  if (state.presenceTimer) {
+    clearInterval(state.presenceTimer);
+    state.presenceTimer = null;
+  }
+}
+
+function startPresenceLoop() {
+  stopPresenceLoop();
+  if (!state.currentSession) {
+    return;
+  }
+  ensurePresenceListeners();
+  state.presenceTimer = window.setInterval(() => {
+    pingPresence();
+  }, 15000);
+}
+
+async function pingPresence() {
+  if (!state.currentSession || !state.visitorId) {
+    return;
+  }
+  try {
+    const result = await api("/api/session/presence", {
+      method: "POST",
+      body: JSON.stringify({
+        visitor_id: state.visitorId,
+        session_id: state.currentSession.sessionId,
+        visible: !document.hidden,
+        focused: document.hasFocus(),
+        client_time: new Date().toISOString()
+      })
+    });
+
+    if (state.currentSession) {
+      state.currentSession.presenceState = result.presenceState;
+    }
+    renderPresence(state.currentSession);
+
+    if (result.proactive_message) {
+      await hydrateSession(state.currentSession.sessionId);
+    }
+  } catch (error) {
+    console.warn("presence ping failed", error);
+  }
 }
 
 async function boot() {
@@ -442,6 +747,10 @@ async function boot() {
 
   state.agents = await api("/api/agents");
   renderAgents();
+
+  const rememberedCity = localStorage.getItem(storageKeys.preferredCity) || visitorPayload.preferredCity || "";
+  elements.cityInput.value = rememberedCity;
+  await saveVisitorContext();
 
   if (visitorPayload.restoredSession) {
     await hydrateSession(visitorPayload.restoredSession.sessionId);
@@ -477,6 +786,7 @@ async function startSession(agentId) {
   renderAgents();
   renderMessages();
   renderRelationship();
+  startPresenceLoop();
   await loadAnalytics();
 }
 
@@ -582,6 +892,17 @@ elements.feedbackForm.addEventListener("submit", async (event) => {
 
 elements.refreshAnalytics.addEventListener("click", async () => {
   await loadAnalytics();
+});
+
+elements.saveContext.addEventListener("click", async () => {
+  try {
+    await saveVisitorContext();
+    if (state.currentSession) {
+      await hydrateSession(state.currentSession.sessionId);
+    }
+  } catch (error) {
+    alert(error.message);
+  }
 });
 
 boot().catch((error) => {

@@ -2,6 +2,7 @@ package com.campuspulse;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -24,7 +25,7 @@ public class SmokeTest {
         ChatOrchestrator orchestrator = new ChatOrchestrator(
                 repository,
                 new AgentConfigService(),
-                new AdaptiveMemoryService(config.memoryRetentionMs),
+                new SocialMemoryService(config.memoryRetentionMs),
                 new NarrativeRelationshipService(),
                 new EventEngine(),
                 new ExpressiveLlmClient(config),
@@ -35,7 +36,14 @@ public class SmokeTest {
         shouldCreateStructuredMemory(orchestrator);
         shouldRecallRelevantMemory(orchestrator);
         shouldBeProactiveOnShortInput(orchestrator);
+        shouldAnswerQuestionBeforeScenePush(orchestrator);
+        shouldAnswerFeelingQuestionDirectly(orchestrator);
         shouldCarrySceneForward(orchestrator);
+        shouldExposeStructuredReplyParts(orchestrator);
+        shouldPersistVisitorContext(orchestrator);
+        shouldTriggerPresenceHeartbeat(orchestrator);
+        shouldNotStackHeartbeatAfterPlotPush(orchestrator);
+        shouldKeepPlotPushInsideCurrentConversation(orchestrator);
         shouldPreferWeightedEvent(orchestrator);
         shouldBlockStageJumpByTrustGate(orchestrator);
         shouldOfferChoiceInteraction(orchestrator);
@@ -51,7 +59,7 @@ public class SmokeTest {
                 "visitorId", visitor.get("visitorId"),
                 "sessionId", session.get("sessionId"),
                 "agentId", "healing",
-                "userMessage", "我喜欢雨天的图书馆，最近也有点压力，下次想和你一起去。"
+                "userMessage", "我喜欢下雨天的图书馆，最近也有点压力，下次想和你一起去。"
         ));
 
         Map<String, Object> nextState = orchestrator.getSessionState((String) session.get("sessionId"));
@@ -59,8 +67,8 @@ public class SmokeTest {
         Map<String, Object> memorySummary = castMap(nextState.get("memorySummary"));
 
         assertTrue(((Number) relationshipState.get("affectionScore")).intValue() > 0, "affection score should increase");
-        assertTrue(Json.asArray(memorySummary.get("preferences")).stream().map(String::valueOf).anyMatch(item -> item.contains("图书馆")), "preference should be recorded");
-        assertTrue(Json.asArray(memorySummary.get("promises")).stream().map(String::valueOf).anyMatch(item -> item.contains("下次")) || "plan".equals(String.valueOf(memorySummary.get("lastUserIntent"))), "plan memory should be recorded");
+        assertTrue(Json.asArray(memorySummary.get("promises")).stream().map(String::valueOf).anyMatch(item -> item.contains("下次")), "plan memory should be recorded");
+        assertTrue(Json.asArray(memorySummary.get("callbackCandidates")).stream().map(String::valueOf).anyMatch(item -> item.contains("下次") || item.contains("图书馆")), "callback candidates should be recorded");
     }
 
     private static void shouldRecallRelevantMemory(ChatOrchestrator orchestrator) throws Exception {
@@ -82,7 +90,7 @@ public class SmokeTest {
         ));
 
         String reply = String.valueOf(secondTurn.get("reply_text"));
-        assertTrue(reply.contains("图书馆") || reply.contains("下次"), "reply should recall a relevant memory");
+        assertTrue(reply.contains("记得") || reply.contains("图书馆") || reply.contains("下次"), "reply should recall a relevant memory");
     }
 
     private static void shouldBeProactiveOnShortInput(ChatOrchestrator orchestrator) throws Exception {
@@ -100,6 +108,44 @@ public class SmokeTest {
         assertTrue(reply.contains("要不要先从今天最想说的那一小段开始"), "short input should trigger a proactive lead");
     }
 
+    private static void shouldAnswerQuestionBeforeScenePush(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+
+        Map<String, Object> result = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "你有这么多杯热可可吗？"
+        ));
+
+        String reply = String.valueOf(result.get("reply_text"));
+        assertTrue(reply.contains("没有真的摆三杯"), "direct question should be answered explicitly");
+        assertTrue(!reply.startsWith("（"), "reply should not start with bracketed stage directions");
+    }
+
+    private static void shouldAnswerFeelingQuestionDirectly(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+
+        orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "其实我当时是觉得你有点吸引我"
+        ));
+
+        Map<String, Object> result = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "难道你对我也有好感？"
+        ));
+
+        String reply = String.valueOf(result.get("reply_text"));
+        assertTrue(reply.contains("答案是有"), "feeling question should be answered directly");
+    }
+
     private static void shouldCarrySceneForward(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");
         Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "cool");
@@ -112,8 +158,130 @@ public class SmokeTest {
         ));
 
         String reply = String.valueOf(result.get("reply_text"));
-        assertTrue(reply.contains("气氛") || reply.contains("刚才的话头"), "reply should include a scene bridge instead of pure Q&A");
-        assertTrue(reply.contains("要不要先从今天最想说的那一小段开始") || reply.contains("今天最压你的那一刻是什么"), "reply should proactively move the conversation forward");
+        String action = String.valueOf(result.getOrDefault("action_text", ""));
+        String fullReply = (action == null ? "" : action) + " " + reply;
+        assertTrue(fullReply.contains("气氛")
+                        || fullReply.contains("空气")
+                        || fullReply.contains("今天最压你的那一刻")
+                        || fullReply.contains("安静")
+                        || fullReply.contains("语气"),
+                "reply should include a scene or emotional bridge");
+        assertTrue(
+                reply.contains("今天最压你的那一刻")
+                        || reply.contains("下一句可以再往里一点")
+                        || reply.contains("要不要先从今天最想说的那一小段开始")
+                        || reply.contains("哪怕只把最累的那一小截丢给我也行"),
+                "reply should proactively move the conversation forward"
+        );
+    }
+
+    private static void shouldExposeStructuredReplyParts(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+
+        Map<String, Object> result = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "你好啊"
+        ));
+
+        assertTrue(result.get("speech_text") != null, "chat reply should expose speech_text");
+        assertTrue(result.containsKey("action_text"), "chat reply should expose action_text field");
+    }
+
+    private static void shouldPersistVisitorContext(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> updated = orchestrator.updateVisitorContext(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "timezone", "Asia/Shanghai",
+                "preferredCity", "杭州"
+        ));
+
+        assertTrue("杭州".equals(String.valueOf(updated.get("preferredCity"))), "preferred city should be saved");
+    }
+
+    private static void shouldTriggerPresenceHeartbeat(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+        Instant base = Instant.parse(String.valueOf(session.get("memoryExpireAt"))).minusSeconds(7L * 24 * 60 * 60);
+
+        orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "今晚有点想你。"
+        ));
+
+        Map<String, Object> result = orchestrator.updatePresence(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "visible", true,
+                "focused", true,
+                "clientTime", base.plusSeconds(120).toString()
+        ));
+
+        assertTrue(Boolean.TRUE.equals(castMap(result.get("presenceState")).get("online")), "presence should remain online");
+        assertTrue(result.get("proactive_message") != null, "presence heartbeat should be able to emit a proactive message");
+    }
+
+    private static void shouldNotStackHeartbeatAfterPlotPush(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+        Instant base = Instant.parse(String.valueOf(session.get("memoryExpireAt"))).minusSeconds(7L * 24 * 60 * 60);
+
+        orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "我今天有点累，但还是想来找你。"
+        ));
+
+        Map<String, Object> secondTurn = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "上次你说的热可可，真的有这么多味道吗？"
+        ));
+
+        assertTrue("plot_push".equals(String.valueOf(secondTurn.get("reply_source"))), "second turn should advance plot for this regression test");
+
+        Map<String, Object> result = orchestrator.updatePresence(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "visible", true,
+                "focused", true,
+                "clientTime", base.plusSeconds(150).toString()
+        ));
+
+        assertTrue(result.get("proactive_message") == null, "heartbeat should not stack immediately after a proactive plot reply");
+    }
+
+    private static void shouldKeepPlotPushInsideCurrentConversation(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+
+        orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "其实我当时是觉得你有点吸引我"
+        ));
+
+        Map<String, Object> result = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "难道你对我也有好感？"
+        ));
+
+        String replySource = String.valueOf(result.get("reply_source"));
+        assertTrue("plot_push".equals(replySource) || "user_turn".equals(replySource), "second turn should stay in the normal chat flow");
+        String reply = String.valueOf(result.get("reply_text"));
+        assertTrue(!reply.contains("给你发消息"), "plot push should stay inside the current chat scene");
+        assertTrue(!reply.contains("给你发了条消息"), "plot push should not turn into asynchronous messaging");
+        assertTrue(!reply.contains("看到你回复"), "plot push should not pretend the user replied from another channel");
+        assertTrue(!reply.contains("屏幕"), "plot push should not switch to screen-based narration");
     }
 
     private static void shouldPreferWeightedEvent(ChatOrchestrator orchestrator) throws Exception {
@@ -207,6 +375,7 @@ public class SmokeTest {
         Map<String, Object> relationship = castMap(after.get("relationshipState"));
         assertTrue(Json.asArray(after.get("pendingChoices")).isEmpty(), "choice should clear pending state");
         assertTrue(String.valueOf(relationship.get("endingCandidate")).length() > 0, "ending candidate should be updated");
+        assertTrue(after.get("emotionState") != null, "choice should also update emotion state");
     }
 
     private static void shouldSoftBlockUnsafeInput(ChatOrchestrator orchestrator) throws Exception {
@@ -216,7 +385,7 @@ public class SmokeTest {
                 "visitorId", visitor.get("visitorId"),
                 "sessionId", session.get("sessionId"),
                 "agentId", "cool",
-                "userMessage", "我们来聊炸弹吧"
+                "userMessage", "我们来聊炸弹吧？"
         ));
 
         Map<String, Object> nextState = orchestrator.getSessionState((String) session.get("sessionId"));

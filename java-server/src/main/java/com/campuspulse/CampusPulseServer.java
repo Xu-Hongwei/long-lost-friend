@@ -26,7 +26,7 @@ public class CampusPulseServer {
         this.config = config;
         StateRepository repository = new StateRepository(config.stateFile);
         AgentConfigService agentConfigService = new AgentConfigService();
-        MemoryService memoryService = new AdaptiveMemoryService(config.memoryRetentionMs);
+        MemoryService memoryService = new SocialMemoryService(config.memoryRetentionMs);
         RelationshipService relationshipService = new NarrativeRelationshipService();
         EventEngine eventEngine = new EventEngine();
         SafetyService safetyService = new AdaptiveSafetyService();
@@ -120,6 +120,15 @@ public class CampusPulseServer {
             )));
         }
 
+        if ("POST".equals(request.method) && "/api/visitor/context".equals(request.path)) {
+            Map<String, Object> body = readJsonBody(request);
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.updateVisitorContext(Map.of(
+                    "visitorId", Json.asString(body.get("visitor_id")),
+                    "timezone", Json.asString(body.get("timezone")),
+                    "preferredCity", Json.asString(body.get("preferred_city"))
+            ))));
+        }
+
         if ("POST".equals(request.method) && "/api/chat/send".equals(request.path)) {
             Map<String, Object> body = readJsonBody(request);
             return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.sendMessage(Map.of(
@@ -127,6 +136,17 @@ public class CampusPulseServer {
                     "sessionId", Json.asString(body.get("session_id")),
                     "agentId", Json.asString(body.get("agent_id")),
                     "userMessage", Json.asString(body.get("user_message"))
+            ))));
+        }
+
+        if ("POST".equals(request.method) && "/api/session/presence".equals(request.path)) {
+            Map<String, Object> body = readJsonBody(request);
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.updatePresence(Map.of(
+                    "visitorId", Json.asString(body.get("visitor_id")),
+                    "sessionId", Json.asString(body.get("session_id")),
+                    "visible", body.get("visible") instanceof Boolean bool && bool,
+                    "focused", body.get("focused") instanceof Boolean bool && bool,
+                    "clientTime", Json.asString(body.get("client_time"))
             ))));
         }
 

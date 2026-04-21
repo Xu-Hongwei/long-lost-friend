@@ -322,9 +322,13 @@ class MemoryService {
         summary.temporaryMemories = new ArrayList<>();
         summary.memoryMentionCounts = new LinkedHashMap<>();
         summary.memoryTouchedAt = new LinkedHashMap<>();
+        summary.callbackCandidates = new ArrayList<>();
+        summary.assistantOwnedThreads = new ArrayList<>();
         summary.lastUserMood = "neutral";
         summary.lastUserIntent = "chat";
         summary.lastResponseCadence = "steady_flow";
+        summary.lastMemoryUseMode = "hold";
+        summary.lastMemoryRelevanceReason = "当前没有需要特意提起的记忆";
         summary.updatedAt = nowIso;
         return summary;
     }
@@ -379,6 +383,12 @@ class MemoryService {
         if (next.memoryTouchedAt == null) {
             next.memoryTouchedAt = new LinkedHashMap<>();
         }
+        if (next.callbackCandidates == null) {
+            next.callbackCandidates = new ArrayList<>();
+        }
+        if (next.assistantOwnedThreads == null) {
+            next.assistantOwnedThreads = new ArrayList<>();
+        }
         if (next.lastUserMood == null || next.lastUserMood.isBlank()) {
             next.lastUserMood = "neutral";
         }
@@ -387,6 +397,12 @@ class MemoryService {
         }
         if (next.lastResponseCadence == null || next.lastResponseCadence.isBlank()) {
             next.lastResponseCadence = "steady_flow";
+        }
+        if (next.lastMemoryUseMode == null || next.lastMemoryUseMode.isBlank()) {
+            next.lastMemoryUseMode = "hold";
+        }
+        if (next.lastMemoryRelevanceReason == null || next.lastMemoryRelevanceReason.isBlank()) {
+            next.lastMemoryRelevanceReason = "当前没有需要特意提起的记忆";
         }
         if (next.updatedAt == null || next.updatedAt.isBlank()) {
             next.updatedAt = nowIso;
@@ -400,9 +416,22 @@ class MemoryService {
         List<ConversationSnippet> result = new ArrayList<>();
         for (int index = start; index < messages.size(); index++) {
             ConversationMessage message = messages.get(index);
-            result.add(new ConversationSnippet(message.role, message.text));
+            result.add(new ConversationSnippet(message.role, combineMessageForContext(message)));
         }
         return result;
+    }
+
+    private String combineMessageForContext(ConversationMessage message) {
+        if (message == null) {
+            return "";
+        }
+        if (message.actionText != null && !message.actionText.isBlank() && message.speechText != null && !message.speechText.isBlank()) {
+            return message.actionText + " " + message.speechText;
+        }
+        if (message.speechText != null && !message.speechText.isBlank()) {
+            return message.speechText;
+        }
+        return message.text == null ? "" : message.text;
     }
 
     String getSummaryText(MemorySummary summary) {
@@ -533,6 +562,26 @@ class MemoryService {
         return String.join(" ", directives);
     }
 
+    MemoryUsePlan planMemoryUse(MemorySummary summary, String userMessage, String replySource, String sceneFrame) {
+        MemorySummary normalized = normalizeSummary(summary, IsoTimes.now());
+        String cue = (userMessage == null || userMessage.isBlank()) ? sceneFrame : userMessage;
+        MemoryRecall recall = recallRelevantMemories(normalized, cue == null ? "" : cue, 2);
+        MemoryUsePlan plan = new MemoryUsePlan();
+        plan.selectedMemories.addAll(recall.selectedMemories);
+        plan.mergedMemoryText = recall.mergedText;
+        if (normalized.callbackCandidates != null) {
+            plan.callbackCandidates.addAll(normalized.callbackCandidates.stream().limit(2).toList());
+        }
+        if (normalized.assistantOwnedThreads != null) {
+            plan.assistantOwnedThreads.addAll(normalized.assistantOwnedThreads.stream().limit(2).toList());
+        }
+        plan.useMode = recall.mergedText == null || recall.mergedText.isBlank() ? "hold" : "light";
+        plan.relevanceReason = recall.mergedText == null || recall.mergedText.isBlank()
+                ? "这轮先聚焦当前对话"
+                : "这轮话题和旧记忆有关，适合自然提一下";
+        return plan;
+    }
+
     String determineResponseCadence(String userMessage, RelationshipState relationshipState, StoryEvent event) {
         return "steady_flow";
     }
@@ -574,9 +623,13 @@ class MemoryService {
         next.discussedTopics = new ArrayList<>(summary.discussedTopics);
         next.memoryMentionCounts = new LinkedHashMap<>(summary.memoryMentionCounts);
         next.memoryTouchedAt = new LinkedHashMap<>(summary.memoryTouchedAt);
+        next.callbackCandidates = new ArrayList<>(summary.callbackCandidates);
+        next.assistantOwnedThreads = new ArrayList<>(summary.assistantOwnedThreads);
         next.lastUserMood = summary.lastUserMood;
         next.lastUserIntent = summary.lastUserIntent;
         next.lastResponseCadence = summary.lastResponseCadence;
+        next.lastMemoryUseMode = summary.lastMemoryUseMode;
+        next.lastMemoryRelevanceReason = summary.lastMemoryRelevanceReason;
         next.updatedAt = summary.updatedAt;
         return next;
     }
@@ -1318,6 +1371,10 @@ class ChatOrchestrator {
     private final CompositeLlmClient llmClient;
     private final SafetyService safetyService;
     private final AnalyticsService analyticsService;
+    private final AffectionJudgeService affectionJudgeService = new AffectionJudgeService();
+    private final PlotDirectorService plotDirectorService = new PlotDirectorService();
+    private final PresenceHeartbeatService presenceHeartbeatService = new PresenceHeartbeatService();
+    private final RealityContextService realityContextService = new RealityContextService();
 
     ChatOrchestrator(
             StateRepository repository,
@@ -1359,10 +1416,19 @@ class ChatOrchestrator {
                 visitor.createdAt = nowIso;
                 visitor.lastActiveAt = nowIso;
                 visitor.initCount = 1;
+                visitor.timezone = "Asia/Shanghai";
+                visitor.preferredCity = "";
+                visitor.contextUpdatedAt = nowIso;
                 state.visitors.add(visitor);
             } else {
                 visitor.lastActiveAt = nowIso;
                 visitor.initCount += 1;
+                if (visitor.timezone == null || visitor.timezone.isBlank()) {
+                    visitor.timezone = "Asia/Shanghai";
+                }
+                if (visitor.preferredCity == null) {
+                    visitor.preferredCity = "";
+                }
             }
 
             final String currentVisitorId = visitor.id;
@@ -1378,6 +1444,8 @@ class ChatOrchestrator {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("visitorId", visitor.id);
+            result.put("timezone", visitor.timezone);
+            result.put("preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity);
             if (restored == null) {
                 result.put("restoredSession", null);
             } else {
@@ -1395,6 +1463,35 @@ class ChatOrchestrator {
 
     List<Map<String, Object>> listAgents() {
         return agentConfigService.listPublicAgents();
+    }
+
+    Map<String, Object> updateVisitorContext(Map<String, Object> payload) throws Exception {
+        return repository.transact(state -> {
+            String visitorId = Json.asString(payload.get("visitorId"));
+            VisitorRecord visitor = state.visitors.stream()
+                    .filter(item -> visitorId.equals(item.id))
+                    .findFirst()
+                    .orElseThrow(() -> ApiException.notFound("VISITOR_NOT_FOUND", "VISITOR_NOT_FOUND"));
+
+            String timezone = Json.asString(payload.get("timezone"));
+            String preferredCity = Json.asString(payload.get("preferredCity"));
+            String nowIso = IsoTimes.now();
+            if (timezone != null && !timezone.isBlank()) {
+                visitor.timezone = timezone;
+            }
+            visitor.preferredCity = preferredCity == null ? "" : preferredCity.trim();
+            visitor.contextUpdatedAt = nowIso;
+
+            TimeContext timeContext = realityContextService.buildTimeContext(visitor, nowIso);
+            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, nowIso);
+            return Map.of(
+                    "saved", true,
+                    "timezone", timeContext.timezone,
+                    "preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity,
+                    "timeContext", timeContextMap(timeContext),
+                    "weatherContext", weatherContextMap(weatherContext)
+            );
+        });
     }
 
     Map<String, Object> startSession(String visitorId, String agentId) throws Exception {
@@ -1428,6 +1525,9 @@ class ChatOrchestrator {
             session.relationshipState = relationshipService.createInitialState();
             session.memorySummary = memoryService.createMemorySummary(createdAt);
             session.storyEventProgress = new StoryEventProgress();
+            session.emotionState = affectionJudgeService.createInitial(createdAt);
+            session.plotState = plotDirectorService.normalizePlot(null, createdAt);
+            session.presenceState = presenceHeartbeatService.normalizePresence(null, createdAt);
             session.pendingChoices = new ArrayList<>();
             state.sessions.add(session);
 
@@ -1515,11 +1615,13 @@ class ChatOrchestrator {
             String visitorId = Json.asString(payload.get("visitorId"));
             String sessionId = Json.asString(payload.get("sessionId"));
             String userMessage = Json.asString(payload.get("userMessage")).trim();
-            Instant now = Instant.now();
+            String nowIso = IsoTimes.now();
+            Instant now = Instant.parse(nowIso);
 
             SessionRecord session = findSession(state, sessionId);
             validateSessionOwner(session, visitorId, now);
             ensureSessionState(session);
+            VisitorRecord visitor = requireVisitor(state, visitorId);
 
             if (session.pendingChoiceEventId != null && !session.pendingChoiceEventId.isBlank()) {
                 throw ApiException.badRequest("PENDING_CHOICE", "PENDING_CHOICE");
@@ -1528,7 +1630,7 @@ class ChatOrchestrator {
             AgentProfile agent = requireAgent(session.agentId);
             List<ConversationMessage> sessionMessages = getSessionMessages(state, session.id);
             InputInspection inspection = safetyService.inspectUserInput(userMessage, sessionMessages);
-            String messageCreatedAt = IsoTimes.now();
+            String messageCreatedAt = nowIso;
 
             ConversationMessage userEntry = new ConversationMessage();
             userEntry.id = ids("msg");
@@ -1540,13 +1642,25 @@ class ChatOrchestrator {
             userEntry.confidenceStatus = "user";
             userEntry.tokenUsage = 0;
             userEntry.fallbackUsed = false;
+            userEntry.replySource = "user_turn";
             state.messages.add(userEntry);
 
             StoryEvent triggeredEvent = null;
             TurnEvaluation relationship = new TurnEvaluation(session.relationshipState, new Delta());
+            EmotionState nextEmotion = affectionJudgeService.normalizeEmotion(session.emotionState, messageCreatedAt);
+            PlotDecision plotDecision = new PlotDecision(
+                    plotDirectorService.normalizePlot(session.plotState, messageCreatedAt),
+                    false,
+                    "user_turn",
+                    session.plotState == null ? "" : session.plotState.sceneFrame
+            );
             LlmResponse llmReply;
+            TimeContext timeContext = realityContextService.buildTimeContext(visitor, messageCreatedAt);
+            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, messageCreatedAt);
+            MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, "user_turn", plotDecision.sceneFrame);
 
             if (inspection.blocked) {
+                nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, messageCreatedAt);
                 llmReply = new LlmResponse(
                         inspection.safeMessage,
                         "guarded",
@@ -1559,14 +1673,38 @@ class ChatOrchestrator {
             } else {
                 triggeredEvent = eventEngine.findTriggeredEvent(agent, session, userMessage);
                 StoryEvent scoringEvent = triggeredEvent != null && triggeredEvent.keyChoiceEvent ? null : triggeredEvent;
-                relationship = relationshipService.evaluateTurn(userMessage, session.relationshipState, scoringEvent, session.memorySummary);
+                AffectionScoreResult affectionScoreResult = affectionJudgeService.evaluateTurn(
+                        userMessage,
+                        session.relationshipState,
+                        session.emotionState,
+                        scoringEvent,
+                        session.memorySummary,
+                        relationshipService,
+                        messageCreatedAt
+                );
+                relationship = affectionScoreResult.turnEvaluation;
+                nextEmotion = affectionScoreResult.nextEmotion;
+                plotDecision = plotDirectorService.decide(
+                        session,
+                        userMessage,
+                        nextEmotion,
+                        relationship.nextState,
+                        session.memorySummary,
+                        timeContext,
+                        weatherContext,
+                        "user_turn",
+                        messageCreatedAt
+                );
+                memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, plotDecision.replySource, plotDecision.sceneFrame);
 
                 List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
                 String longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
                 MemoryRecall recall = memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2);
                 String currentUserMood = memoryService.detectMood(userMessage);
                 String responseCadence = memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
-                String responseDirective = memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent);
+                String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent)
+                        + " 当前记忆使用模式：" + memoryUsePlan.useMode
+                        + "。原因：" + memoryUsePlan.relevanceReason).trim();
 
                 llmReply = llmClient.generateReply(new LlmRequest(
                         agent,
@@ -1579,7 +1717,13 @@ class ChatOrchestrator {
                         responseCadence,
                         responseDirective,
                         triggeredEvent,
-                        userMessage
+                        userMessage,
+                        timeContext,
+                        weatherContext,
+                        plotDecision.sceneFrame,
+                        memoryUsePlan,
+                        nextEmotion,
+                        plotDecision.replySource
                 ));
 
                 InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
@@ -1601,7 +1745,9 @@ class ChatOrchestrator {
             assistantEntry.id = ids("msg");
             assistantEntry.sessionId = session.id;
             assistantEntry.role = "assistant";
-            assistantEntry.text = llmReply.replyText;
+            assistantEntry.text = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            assistantEntry.actionText = llmReply.actionText;
+            assistantEntry.speechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
             assistantEntry.createdAt = replyCreatedAt;
             assistantEntry.emotionTag = llmReply.emotionTag;
             assistantEntry.confidenceStatus = llmReply.confidenceStatus;
@@ -1609,12 +1755,16 @@ class ChatOrchestrator {
             assistantEntry.fallbackUsed = llmReply.fallbackUsed;
             assistantEntry.triggeredEventId = triggeredEvent == null ? null : triggeredEvent.id;
             assistantEntry.affectionDelta = relationship.affectionDelta.total;
+            assistantEntry.replySource = plotDecision.replySource;
             state.messages.add(assistantEntry);
 
             session.lastActiveAt = replyCreatedAt;
             session.memoryExpireAt = memoryService.createMemoryExpiry(Instant.parse(replyCreatedAt));
             session.userTurnCount += 1;
             session.relationshipState = relationship.nextState;
+            session.emotionState = nextEmotion;
+            session.plotState = plotDecision.nextPlotState;
+            session.presenceState = presenceHeartbeatService.registerUserTurn(session.presenceState, replyCreatedAt);
             if (!inspection.blocked) {
                 session.memorySummary = memoryService.updateTieredSummary(
                         session.memorySummary,
@@ -1623,7 +1773,10 @@ class ChatOrchestrator {
                         relationship.nextState.relationshipStage,
                         replyCreatedAt
                 );
+                session.memorySummary.lastMemoryUseMode = memoryUsePlan.useMode;
+                session.memorySummary.lastMemoryRelevanceReason = memoryUsePlan.relevanceReason;
             }
+            session.memorySummary.lastResponseCadence = inspection.blocked ? session.memorySummary.lastResponseCadence : memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
 
             if (triggeredEvent != null) {
                 session.storyEventProgress.lastTriggeredTitle = triggeredEvent.title;
@@ -1638,6 +1791,12 @@ class ChatOrchestrator {
                     markEventTriggered(session, triggeredEvent);
                 }
             }
+            if (plotDecision.advanced) {
+                session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
+                session.storyEventProgress.lastTriggeredTheme = plotDecision.sceneFrame;
+                session.storyEventProgress.currentRouteTheme = plotDecision.nextPlotState.phase;
+                session.storyEventProgress.nextExpectedDirection = plotDecision.nextPlotState.nextBeatHint;
+            }
 
             analyticsService.recordEvent(state, "chat_turn", Map.of(
                     "visitorId", visitorId,
@@ -1648,7 +1807,9 @@ class ChatOrchestrator {
             ));
 
             Map<String, Object> response = new LinkedHashMap<>();
-            response.put("reply_text", llmReply.replyText);
+            response.put("reply_text", assistantEntry.text);
+            response.put("action_text", assistantEntry.actionText);
+            response.put("speech_text", assistantEntry.speechText);
             response.put("affection_score", session.relationshipState.affectionScore);
             response.put("affection_delta", Map.of(
                     "closeness", relationship.affectionDelta.closeness,
@@ -1668,6 +1829,147 @@ class ChatOrchestrator {
             response.put("ending_candidate", session.relationshipState.endingCandidate);
             response.put("behavior_tags", relationship.behaviorTags);
             response.put("risk_flags", relationship.riskFlags);
+            response.put("emotion_state", emotionStateMap(session.emotionState));
+            response.put("plot_progress", plotStateMap(session.plotState));
+            response.put("scene_frame", session.plotState == null ? "" : session.plotState.sceneFrame);
+            response.put("reply_source", plotDecision.replySource);
+            return response;
+        });
+    }
+
+    Map<String, Object> updatePresence(Map<String, Object> payload) throws Exception {
+        return repository.transact(state -> {
+            String visitorId = Json.asString(payload.get("visitorId"));
+            String sessionId = Json.asString(payload.get("sessionId"));
+            boolean visible = payload.get("visible") instanceof Boolean bool && bool;
+            boolean focused = payload.get("focused") instanceof Boolean bool && bool;
+            String clientTime = Json.asString(payload.get("clientTime"));
+            String nowIso = clientTime == null || clientTime.isBlank() ? IsoTimes.now() : clientTime;
+            Instant now = Instant.parse(nowIso);
+
+            SessionRecord session = findSession(state, sessionId);
+            validateSessionOwner(session, visitorId, now);
+            ensureSessionState(session);
+            VisitorRecord visitor = requireVisitor(state, visitorId);
+
+            PresenceResult presenceResult = presenceHeartbeatService.ingest(session.presenceState, session, visible, focused, nowIso);
+            session.presenceState = presenceResult.nextState;
+            session.lastActiveAt = nowIso;
+            visitor.lastActiveAt = nowIso;
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("online", session.presenceState.online);
+            response.put("presenceState", presenceStateMap(session.presenceState));
+            response.put("proactive_message", null);
+
+            if (!presenceResult.shouldSend) {
+                return response;
+            }
+
+            List<ConversationMessage> sessionMessages = getSessionMessages(state, session.id);
+            if (!sessionMessages.isEmpty()) {
+                ConversationMessage lastMessage = sessionMessages.get(sessionMessages.size() - 1);
+                boolean lastWasNonUserProactive = "assistant".equals(lastMessage.role)
+                        && lastMessage.replySource != null
+                        && !"user_turn".equals(lastMessage.replySource)
+                        && !"choice_result".equals(lastMessage.replySource);
+                if (lastWasNonUserProactive) {
+                    return response;
+                }
+            }
+
+            AgentProfile agent = requireAgent(session.agentId);
+            TimeContext timeContext = realityContextService.buildTimeContext(visitor, nowIso);
+            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, nowIso);
+            EmotionState nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, nowIso);
+            PlotDecision plotDecision = plotDirectorService.decide(
+                    session,
+                    "",
+                    nextEmotion,
+                    session.relationshipState,
+                    session.memorySummary,
+                    timeContext,
+                    weatherContext,
+                    presenceResult.replySource,
+                    nowIso
+            );
+            MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
+            List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, "", session.relationshipState, null)
+                    + " 当前这是角色主动发出的消息。reply_source=" + presenceResult.replySource
+                    + "。记忆使用原因：" + memoryUsePlan.relevanceReason).trim();
+
+            LlmResponse llmReply = llmClient.generateReply(new LlmRequest(
+                    agent,
+                    session.relationshipState,
+                    shortTerm,
+                    memoryService.getTieredSummaryText(session.memorySummary),
+                    "none",
+                    "",
+                    session.memorySummary.lastUserMood,
+                    "light_ping",
+                    responseDirective,
+                    null,
+                    "",
+                    timeContext,
+                    weatherContext,
+                    plotDecision.sceneFrame,
+                    memoryUsePlan,
+                    nextEmotion,
+                    presenceResult.replySource
+            ));
+
+            InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
+            if (outputInspection.blocked) {
+                llmReply = new LlmResponse(
+                        llmClient.buildFallbackReply(agent, outputInspection.reason),
+                        "guarded",
+                        "fallback",
+                        0,
+                        outputInspection.reason,
+                        true,
+                        "fallback"
+                );
+            }
+
+            ConversationMessage proactiveEntry = new ConversationMessage();
+            proactiveEntry.id = ids("msg");
+            proactiveEntry.sessionId = session.id;
+            proactiveEntry.role = "assistant";
+            proactiveEntry.text = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            proactiveEntry.actionText = llmReply.actionText;
+            proactiveEntry.speechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            proactiveEntry.createdAt = nowIso;
+            proactiveEntry.emotionTag = llmReply.emotionTag;
+            proactiveEntry.confidenceStatus = llmReply.confidenceStatus;
+            proactiveEntry.tokenUsage = llmReply.tokenUsage;
+            proactiveEntry.fallbackUsed = llmReply.fallbackUsed;
+            proactiveEntry.replySource = presenceResult.replySource;
+            state.messages.add(proactiveEntry);
+
+            session.emotionState = nextEmotion;
+            session.plotState = plotDecision.nextPlotState;
+            session.lastProactiveMessageAt = nowIso;
+            session.memoryExpireAt = memoryService.createMemoryExpiry(now);
+            if (plotDecision.advanced) {
+                session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
+                session.storyEventProgress.lastTriggeredTheme = plotDecision.sceneFrame;
+                session.storyEventProgress.currentRouteTheme = plotDecision.nextPlotState.phase;
+                session.storyEventProgress.nextExpectedDirection = plotDecision.nextPlotState.nextBeatHint;
+            }
+
+            analyticsService.recordEvent(state, "session_presence", Map.of(
+                    "visitorId", visitorId,
+                    "sessionId", session.id,
+                    "agentId", session.agentId,
+                    "fallbackUsed", llmReply.fallbackUsed
+            ));
+
+            response.put("proactive_message", messageMap(proactiveEntry));
+            response.put("emotion_state", emotionStateMap(session.emotionState));
+            response.put("plot_progress", plotStateMap(session.plotState));
+            response.put("scene_frame", session.plotState.sceneFrame);
+            response.put("reply_source", presenceResult.replySource);
             return response;
         });
     }
@@ -1702,6 +2004,9 @@ class ChatOrchestrator {
             }
 
             String nowIso = IsoTimes.now();
+            VisitorRecord visitor = requireVisitor(state, visitorId);
+            TimeContext timeContext = realityContextService.buildTimeContext(visitor, nowIso);
+            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, nowIso);
             ConversationMessage choiceEntry = new ConversationMessage();
             choiceEntry.id = ids("msg");
             choiceEntry.sessionId = session.id;
@@ -1712,6 +2017,7 @@ class ChatOrchestrator {
             choiceEntry.confidenceStatus = "choice";
             choiceEntry.tokenUsage = 0;
             choiceEntry.fallbackUsed = false;
+            choiceEntry.replySource = "choice";
             state.messages.add(choiceEntry);
 
             ConversationMessage assistantEntry = new ConversationMessage();
@@ -1719,15 +2025,21 @@ class ChatOrchestrator {
             assistantEntry.sessionId = session.id;
             assistantEntry.role = "assistant";
             assistantEntry.text = buildChoiceReply(agent, event, selectedChoice, nextState);
+            assistantEntry.actionText = null;
+            assistantEntry.speechText = assistantEntry.text;
             assistantEntry.createdAt = nowIso;
             assistantEntry.emotionTag = "choice_result";
             assistantEntry.confidenceStatus = "system";
             assistantEntry.tokenUsage = 0;
             assistantEntry.fallbackUsed = false;
             assistantEntry.triggeredEventId = event.id;
+            assistantEntry.replySource = "choice_result";
             state.messages.add(assistantEntry);
 
             session.relationshipState = nextState;
+            session.emotionState = affectionJudgeService.applyChoiceOutcome(session.emotionState, selectedChoice, nextState, nowIso);
+            session.plotState = plotDirectorService.applyChoiceOutcome(session.plotState, event, selectedChoice, timeContext, weatherContext, nowIso);
+            session.presenceState = presenceHeartbeatService.registerUserTurn(session.presenceState, nowIso);
             session.lastActiveAt = nowIso;
             session.memoryExpireAt = memoryService.createMemoryExpiry(Instant.parse(nowIso));
             markEventTriggered(session, event);
@@ -1750,6 +2062,8 @@ class ChatOrchestrator {
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("reply_text", assistantEntry.text);
+            response.put("action_text", assistantEntry.actionText);
+            response.put("speech_text", assistantEntry.speechText);
             response.put("relationship_stage", nextState.relationshipStage);
             response.put("relationship_feedback", nextState.relationshipFeedback);
             response.put("ending_candidate", nextState.endingCandidate);
@@ -1757,6 +2071,10 @@ class ChatOrchestrator {
             response.put("choices", List.of());
             response.put("event_context", null);
             response.put("triggered_event", eventMap(event));
+            response.put("emotion_state", emotionStateMap(session.emotionState));
+            response.put("plot_progress", plotStateMap(session.plotState));
+            response.put("scene_frame", session.plotState == null ? "" : session.plotState.sceneFrame);
+            response.put("reply_source", "choice_result");
             return response;
         });
     }
@@ -1764,7 +2082,10 @@ class ChatOrchestrator {
     private Map<String, Object> buildSessionPayload(AppState state, String sessionId) {
         SessionRecord session = findSession(state, sessionId);
         AgentProfile agent = requireAgent(session.agentId);
+        VisitorRecord visitor = requireVisitor(state, session.visitorId);
         ensureSessionState(session);
+        TimeContext timeContext = realityContextService.buildTimeContext(visitor, IsoTimes.now());
+        WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, IsoTimes.now());
 
         List<Map<String, Object>> history = new ArrayList<>();
         for (ConversationMessage message : getSessionMessages(state, session.id)) {
@@ -1805,9 +2126,13 @@ class ChatOrchestrator {
         memoryMap.put("temporaryMemories", session.memorySummary.temporaryMemories);
         memoryMap.put("memoryMentionCounts", session.memorySummary.memoryMentionCounts);
         memoryMap.put("memoryTouchedAt", session.memorySummary.memoryTouchedAt);
+        memoryMap.put("callbackCandidates", session.memorySummary.callbackCandidates);
+        memoryMap.put("assistantOwnedThreads", session.memorySummary.assistantOwnedThreads);
         memoryMap.put("lastUserMood", session.memorySummary.lastUserMood);
         memoryMap.put("lastUserIntent", session.memorySummary.lastUserIntent);
         memoryMap.put("lastResponseCadence", session.memorySummary.lastResponseCadence);
+        memoryMap.put("lastMemoryUseMode", session.memorySummary.lastMemoryUseMode);
+        memoryMap.put("lastMemoryRelevanceReason", session.memorySummary.lastMemoryRelevanceReason);
         memoryMap.put("updatedAt", session.memorySummary.updatedAt);
 
         Map<String, Object> eventProgressMap = new LinkedHashMap<>();
@@ -1826,12 +2151,22 @@ class ChatOrchestrator {
         payload.put("relationshipState", relationshipMap);
         payload.put("memorySummary", memoryMap);
         payload.put("storyEventProgress", eventProgressMap);
+        payload.put("emotionState", emotionStateMap(session.emotionState));
+        payload.put("plotState", plotStateMap(session.plotState));
+        payload.put("presenceState", presenceStateMap(session.presenceState));
+        payload.put("visitorContext", Map.of(
+                "timezone", visitor.timezone == null ? "" : visitor.timezone,
+                "preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity
+        ));
+        payload.put("timeContext", timeContextMap(timeContext));
+        payload.put("weatherContext", weatherContextMap(weatherContext));
         payload.put("memoryExpireAt", session.memoryExpireAt);
         payload.put("userTurnCount", session.userTurnCount);
         payload.put("history", history);
         payload.put("pendingChoiceEventId", session.pendingChoiceEventId);
         payload.put("pendingChoices", serializeChoices(session.pendingChoices));
         payload.put("pendingEventContext", session.pendingEventContext);
+        payload.put("lastProactiveMessageAt", session.lastProactiveMessageAt);
         return payload;
     }
 
@@ -1840,6 +2175,13 @@ class ChatOrchestrator {
                 .filter(item -> sessionId.equals(item.id))
                 .findFirst()
                 .orElseThrow(() -> ApiException.notFound("SESSION_NOT_FOUND", "SESSION_NOT_FOUND"));
+    }
+
+    private VisitorRecord requireVisitor(AppState state, String visitorId) {
+        return state.visitors.stream()
+                .filter(item -> visitorId.equals(item.id))
+                .findFirst()
+                .orElseThrow(() -> ApiException.notFound("VISITOR_NOT_FOUND", "VISITOR_NOT_FOUND"));
     }
 
     private void validateSessionOwner(SessionRecord session, String visitorId, Instant now) {
@@ -1877,6 +2219,9 @@ class ChatOrchestrator {
         if (session.pendingChoices == null) {
             session.pendingChoices = new ArrayList<>();
         }
+        session.emotionState = affectionJudgeService.normalizeEmotion(session.emotionState, session.createdAt);
+        session.plotState = plotDirectorService.normalizePlot(session.plotState, session.createdAt);
+        session.presenceState = presenceHeartbeatService.normalizePresence(session.presenceState, session.createdAt);
     }
 
     private void markEventTriggered(SessionRecord session, StoryEvent event) {
@@ -1921,6 +2266,8 @@ class ChatOrchestrator {
         map.put("sessionId", message.sessionId);
         map.put("role", message.role);
         map.put("text", message.text);
+        map.put("actionText", message.actionText);
+        map.put("speechText", message.speechText == null || message.speechText.isBlank() ? message.text : message.speechText);
         map.put("createdAt", message.createdAt);
         map.put("emotionTag", message.emotionTag);
         map.put("confidenceStatus", message.confidenceStatus);
@@ -1928,10 +2275,94 @@ class ChatOrchestrator {
         map.put("fallbackUsed", message.fallbackUsed);
         map.put("triggeredEventId", message.triggeredEventId);
         map.put("affectionDelta", message.affectionDelta);
+        map.put("replySource", message.replySource);
+        return map;
+    }
+
+    private Map<String, Object> emotionStateMap(EmotionState emotionState) {
+        EmotionState state = affectionJudgeService.normalizeEmotion(emotionState, IsoTimes.now());
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("warmth", state.warmth);
+        map.put("safety", state.safety);
+        map.put("longing", state.longing);
+        map.put("initiative", state.initiative);
+        map.put("vulnerability", state.vulnerability);
+        map.put("currentMood", state.currentMood);
+        map.put("updatedAt", state.updatedAt);
+        return map;
+    }
+
+    private Map<String, Object> plotStateMap(PlotState plotState) {
+        PlotState state = plotDirectorService.normalizePlot(plotState, IsoTimes.now());
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("beatIndex", state.beatIndex);
+        map.put("phase", state.phase);
+        map.put("sceneFrame", state.sceneFrame);
+        map.put("openThreads", state.openThreads);
+        map.put("lastPlotTurn", state.lastPlotTurn);
+        map.put("forcePlotAtTurn", state.forcePlotAtTurn);
+        map.put("plotProgress", state.plotProgress);
+        map.put("nextBeatHint", state.nextBeatHint);
+        map.put("updatedAt", state.updatedAt);
+        return map;
+    }
+
+    private Map<String, Object> presenceStateMap(PresenceState presenceState) {
+        PresenceState state = presenceHeartbeatService.normalizePresence(presenceState, IsoTimes.now());
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("visible", state.visible);
+        map.put("focused", state.focused);
+        map.put("online", state.online);
+        map.put("openedAt", state.openedAt);
+        map.put("lastHeartbeatAt", state.lastHeartbeatAt);
+        map.put("lastSeenAt", state.lastSeenAt);
+        map.put("lastUserMessageAt", state.lastUserMessageAt);
+        map.put("lastSilenceHeartbeatAt", state.lastSilenceHeartbeatAt);
+        map.put("lastLongHeartbeatAt", state.lastLongHeartbeatAt);
+        return map;
+    }
+
+    private Map<String, Object> timeContextMap(TimeContext timeContext) {
+        if (timeContext == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("timezone", timeContext.timezone == null ? "" : timeContext.timezone);
+        map.put("localTime", timeContext.localTime == null ? "" : timeContext.localTime);
+        map.put("dayPart", timeContext.dayPart == null ? "" : timeContext.dayPart);
+        map.put("frame", timeContext.frame == null ? "" : timeContext.frame);
+        return map;
+    }
+
+    private Map<String, Object> weatherContextMap(WeatherContext weatherContext) {
+        if (weatherContext == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("city", weatherContext.city == null ? "" : weatherContext.city);
+        map.put("summary", weatherContext.summary == null ? "" : weatherContext.summary);
+        map.put("temperatureC", weatherContext.temperatureC);
+        map.put("live", weatherContext.live);
+        map.put("updatedAt", weatherContext.updatedAt);
         return map;
     }
 
     private String buildChoiceReply(AgentProfile agent, StoryEvent event, ChoiceOption choice, RelationshipState state) {
+        if (agent != null) {
+            String cleanPrefix = switch (agent.id) {
+                case "healing" -> "她抬眼看向你，语气更轻了一点。";
+                case "lively" -> "她先是一怔，随后笑意慢慢亮了起来。";
+                case "cool" -> "他沉默了半拍，但没有把视线移开。";
+                case "artsy" -> "她像是把这句回应轻轻收进了晚风里。";
+                default -> "他把你的回应稳稳接住了。";
+            };
+            String cleanResultLine = switch (choice.outcomeType) {
+                case "success" -> "这次你给出的信号足够明确，关系明显往前走了一步。";
+                case "fail" -> "这次节奏有点错开了，气氛先慢了下来。";
+                default -> "这次气氛被维持住了，但还没到真正突破的时候。";
+            };
+            return cleanPrefix + " 在“" + event.title + "”这一刻，" + cleanResultLine + " " + state.relationshipFeedback;
+        }
         String prefix = switch (agent.id) {
             case "healing" -> "她抬眼看向你，语气更轻了一点。";
             case "lively" -> "她先是一怔，随后笑意慢慢亮起来。";

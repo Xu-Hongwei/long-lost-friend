@@ -15,7 +15,7 @@
           <p class="eyebrow">Campus Pulse</p>
           <h1>大学生恋爱攻略试玩站</h1>
           <p class="lead">
-            无需注册，选一个今晚想认真靠近的人，直接开始匿名聊天。系统会结合角色设定、关系阶段、剧情事件和长期记忆，给出不同的回应与路线。
+            选择一个今晚想认真靠近的人，直接开始匿名聊天。现在的版本会结合角色设定、关系阶段、时间天气、长期记忆、情感状态和剧情推进，尽量让对话更像真的正在发生。
           </p>
         </div>
         <div class="topbar-meta">
@@ -23,7 +23,14 @@
             <span class="meta-label">匿名访客</span>
             <strong id="visitor-id">初始化中</strong>
           </div>
-          <button id="refresh-analytics" class="ghost-button">刷新试点数据</button>
+          <div class="context-form">
+            <label for="city-input" class="meta-label">天气城市</label>
+            <div class="context-form-row">
+              <input id="city-input" type="text" placeholder="例如：北京 / 上海 / 杭州" />
+              <button id="save-context" type="button" class="ghost-button">保存</button>
+            </div>
+          </div>
+          <button id="refresh-analytics" class="ghost-button" type="button">刷新试点数据</button>
         </div>
       </header>
 
@@ -33,7 +40,7 @@
             <p class="section-kicker">角色选择</p>
             <h2>先挑一个今晚想认真聊聊的人</h2>
             <p>
-              五个角色共用同一条智能体链路，但会根据人设、记忆、事件池和关系门槛给出完全不同的互动体验。
+              五个角色共用同一条智能体链路，但会根据角色人设、剧情节拍、感情状态和记忆使用计划，给出截然不同的聊天体验。
             </p>
           </div>
           <div id="agent-grid" class="agent-grid"></div>
@@ -48,8 +55,24 @@
             </div>
             <div class="session-badges">
               <span id="stage-badge" class="stage-badge">未开始</span>
+              <span id="presence-badge" class="presence-badge is-offline">离线</span>
               <span id="expiry-badge" class="expiry-badge">记忆未建立</span>
               <span id="llm-status-badge" class="llm-status-badge is-idle">模型未运行</span>
+            </div>
+          </div>
+
+          <div class="context-strip">
+            <div class="context-card">
+              <span class="context-card-label">当前时间</span>
+              <strong id="time-context">等待会话</strong>
+            </div>
+            <div class="context-card">
+              <span class="context-card-label">天气氛围</span>
+              <strong id="weather-context">尚未设置城市</strong>
+            </div>
+            <div class="context-card">
+              <span class="context-card-label">当前场景</span>
+              <strong id="scene-context">剧情尚未铺开</strong>
             </div>
           </div>
 
@@ -63,7 +86,7 @@
             <div class="choice-copy">
               <p class="section-kicker">关键节点</p>
               <h3 id="choice-title">剧情选择</h3>
-              <p id="choice-context" class="muted">当关系推进到关键节点时，这里会出现 2-3 个可选回应。</p>
+              <p id="choice-context" class="muted">当关系推进到关键节点时，这里会出现 2 到 3 个可选回应。</p>
             </div>
             <div id="choice-actions" class="choice-actions"></div>
           </section>
@@ -112,16 +135,26 @@
           </section>
 
           <section class="panel">
-            <p class="section-kicker">长期记忆</p>
-            <div id="memory-summary" class="memory-summary">
-              <p>还没有足够的长期记忆，先聊几轮看看。</p>
+            <p class="section-kicker">感情模块</p>
+            <div id="emotion-summary" class="emotion-summary">
+              <p>还没有足够的数据来判断角色的情感状态。</p>
             </div>
           </section>
 
           <section class="panel">
             <p class="section-kicker">剧情推进</p>
+            <div id="plot-summary" class="plot-summary">
+              <p>剧情还在等待铺开。</p>
+            </div>
             <div id="event-summary" class="event-summary">
-              <p>尚未触发剧情事件。</p>
+              <p>尚未触发关键剧情。</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <p class="section-kicker">长期记忆</p>
+            <div id="memory-summary" class="memory-summary">
+              <p>还没有足够的长期记忆，先聊几轮看看。</p>
             </div>
           </section>
 
@@ -166,9 +199,15 @@
       <article class="message">
         <div class="message-meta">
           <span class="message-role"></span>
-          <span class="message-time"></span>
+          <div class="message-meta-right">
+            <span class="message-badge"></span>
+            <span class="message-time"></span>
+          </div>
         </div>
-        <p class="message-text"></p>
+        <div class="message-body">
+          <p class="message-action hidden"></p>
+          <p class="message-text"></p>
+        </div>
       </article>
     </template>
 
