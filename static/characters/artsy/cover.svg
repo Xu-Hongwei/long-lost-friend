@@ -1,0 +1,16 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="110" y1="52" x2="1080" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8E8E7"/>
+      <stop offset="0.52" stop-color="#CBB6CF"/>
+      <stop offset="1" stop-color="#694874"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="900" rx="36" fill="url(#bg)"/>
+  <path d="M170 798C286 646 438 570 586 570C754 570 898 662 1018 798H170Z" fill="#73506D"/>
+  <path d="M424 630C424 510 504 406 610 406C710 406 792 506 792 624C792 734 712 816 610 816C502 816 424 738 424 630Z" fill="#F0DBD5"/>
+  <path d="M394 590C394 458 488 330 636 330C758 330 822 432 810 584C800 652 774 704 740 734C706 694 650 664 592 664C534 664 484 686 452 730C418 692 394 642 394 590Z" fill="#5A425F"/>
+  <text x="112" y="150" fill="white" fill-opacity="0.84" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif" letter-spacing="8">ARTSY</text>
+  <text x="112" y="718" fill="white" fill-opacity="0.94" font-size="74" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">顾遥</text>
+  <text x="112" y="768" fill="white" fill-opacity="0.66" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">比起直白告白，他更像先把喜欢藏进黄昏和相纸里。</text>
+</svg>

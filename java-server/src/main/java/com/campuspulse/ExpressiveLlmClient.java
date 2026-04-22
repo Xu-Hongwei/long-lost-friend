@@ -10,18 +10,26 @@ import java.util.List;
 import java.util.Map;
 
 class ExpressiveLlmClient extends CompositeLlmClient {
+    private static final String SCENE_OPEN = "[[SCENE]]";
+    private static final String SCENE_CLOSE = "[[/SCENE]]";
     private static final String ACTION_OPEN = "[[ACTION]]";
     private static final String ACTION_CLOSE = "[[/ACTION]]";
 
     private static final class ReplyParts {
         final String replyText;
+        final String sceneText;
         final String actionText;
         final String speechText;
 
-        ReplyParts(String replyText, String actionText, String speechText) {
+        ReplyParts(String replyText, String sceneText, String actionText, String speechText) {
             this.replyText = replyText;
+            this.sceneText = sceneText;
             this.actionText = actionText;
             this.speechText = speechText;
+        }
+
+        ReplyParts(String replyText, String actionText, String speechText) {
+            this(replyText, "", actionText, speechText);
         }
     }
 
@@ -81,9 +89,10 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private LlmResponse generateMockReply(LlmRequest request) {
         String rawReply = isHeartbeatProactive(request.replySource) ? buildProactiveReply(request) : buildReactiveReply(request);
-        ReplyParts reply = shapeReply(rawReply, request.replySource);
+        ReplyParts reply = shapeStructuredReply(rawReply);
         return new LlmResponse(
                 reply.replyText,
+                reply.sceneText,
                 reply.actionText,
                 reply.speechText,
                 inferEmotionTag(request),
@@ -97,6 +106,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private LlmResponse generateRemoteReply(LlmRequest request) throws Exception {
         String systemPrompt = buildSystemPrompt(request);
+        if (request.searchContext != null && !request.searchContext.isBlank()) {
+            return generateRemoteReplyWithSearch(request, systemPrompt);
+        }
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", systemPrompt));
         for (ConversationSnippet snippet : request.shortTermContext) {
@@ -132,10 +144,66 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         Map<String, Object> choice = Json.asObject(choices.get(0));
         Map<String, Object> message = Json.asObject(choice.get("message"));
         Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
-        ReplyParts reply = shapeReply(Json.asString(message.get("content")).trim(), request.replySource);
+        ReplyParts reply = shapeStructuredReply(Json.asString(message.get("content")).trim());
 
         return new LlmResponse(
                 reply.replyText,
+                reply.sceneText,
+                reply.actionText,
+                reply.speechText,
+                inferEmotionTag(request),
+                "remote",
+                Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
+                null,
+                false,
+                "remote"
+        );
+    }
+
+    private LlmResponse generateRemoteReplyWithSearch(LlmRequest request, String systemPrompt) throws Exception {
+        List<Object> input = new ArrayList<>();
+        input.add(Map.of(
+                "role", "system",
+                "content", List.of(Map.of("type", "input_text", "text", systemPrompt))
+        ));
+        input.add(Map.of(
+                "role", "user",
+                "content", List.of(Map.of(
+                        "type", "input_text",
+                        "text", buildUserCue(request) + "\n联网补充上下文：" + request.searchContext
+                ))
+        ));
+
+        String body = Json.stringify(Map.of(
+                "model", config.llmModel,
+                "input", input,
+                "tools", List.of(Map.of("type", "web_search"))
+        ));
+
+        HttpURLConnection connection = (HttpURLConnection) URI.create(config.llmBaseUrl + "/responses").toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout((int) config.llmTimeout.toMillis());
+        connection.setReadTimeout((int) config.llmTimeout.toMillis());
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
+        connection.setRequestProperty("Authorization", "Bearer " + config.llmApiKey);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        int statusCode = connection.getResponseCode();
+        if (statusCode < 200 || statusCode >= 300) {
+            throw new IOException("LLM responses request failed: " + statusCode);
+        }
+
+        String responseBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        Map<String, Object> payload = Json.asObject(Json.parse(responseBody));
+        Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
+        ReplyParts reply = shapeStructuredReply(extractResponsesText(payload).trim());
+
+        return new LlmResponse(
+                reply.replyText,
+                reply.sceneText,
                 reply.actionText,
                 reply.speechText,
                 inferEmotionTag(request),
@@ -152,6 +220,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         String directAnswer = buildDirectAnswer(request);
         boolean answeredDirectly = !directAnswer.isBlank();
 
+        String sceneLine = buildSceneLine(request, hasQuestion, answeredDirectly);
         String actionLine = buildActionLine(request, hasQuestion, answeredDirectly);
         List<String> speechParts = new ArrayList<>();
         if (answeredDirectly) {
@@ -182,16 +251,23 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
 
         List<String> parts = new ArrayList<>();
+        if (!sceneLine.isBlank()) {
+            parts.add(wrapScene(sceneLine));
+        }
         if (!actionLine.isBlank()) {
             parts.add(wrapAction(actionLine));
         }
         parts.addAll(speechParts);
-        return joinNonBlank(limitSentences(parts, actionLine.isBlank() ? 4 : 5));
+        return joinNonBlank(limitSentences(parts, actionLine.isBlank() && sceneLine.isBlank() ? 4 : 6));
     }
 
     private String buildProactiveReply(LlmRequest request) {
+        String sceneLine = buildSceneLine(request, false, false);
         String actionLine = buildActionLine(request, false, false);
         List<String> parts = new ArrayList<>();
+        if (!sceneLine.isBlank()) {
+            parts.add(wrapScene(sceneLine));
+        }
         if (!actionLine.isBlank()) {
             parts.add(wrapAction(actionLine));
         }
@@ -345,6 +421,22 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return "这一刻正好适合轻轻续上刚才那点心思。";
     }
 
+    private String buildSceneLine(LlmRequest request, boolean hasQuestion, boolean answeredDirectly) {
+        if (request == null) {
+            return "";
+        }
+        if (request.sceneState != null && request.sceneState.transitionPending) {
+            return blankTo(request.sceneFrame, "");
+        }
+        if ("plot_push".equals(request.replySource) || isHeartbeatProactive(request.replySource)) {
+            return blankTo(request.sceneFrame, "");
+        }
+        if (!hasQuestion && !answeredDirectly) {
+            return conciseSceneHint(request);
+        }
+        return "";
+    }
+
     private String buildSceneBridge(LlmRequest request) {
         if (request.sceneFrame != null && !request.sceneFrame.isBlank()) {
             return request.sceneFrame;
@@ -419,17 +511,22 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request == null) {
             return "";
         }
+        String userText = compact(request.userMessage);
         if ("silence_heartbeat".equals(request.replySource) || "long_chat_heartbeat".equals(request.replySource)) {
-            return conciseSceneHint(request);
+            return request.emotionState != null && request.emotionState.longing >= 55
+                    ? "她把视线轻轻停在你这边，像是真的还挂念着你刚才那句话"
+                    : "她顺着刚才的安静停了一下，像是在确认你还在不在这一侧";
         }
         if ("plot_push".equals(request.replySource)) {
-            return buildSceneBridge(request);
+            return userText.contains("送") || userText.contains("一起走")
+                    ? "她和你并肩往前走了几步，语气也跟着更贴近了一点"
+                    : "她看着你，像是准备顺着这段气氛再往前靠半步";
         }
         if (!hasQuestion && !isShortInput(request.userMessage)) {
-            return buildSceneBridge(request);
+            return "她没有把目光移开，像是认真等你把后半句也放下来";
         }
         if (!answeredDirectly && isShortInput(request.userMessage)) {
-            return conciseSceneHint(request);
+            return "她先把注意力轻轻落回你身上，像是在给你一个更容易接的话头";
         }
         return "";
     }
@@ -721,6 +818,67 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private String blankTo(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private String wrapScene(String sceneText) {
+        return SCENE_OPEN + trimTrailingPunctuation(sceneText) + "。" + SCENE_CLOSE;
+    }
+
+    private ReplyParts shapeStructuredReply(String rawReply) {
+        String normalized = condenseWhitespace(rawReply);
+        String sceneText = cleanSceneText(extractSegment(normalized, SCENE_OPEN, SCENE_CLOSE));
+        String actionText = cleanActionText(extractSegment(normalized, ACTION_OPEN, ACTION_CLOSE));
+        String speechText = normalized
+                .replace(sceneText.isBlank() ? "" : SCENE_OPEN + trimTrailingPunctuation(sceneText) + "。" + SCENE_CLOSE, "")
+                .replace(actionText.isBlank() ? "" : ACTION_OPEN + trimTrailingPunctuation(actionText) + "。" + ACTION_CLOSE, "")
+                .replace(SCENE_OPEN, "")
+                .replace(SCENE_CLOSE, "")
+                .replace(ACTION_OPEN, "")
+                .replace(ACTION_CLOSE, "")
+                .trim();
+        speechText = cleanSpeechText(speechText.isBlank() ? normalized : speechText);
+        String combined = joinNonBlank(List.of(sceneText, actionText, speechText));
+        return new ReplyParts(combined, sceneText, actionText, speechText);
+    }
+
+    private String cleanSceneText(String text) {
+        String normalized = condenseWhitespace(text);
+        normalized = trimTrailingPunctuation(normalized);
+        return normalized.isBlank() ? "" : normalized + "。";
+    }
+
+    private String extractSegment(String text, String openToken, String closeToken) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        int openIndex = text.indexOf(openToken);
+        int closeIndex = text.indexOf(closeToken);
+        if (openIndex < 0 || closeIndex <= openIndex) {
+            return "";
+        }
+        return text.substring(openIndex + openToken.length(), closeIndex).trim();
+    }
+
+    private String extractResponsesText(Map<String, Object> payload) {
+        List<Object> output = Json.asArray(payload.get("output"));
+        StringBuilder builder = new StringBuilder();
+        for (Object item : output) {
+            Map<String, Object> outputItem = Json.asObject(item);
+            if (!"message".equals(Json.asString(outputItem.get("type")))) {
+                continue;
+            }
+            for (Object contentItem : Json.asArray(outputItem.get("content"))) {
+                Map<String, Object> content = Json.asObject(contentItem);
+                String text = Json.asString(content.get("text"));
+                if (text != null && !text.isBlank()) {
+                    if (!builder.isEmpty()) {
+                        builder.append(" ");
+                    }
+                    builder.append(text.trim());
+                }
+            }
+        }
+        return builder.toString().trim();
     }
 
     private String inferEmotionTag(LlmRequest request) {

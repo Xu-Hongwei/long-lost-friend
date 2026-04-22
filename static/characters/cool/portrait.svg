@@ -1,0 +1,21 @@
+<svg width="960" height="1200" viewBox="0 0 960 1200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="148" y1="60" x2="842" y2="1120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C8D1FF"/>
+      <stop offset="0.45" stop-color="#AAB9E7"/>
+      <stop offset="1" stop-color="#334365"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="1200" rx="42" fill="url(#bg)"/>
+  <rect x="96" y="86" width="770" height="1026" rx="34" fill="rgba(5,10,24,0.12)" stroke="rgba(255,255,255,0.2)"/>
+  <path d="M266 1112C312 916 400 756 514 756C632 756 714 914 748 1112H266Z" fill="#384461"/>
+  <path d="M358 788C358 664 438 548 532 548C632 548 704 658 704 788C704 896 636 968 536 968C430 968 358 898 358 788Z" fill="#E8D9D5"/>
+  <path d="M338 754C338 594 420 450 568 450C688 450 744 566 736 714C726 784 700 842 668 876C644 836 598 798 546 794C466 788 412 822 380 870C352 834 338 796 338 754Z" fill="#2C364E"/>
+  <circle cx="454" cy="766" r="16" fill="#232A3C"/>
+  <circle cx="590" cy="766" r="16" fill="#232A3C"/>
+  <path d="M448 816C486 834 536 836 576 812" stroke="#AE8788" stroke-width="12" stroke-linecap="round"/>
+  <path d="M740 182L814 110" stroke="rgba(255,255,255,0.28)" stroke-width="18" stroke-linecap="round"/>
+  <text x="124" y="150" fill="white" fill-opacity="0.88" font-size="34" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif" letter-spacing="8">COOL</text>
+  <text x="124" y="1080" fill="white" fill-opacity="0.94" font-size="60" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">沈砚</text>
+  <text x="124" y="1126" fill="white" fill-opacity="0.66" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">夜色楼道 · 克制慢热 · 会把细节记得很牢</text>
+</svg>

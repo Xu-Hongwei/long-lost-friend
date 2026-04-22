@@ -1,0 +1,17 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="50" x2="1080" y2="850" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD36E"/>
+      <stop offset="0.5" stop-color="#FF9A42"/>
+      <stop offset="1" stop-color="#6B2A12"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="900" rx="36" fill="url(#bg)"/>
+  <circle cx="968" cy="160" r="130" fill="rgba(255,248,233,0.3)"/>
+  <path d="M120 794C220 654 376 560 548 560C738 560 892 668 990 794H120Z" fill="#8D4517"/>
+  <path d="M398 624C398 500 492 398 610 398C726 398 818 498 818 620C818 730 734 816 618 816C488 816 398 742 398 624Z" fill="#FFDCC9"/>
+  <path d="M368 592C368 454 470 320 632 320C748 320 834 414 822 560C808 642 780 694 742 724C708 686 654 654 592 654C520 654 456 678 422 724C388 684 368 638 368 592Z" fill="#5B2D1D"/>
+  <text x="112" y="150" fill="white" fill-opacity="0.86" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif" letter-spacing="8">LIVELY</text>
+  <text x="112" y="716" fill="white" fill-opacity="0.94" font-size="74" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">许朝晞</text>
+  <text x="112" y="768" fill="white" fill-opacity="0.68" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">夜市和社团灯牌之间，总有办法把你拉进热闹里。</text>
+</svg>

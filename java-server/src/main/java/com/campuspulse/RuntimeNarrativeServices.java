@@ -42,12 +42,18 @@ class PresenceState implements Serializable {
     boolean visible;
     boolean focused;
     boolean online;
+    boolean typing;
+    int draftLength;
     String openedAt;
     String lastHeartbeatAt;
     String lastSeenAt;
     String lastUserMessageAt;
     String lastSilenceHeartbeatAt;
     String lastLongHeartbeatAt;
+    String lastInputAt;
+    String blockedReason;
+    String triggerReason;
+    String heartbeatExplain;
 }
 
 class MemoryUsePlan implements Serializable {
@@ -76,15 +82,33 @@ class WeatherContext implements Serializable {
 
 class PlotDecision {
     final PlotState nextPlotState;
+    final PlotArcState nextPlotArcState;
+    final SceneState nextSceneState;
     final boolean advanced;
     final String replySource;
     final String sceneFrame;
+    final String sceneText;
 
-    PlotDecision(PlotState nextPlotState, boolean advanced, String replySource, String sceneFrame) {
+    PlotDecision(
+            PlotState nextPlotState,
+            PlotArcState nextPlotArcState,
+            SceneState nextSceneState,
+            boolean advanced,
+            String replySource,
+            String sceneFrame,
+            String sceneText
+    ) {
         this.nextPlotState = nextPlotState;
+        this.nextPlotArcState = nextPlotArcState;
+        this.nextSceneState = nextSceneState;
         this.advanced = advanced;
         this.replySource = replySource;
         this.sceneFrame = sceneFrame;
+        this.sceneText = sceneText;
+    }
+
+    PlotDecision(PlotState nextPlotState, boolean advanced, String replySource, String sceneFrame) {
+        this(nextPlotState, null, null, advanced, replySource, sceneFrame, "");
     }
 }
 
@@ -102,11 +126,40 @@ class PresenceResult {
     final PresenceState nextState;
     final boolean shouldSend;
     final String replySource;
+    final String triggerReason;
+    final String blockedReason;
+    final String heartbeatExplain;
 
-    PresenceResult(PresenceState nextState, boolean shouldSend, String replySource) {
+    PresenceResult(
+            PresenceState nextState,
+            boolean shouldSend,
+            String replySource,
+            String triggerReason,
+            String blockedReason,
+            String heartbeatExplain
+    ) {
         this.nextState = nextState;
         this.shouldSend = shouldSend;
         this.replySource = replySource;
+        this.triggerReason = triggerReason;
+        this.blockedReason = blockedReason;
+        this.heartbeatExplain = heartbeatExplain;
+    }
+
+    PresenceResult(PresenceState nextState, boolean shouldSend, String replySource) {
+        this(nextState, shouldSend, replySource, replySource, "", "");
+    }
+}
+
+class SearchDecision {
+    final boolean enabled;
+    final String query;
+    final String reason;
+
+    SearchDecision(boolean enabled, String query, String reason) {
+        this.enabled = enabled;
+        this.query = query;
+        this.reason = reason;
     }
 }
 
@@ -289,6 +342,228 @@ class SocialMemoryService extends AdaptiveMemoryService {
         target.remove(value);
         target.add(0, value);
         trimTo(target, limit);
+    }
+}
+
+class EnhancedSocialMemoryService extends SocialMemoryService {
+    EnhancedSocialMemoryService(long retentionMs) {
+        super(retentionMs);
+    }
+
+    @Override
+    MemorySummary normalizeSummary(MemorySummary summary, String nowIso) {
+        MemorySummary next = super.normalizeSummary(summary, nowIso);
+        if (next.factMemories == null) {
+            next.factMemories = new ArrayList<>();
+        }
+        if (next.sceneLedger == null) {
+            next.sceneLedger = new ArrayList<>();
+        }
+        if (next.openLoopItems == null) {
+            next.openLoopItems = new ArrayList<>();
+        }
+        return next;
+    }
+
+    @Override
+    String getSummaryText(MemorySummary summary) {
+        MemorySummary normalized = normalizeSummary(summary, IsoTimes.now());
+        List<String> lines = new ArrayList<>();
+        String base = super.getSummaryText(normalized);
+        if (!base.isBlank()) {
+            lines.add(base);
+        }
+        List<String> facts = normalized.factMemories.stream()
+                .filter(item -> item != null && item.value != null && !item.value.isBlank() && item.supersededBy == null)
+                .limit(6)
+                .map(item -> item.value)
+                .toList();
+        if (!facts.isEmpty()) {
+            lines.add("已确认事实：" + String.join("；", facts));
+        }
+        List<String> scenes = normalized.sceneLedger.stream()
+                .filter(item -> item != null && item.summary != null && !item.summary.isBlank())
+                .limit(6)
+                .map(item -> item.summary)
+                .toList();
+        if (!scenes.isEmpty()) {
+            lines.add("共同场景：" + String.join("；", scenes));
+        }
+        List<String> openLoops = normalized.openLoopItems.stream()
+                .filter(item -> item != null && item.summary != null && !item.summary.isBlank() && !item.resolved)
+                .limit(6)
+                .map(item -> item.summary)
+                .toList();
+        if (!openLoops.isEmpty()) {
+            lines.add("未完成线索：" + String.join("；", openLoops));
+        }
+        return String.join("\n", lines);
+    }
+
+    @Override
+    MemorySummary updateTieredSummary(MemorySummary summary, String userMessage, StoryEvent event, String relationshipStage, String nowIso) {
+        MemorySummary next = super.updateTieredSummary(summary, userMessage, event, relationshipStage, nowIso);
+        next = normalizeSummary(next, nowIso);
+        rememberFacts(next, userMessage, nowIso);
+        rememberScene(next, userMessage, nowIso);
+        rememberOpenLoops(next, userMessage, nowIso);
+        return next;
+    }
+
+    @Override
+    MemoryUsePlan planMemoryUse(MemorySummary summary, String userMessage, String replySource, String sceneFrame) {
+        MemorySummary normalized = normalizeSummary(summary, IsoTimes.now());
+        MemoryUsePlan plan = super.planMemoryUse(normalized, userMessage, replySource, sceneFrame);
+        List<String> sceneCandidates = normalized.sceneLedger.stream()
+                .filter(item -> item != null && item.summary != null && !item.summary.isBlank())
+                .filter(item -> sceneFrame == null || sceneFrame.isBlank() || item.location == null || sceneFrame.contains(item.location))
+                .limit(2)
+                .map(item -> item.summary)
+                .toList();
+        if (("silence_heartbeat".equals(replySource) || "long_chat_heartbeat".equals(replySource)) && !sceneCandidates.isEmpty()) {
+            plan.useMode = "light";
+            plan.relevanceReason = "优先承接当前场景，避免主动消息跳回旧地点。";
+            plan.selectedMemories.addAll(sceneCandidates);
+            plan.mergedMemoryText = String.join("；", sceneCandidates);
+        }
+        return plan;
+    }
+
+    private void rememberFacts(MemorySummary summary, String userMessage, String nowIso) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return;
+        }
+        rememberFact(summary, "city_area", extractFact(userMessage, List.of("我之前在", "我在", "我之前一直在")), "confirmed", nowIso);
+        rememberFact(summary, "drink_preference", extractFact(userMessage, List.of("我喜欢", "我最喜欢", "我更喜欢")), "confirmed", nowIso);
+        rememberFact(summary, "school_place", extractFact(userMessage, List.of("我一般在", "我常在")), "likely", nowIso);
+    }
+
+    private void rememberScene(MemorySummary summary, String userMessage, String nowIso) {
+        String scene = "";
+        String location = "";
+        if (userMessage == null || userMessage.isBlank()) {
+            return;
+        }
+        if (userMessage.contains("宿舍")) {
+            location = "宿舍";
+            scene = "你们的话题已经走到宿舍附近这一段了。";
+        } else if (userMessage.contains("图书馆")) {
+            location = "图书馆";
+            scene = "你们在图书馆相关的场景里继续把话说下去。";
+        } else if (userMessage.contains("食堂")) {
+            location = "食堂";
+            scene = "场景被带到了食堂这一侧，更像日常陪伴。";
+        } else if (userMessage.contains("路上") || userMessage.contains("送她回")) {
+            location = "路上";
+            scene = "场景开始从原地移动，变成并肩走着继续聊天。";
+        }
+        if (scene.isBlank()) {
+            return;
+        }
+        for (SceneLedgerItem item : summary.sceneLedger) {
+            if (item != null && scene.equals(item.summary)) {
+                item.updatedAt = nowIso;
+                return;
+            }
+        }
+        SceneLedgerItem item = new SceneLedgerItem();
+        item.sceneId = "scene-" + Math.abs(scene.hashCode());
+        item.location = location;
+        item.summary = scene;
+        item.updatedAt = nowIso;
+        summary.sceneLedger.add(0, item);
+        while (summary.sceneLedger.size() > 12) {
+            summary.sceneLedger.remove(summary.sceneLedger.size() - 1);
+        }
+    }
+
+    private void rememberOpenLoops(MemorySummary summary, String userMessage, String nowIso) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return;
+        }
+        if (userMessage.contains("下次") || userMessage.contains("以后") || userMessage.contains("改天")) {
+            upsertOpenLoop(summary, "plan:" + compact(userMessage), "你提过后续还想继续这件事。", "plan", nowIso);
+        }
+        if (userMessage.contains("?") || userMessage.contains("？")) {
+            upsertOpenLoop(summary, "question:" + compact(userMessage), "你刚刚还有一个问题没有完全收尾。", "question", nowIso);
+        }
+    }
+
+    private void rememberFact(MemorySummary summary, String key, String value, String confidence, String nowIso) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        for (FactMemoryItem item : summary.factMemories) {
+            if (item != null && key.equals(item.key) && item.supersededBy == null && !value.equals(item.value)) {
+                item.supersededBy = value;
+            }
+        }
+        for (FactMemoryItem item : summary.factMemories) {
+            if (item != null && key.equals(item.key) && value.equals(item.value) && item.supersededBy == null) {
+                item.confidence = confidence;
+                item.updatedAt = nowIso;
+                return;
+            }
+        }
+        FactMemoryItem item = new FactMemoryItem();
+        item.key = key;
+        item.value = value;
+        item.confidence = confidence;
+        item.updatedAt = nowIso;
+        summary.factMemories.add(0, item);
+        while (summary.factMemories.size() > 12) {
+            summary.factMemories.remove(summary.factMemories.size() - 1);
+        }
+    }
+
+    private void upsertOpenLoop(MemorySummary summary, String id, String text, String sourceType, String nowIso) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        for (OpenLoopItem item : summary.openLoopItems) {
+            if (item != null && id.equals(item.id)) {
+                item.summary = text;
+                item.sourceType = sourceType;
+                item.resolved = false;
+                item.updatedAt = nowIso;
+                return;
+            }
+        }
+        OpenLoopItem item = new OpenLoopItem();
+        item.id = id;
+        item.summary = text;
+        item.sourceType = sourceType;
+        item.resolved = false;
+        item.updatedAt = nowIso;
+        summary.openLoopItems.add(0, item);
+        while (summary.openLoopItems.size() > 10) {
+            summary.openLoopItems.remove(summary.openLoopItems.size() - 1);
+        }
+    }
+
+    private String extractFact(String userMessage, List<String> markers) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return "";
+        }
+        for (String marker : markers) {
+            int start = userMessage.indexOf(marker);
+            if (start >= 0) {
+                String value = userMessage.substring(start + marker.length()).trim();
+                int stop = value.length();
+                for (String token : List.of("，", "。", "！", "？", ",", ".", "!", "?", "；", ";")) {
+                    int index = value.indexOf(token);
+                    if (index >= 0) {
+                        stop = Math.min(stop, index);
+                    }
+                }
+                return value.substring(0, stop).trim();
+            }
+        }
+        return "";
+    }
+
+    private String compact(String text) {
+        return text == null ? "" : text.replaceAll("\\s+", "");
     }
 }
 
@@ -726,6 +1001,357 @@ class PresenceHeartbeatService {
     private Instant parse(String iso, String fallback) {
         String target = (iso == null || iso.isBlank()) ? fallback : iso;
         return Instant.parse(target);
+    }
+}
+
+class SceneDirectorService {
+    SceneState normalize(SceneState sceneState, String nowIso) {
+        SceneState next = sceneState == null ? new SceneState() : sceneState;
+        if (next.location == null || next.location.isBlank()) {
+            next.location = "图书馆";
+        }
+        if (next.subLocation == null) {
+            next.subLocation = "";
+        }
+        if (next.interactionMode == null || next.interactionMode.isBlank()) {
+            next.interactionMode = "face_to_face";
+        }
+        if (next.sceneSummary == null || next.sceneSummary.isBlank()) {
+            next.sceneSummary = "你们还在同一个场景里，把话慢慢往下接。";
+        }
+        if (next.updatedAt == null || next.updatedAt.isBlank()) {
+            next.updatedAt = nowIso;
+        }
+        return next;
+    }
+
+    SceneState evolve(SceneState sceneState, String userMessage, TimeContext timeContext, WeatherContext weatherContext, int currentTurn, String nowIso) {
+        SceneState next = cloneState(normalize(sceneState, nowIso));
+        next.timeOfScene = timeContext == null ? "" : timeContext.dayPart;
+        next.weatherMood = weatherContext == null ? "" : weatherContext.summary;
+        String text = userMessage == null ? "" : userMessage;
+        String nextLocation = detectLocation(text, next.location);
+        boolean changed = !nextLocation.equals(next.location);
+        if (changed) {
+            next.location = nextLocation;
+            next.subLocation = detectSubLocation(text);
+            next.transitionPending = true;
+            next.transitionLockUntilTurn = currentTurn + 2;
+            next.lastConfirmedSceneTurn = currentTurn;
+        } else if (currentTurn >= next.transitionLockUntilTurn) {
+            next.transitionPending = false;
+        }
+        next.interactionMode = detectInteractionMode(text, next.interactionMode);
+        next.sceneSummary = buildSceneSummary(next, changed, text);
+        next.updatedAt = nowIso;
+        return next;
+    }
+
+    String buildSceneText(SceneState previous, SceneState next) {
+        if (next == null) {
+            return "";
+        }
+        if (previous == null || !safe(previous.location).equals(safe(next.location))) {
+            return "场景顺着你这句话往“" + next.location + "”那边移了过去，接下来的话也更适合在这个位置继续。";
+        }
+        if (next.transitionPending) {
+            return next.sceneSummary;
+        }
+        return "";
+    }
+
+    private String detectLocation(String text, String fallback) {
+        if (text.contains("宿舍")) return "宿舍";
+        if (text.contains("食堂")) return "食堂";
+        if (text.contains("操场")) return "操场";
+        if (text.contains("路上") || text.contains("送她回") || text.contains("送你回")) return "回去的路上";
+        if (text.contains("窗边")) return "窗边";
+        if (text.contains("手机") || text.contains("发消息")) return "线上聊天";
+        if (text.contains("图书馆")) return "图书馆";
+        return fallback == null || fallback.isBlank() ? "图书馆" : fallback;
+    }
+
+    private String detectSubLocation(String text) {
+        if (text.contains("窗边")) return "窗边";
+        if (text.contains("门口")) return "门口";
+        if (text.contains("走廊")) return "走廊";
+        return "";
+    }
+
+    private String detectInteractionMode(String text, String fallback) {
+        if (text.contains("发消息") || text.contains("回消息")) return "phone_chat";
+        if (text.contains("送她回") || text.contains("一起走")) return "mixed_transition";
+        return fallback == null || fallback.isBlank() ? "face_to_face" : fallback;
+    }
+
+    private String buildSceneSummary(SceneState state, boolean changed, String userMessage) {
+        if (changed) {
+            return "场景已经转到" + state.location + "，你们的话题也该顺着新的位置继续。";
+        }
+        if (userMessage.contains("下雨")) {
+            return "雨声把气氛压低了一点，话也更容易贴近。";
+        }
+        if (userMessage.contains("送")) {
+            return "脚步和话题都在往前走，气氛比原地聊天更近一点。";
+        }
+        return state.sceneSummary == null || state.sceneSummary.isBlank() ? "你们还在同一个场景里慢慢说话。" : state.sceneSummary;
+    }
+
+    private SceneState cloneState(SceneState current) {
+        SceneState next = new SceneState();
+        next.location = current.location;
+        next.subLocation = current.subLocation;
+        next.interactionMode = current.interactionMode;
+        next.timeOfScene = current.timeOfScene;
+        next.weatherMood = current.weatherMood;
+        next.transitionPending = current.transitionPending;
+        next.transitionLockUntilTurn = current.transitionLockUntilTurn;
+        next.lastConfirmedSceneTurn = current.lastConfirmedSceneTurn;
+        next.sceneSummary = current.sceneSummary;
+        next.updatedAt = current.updatedAt;
+        return next;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+}
+
+class SearchDecisionService {
+    SearchDecision decide(String userMessage, String replySource, SceneState sceneState) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return new SearchDecision(false, "", "empty");
+        }
+        String text = userMessage.trim();
+        boolean realtime = text.contains("天气") || text.contains("新闻") || text.contains("热点") || text.contains("今天");
+        boolean factual = text.contains("电影") || text.contains("城市") || text.contains("专业") || text.contains("学校");
+        boolean proactiveAnchor = ("plot_push".equals(replySource) || "long_chat_heartbeat".equals(replySource))
+                && sceneState != null
+                && "线上聊天".equals(sceneState.location);
+        if (realtime) {
+            return new SearchDecision(true, text, "realtime");
+        }
+        if (factual && text.length() >= 8) {
+            return new SearchDecision(true, text, "factual");
+        }
+        if (proactiveAnchor) {
+            return new SearchDecision(true, text, "anchor");
+        }
+        return new SearchDecision(false, "", "skip");
+    }
+}
+
+class EnhancedPlotDirectorService extends PlotDirectorService {
+    private final SceneDirectorService sceneDirectorService = new SceneDirectorService();
+
+    @Override
+    PlotDecision decide(
+            SessionRecord session,
+            String userMessage,
+            EmotionState emotionState,
+            RelationshipState relationshipState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso
+    ) {
+        PlotDecision base = super.decide(session, userMessage, emotionState, relationshipState, memorySummary, timeContext, weatherContext, replySource, nowIso);
+        PlotArcState arc = normalizeArc(session.plotArcState, nowIso);
+        SceneState previousScene = sceneDirectorService.normalize(session.sceneState, nowIso);
+        int currentTurn = "user_turn".equals(replySource) ? session.userTurnCount + 1 : session.userTurnCount;
+        SceneState nextScene = sceneDirectorService.evolve(previousScene, userMessage, timeContext, weatherContext, currentTurn, nowIso);
+
+        PlotArcState nextArc = cloneArc(arc);
+        nextArc.beatIndex = Math.max(arc.beatIndex, base.nextPlotState == null ? arc.beatIndex : base.nextPlotState.beatIndex);
+        nextArc.arcIndex = Math.max(1, ((Math.max(1, nextArc.beatIndex) - 1) / 10) + 1);
+        nextArc.phase = base.nextPlotState == null ? arc.phase : base.nextPlotState.phase;
+        nextArc.sceneFrame = nextScene.sceneSummary;
+        nextArc.openThreads = new ArrayList<>(base.nextPlotState == null ? arc.openThreads : base.nextPlotState.openThreads);
+        nextArc.lastPlotTurn = base.nextPlotState == null ? arc.lastPlotTurn : base.nextPlotState.lastPlotTurn;
+        nextArc.forcePlotAtTurn = base.nextPlotState == null ? arc.forcePlotAtTurn : base.nextPlotState.forcePlotAtTurn;
+        nextArc.plotProgress = "第 " + nextArc.beatIndex + " 拍 / 第 " + nextArc.arcIndex + " 章";
+        nextArc.nextBeatHint = base.nextPlotState == null ? arc.nextBeatHint : base.nextPlotState.nextBeatHint;
+        nextArc.checkpointReady = base.advanced && nextArc.beatIndex > 0 && nextArc.beatIndex % 10 == 0;
+        nextArc.runStatus = nextArc.checkpointReady ? "checkpoint_ready" : "in_progress";
+        nextArc.endingCandidate = relationshipState == null ? "" : relationshipState.endingCandidate;
+        nextArc.canSettleScore = nextArc.checkpointReady;
+        nextArc.canContinue = nextArc.checkpointReady;
+        if (nextArc.checkpointReady) {
+            nextArc.latestArcSummary = buildCheckpointSummary(nextArc, nextScene, relationshipState, nowIso);
+        } else if (nextArc.latestArcSummary == null) {
+            nextArc.latestArcSummary = buildCheckpointSummary(nextArc, nextScene, relationshipState, nowIso);
+        }
+        nextArc.updatedAt = nowIso;
+        return new PlotDecision(
+                base.nextPlotState,
+                nextArc,
+                nextScene,
+                base.advanced,
+                base.replySource,
+                nextScene.sceneSummary,
+                sceneDirectorService.buildSceneText(previousScene, nextScene)
+        );
+    }
+
+    PlotArcState continueFromCheckpoint(PlotArcState plotArcState, String nowIso) {
+        PlotArcState next = normalizeArc(plotArcState, nowIso);
+        next.checkpointReady = false;
+        next.runStatus = "in_progress";
+        next.canSettleScore = false;
+        next.canContinue = false;
+        next.updatedAt = nowIso;
+        return next;
+    }
+
+    PlotArcState settleCheckpoint(PlotArcState plotArcState, RelationshipState relationshipState, SceneState sceneState, String nowIso) {
+        PlotArcState next = normalizeArc(plotArcState, nowIso);
+        next.checkpointReady = false;
+        next.runStatus = "settled";
+        next.canSettleScore = false;
+        next.canContinue = true;
+        next.latestArcSummary = buildCheckpointSummary(next, sceneState, relationshipState, nowIso);
+        next.updatedAt = nowIso;
+        return next;
+    }
+
+    PlotArcState normalizeArc(PlotArcState plotArcState, String nowIso) {
+        PlotArcState next = plotArcState == null ? new PlotArcState() : plotArcState;
+        if (next.arcIndex <= 0) {
+            next.arcIndex = 1;
+        }
+        if (next.phase == null || next.phase.isBlank()) {
+            next.phase = "相识";
+        }
+        if (next.sceneFrame == null || next.sceneFrame.isBlank()) {
+            next.sceneFrame = "剧情刚刚铺开。";
+        }
+        if (next.openThreads == null) {
+            next.openThreads = new ArrayList<>();
+        }
+        if (next.plotProgress == null || next.plotProgress.isBlank()) {
+            next.plotProgress = "第 0 拍 / 第 1 章";
+        }
+        if (next.nextBeatHint == null || next.nextBeatHint.isBlank()) {
+            next.nextBeatHint = "先把当前气氛聊顺。";
+        }
+        if (next.runStatus == null || next.runStatus.isBlank()) {
+            next.runStatus = "in_progress";
+        }
+        if (next.updatedAt == null || next.updatedAt.isBlank()) {
+            next.updatedAt = nowIso;
+        }
+        if (next.latestArcSummary == null) {
+            next.latestArcSummary = buildCheckpointSummary(next, null, null, nowIso);
+        }
+        return next;
+    }
+
+    private ArcCheckpointSummary buildCheckpointSummary(PlotArcState state, SceneState sceneState, RelationshipState relationshipState, String nowIso) {
+        ArcCheckpointSummary summary = new ArcCheckpointSummary();
+        summary.arcIndex = Math.max(1, state.arcIndex);
+        summary.beatEnd = state.beatIndex;
+        summary.beatStart = Math.max(1, summary.beatEnd - 9);
+        summary.title = "第 " + summary.arcIndex + " 段关系总结";
+        summary.routeTheme = state.phase == null ? "相识" : state.phase;
+        summary.relationshipSummary = relationshipState == null
+                ? "关系还在慢慢铺开。"
+                : "当前更接近“" + relationshipState.endingCandidate + "”，阶段停在“" + relationshipState.relationshipStage + "”。";
+        summary.sceneSummary = sceneState == null || sceneState.sceneSummary == null || sceneState.sceneSummary.isBlank()
+                ? state.sceneFrame
+                : sceneState.sceneSummary;
+        summary.endingTendency = relationshipState == null ? "" : relationshipState.endingCandidate;
+        summary.updatedAt = nowIso;
+        return summary;
+    }
+
+    private PlotArcState cloneArc(PlotArcState current) {
+        PlotArcState next = new PlotArcState();
+        next.beatIndex = current.beatIndex;
+        next.arcIndex = current.arcIndex;
+        next.phase = current.phase;
+        next.sceneFrame = current.sceneFrame;
+        next.openThreads = new ArrayList<>(current.openThreads);
+        next.lastPlotTurn = current.lastPlotTurn;
+        next.forcePlotAtTurn = current.forcePlotAtTurn;
+        next.plotProgress = current.plotProgress;
+        next.nextBeatHint = current.nextBeatHint;
+        next.checkpointReady = current.checkpointReady;
+        next.runStatus = current.runStatus;
+        next.endingCandidate = current.endingCandidate;
+        next.canSettleScore = current.canSettleScore;
+        next.canContinue = current.canContinue;
+        next.latestArcSummary = current.latestArcSummary;
+        next.updatedAt = current.updatedAt;
+        return next;
+    }
+}
+
+class EnhancedPresenceHeartbeatService extends PresenceHeartbeatService {
+    PresenceResult ingest(
+            PresenceState presenceState,
+            SessionRecord session,
+            boolean visible,
+            boolean focused,
+            boolean typing,
+            int draftLength,
+            String lastInputAt,
+            String observedIso
+    ) {
+        PresenceState next = normalizePresence(presenceState, observedIso);
+        next.visible = visible;
+        next.focused = focused;
+        next.typing = typing || draftLength > 0;
+        next.draftLength = draftLength;
+        next.lastInputAt = lastInputAt == null || lastInputAt.isBlank() ? next.lastInputAt : lastInputAt;
+        next.lastHeartbeatAt = observedIso;
+        next.lastSeenAt = observedIso;
+        next.online = visible && focused;
+
+        if (!next.online) {
+            next.blockedReason = "offline";
+            next.heartbeatExplain = "页面当前不在线，所以不会主动插话。";
+            return new PresenceResult(next, false, "presence", "presence", "offline", next.heartbeatExplain);
+        }
+        if (session.pendingChoiceEventId != null && !session.pendingChoiceEventId.isBlank()) {
+            next.blockedReason = "pending_choice";
+            next.heartbeatExplain = "当前有待选剧情，主动消息先暂停。";
+            return new PresenceResult(next, false, "presence", "presence", "pending_choice", next.heartbeatExplain);
+        }
+        if (session.plotArcState != null && session.plotArcState.checkpointReady) {
+            next.blockedReason = "checkpoint_ready";
+            next.heartbeatExplain = "当前正在等待你决定是否继续这一段剧情。";
+            return new PresenceResult(next, false, "presence", "presence", "checkpoint_ready", next.heartbeatExplain);
+        }
+        if (next.typing) {
+            next.blockedReason = "typing";
+            next.heartbeatExplain = "你正在输入，系统会先等你把这句话写完。";
+            return new PresenceResult(next, false, "presence", "presence", "typing", next.heartbeatExplain);
+        }
+        if (next.lastInputAt != null && !next.lastInputAt.isBlank()) {
+            Instant lastInput = Instant.parse(next.lastInputAt);
+            if (Duration.between(lastInput, Instant.parse(observedIso)).getSeconds() < 12) {
+                next.blockedReason = "input_cooldown";
+                next.heartbeatExplain = "你刚停下输入不久，先不打断这段节奏。";
+                return new PresenceResult(next, false, "presence", "presence", "input_cooldown", next.heartbeatExplain);
+            }
+        }
+        PresenceResult base = super.ingest(next, session, visible, focused, observedIso);
+        base.nextState.triggerReason = base.shouldSend ? base.replySource : "presence";
+        base.nextState.blockedReason = base.shouldSend ? "" : base.blockedReason;
+        base.nextState.heartbeatExplain = base.shouldSend
+                ? ("silence_heartbeat".equals(base.replySource)
+                        ? "你安静了一会儿，角色顺着当前场景轻轻接了一句。"
+                        : "你们已经在线聊了一段时间，角色顺势补了一句更自然的推进。")
+                : (base.heartbeatExplain == null || base.heartbeatExplain.isBlank() ? "当前没有命中心跳窗口。" : base.heartbeatExplain);
+        return new PresenceResult(
+                base.nextState,
+                base.shouldSend,
+                base.replySource,
+                base.nextState.triggerReason,
+                base.nextState.blockedReason,
+                base.nextState.heartbeatExplain
+        );
     }
 }
 

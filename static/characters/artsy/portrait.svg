@@ -1,0 +1,21 @@
+<svg width="960" height="1200" viewBox="0 0 960 1200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="46" x2="820" y2="1120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F9E8E9"/>
+      <stop offset="0.42" stop-color="#D9C6DC"/>
+      <stop offset="1" stop-color="#694873"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="1200" rx="42" fill="url(#bg)"/>
+  <circle cx="716" cy="196" r="138" fill="rgba(255,255,255,0.3)"/>
+  <path d="M242 1110C290 940 382 770 502 770C622 770 704 940 742 1110H242Z" fill="#73506C"/>
+  <path d="M344 796C344 678 430 568 522 568C624 568 694 678 694 794C694 904 620 972 520 972C418 972 344 902 344 796Z" fill="#F1D9D2"/>
+  <path d="M320 760C320 600 408 460 558 460C670 460 732 560 724 720C716 796 690 854 654 892C618 850 566 816 512 816C442 816 390 848 360 890C332 854 320 810 320 760Z" fill="#5B425F"/>
+  <circle cx="440" cy="776" r="16" fill="#4A354F"/>
+  <circle cx="580" cy="776" r="16" fill="#4A354F"/>
+  <path d="M438 830C482 854 538 852 582 822" stroke="#B68390" stroke-width="12" stroke-linecap="round"/>
+  <rect x="172" y="346" width="120" height="84" rx="18" transform="rotate(-12 172 346)" fill="rgba(255,255,255,0.16)" stroke="rgba(255,255,255,0.32)"/>
+  <text x="120" y="150" fill="white" fill-opacity="0.9" font-size="34" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif" letter-spacing="8">ARTSY</text>
+  <text x="120" y="1080" fill="white" fill-opacity="0.95" font-size="60" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">顾遥</text>
+  <text x="120" y="1126" fill="white" fill-opacity="0.68" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">黄昏桥边 · 文艺慢热 · 会把心动写进镜头里</text>
+</svg>

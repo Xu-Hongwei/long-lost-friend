@@ -26,7 +26,7 @@ public class CampusPulseServer {
         this.config = config;
         StateRepository repository = new StateRepository(config.stateFile);
         AgentConfigService agentConfigService = new AgentConfigService();
-        MemoryService memoryService = new SocialMemoryService(config.memoryRetentionMs);
+        MemoryService memoryService = new EnhancedSocialMemoryService(config.memoryRetentionMs);
         RelationshipService relationshipService = new NarrativeRelationshipService();
         EventEngine eventEngine = new EventEngine();
         SafetyService safetyService = new AdaptiveSafetyService();
@@ -146,7 +146,26 @@ public class CampusPulseServer {
                     "sessionId", Json.asString(body.get("session_id")),
                     "visible", body.get("visible") instanceof Boolean bool && bool,
                     "focused", body.get("focused") instanceof Boolean bool && bool,
+                    "isTyping", body.get("is_typing") instanceof Boolean bool && bool,
+                    "draftLength", Json.asInt(body.get("draft_length"), 0),
+                    "lastInputAt", Json.asString(body.get("last_input_at")),
                     "clientTime", Json.asString(body.get("client_time"))
+            ))));
+        }
+
+        if ("POST".equals(request.method) && "/api/session/checkpoint".equals(request.path)) {
+            Map<String, Object> body = readJsonBody(request);
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.continueCheckpoint(Map.of(
+                    "visitorId", Json.asString(body.get("visitor_id")),
+                    "sessionId", Json.asString(body.get("session_id"))
+            ))));
+        }
+
+        if ("POST".equals(request.method) && "/api/session/settle".equals(request.path)) {
+            Map<String, Object> body = readJsonBody(request);
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.settleCheckpoint(Map.of(
+                    "visitorId", Json.asString(body.get("visitor_id")),
+                    "sessionId", Json.asString(body.get("session_id"))
             ))));
         }
 
@@ -321,6 +340,21 @@ public class CampusPulseServer {
         }
         if (name.endsWith(".json")) {
             return "application/json; charset=utf-8";
+        }
+        if (name.endsWith(".svg")) {
+            return "image/svg+xml";
+        }
+        if (name.endsWith(".png")) {
+            return "image/png";
+        }
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+            return "image/jpeg";
+        }
+        if (name.endsWith(".webp")) {
+            return "image/webp";
+        }
+        if (name.endsWith(".woff2")) {
+            return "font/woff2";
         }
         return "text/plain; charset=utf-8";
     }

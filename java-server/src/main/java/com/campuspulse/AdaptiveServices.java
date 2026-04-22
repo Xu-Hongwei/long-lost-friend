@@ -53,6 +53,9 @@ class AdaptiveMemoryService extends MemoryService {
         if (next.temporaryMemories == null) next.temporaryMemories = new ArrayList<>();
         if (next.memoryMentionCounts == null) next.memoryMentionCounts = new LinkedHashMap<>();
         if (next.memoryTouchedAt == null) next.memoryTouchedAt = new LinkedHashMap<>();
+        if (next.factMemories == null) next.factMemories = new ArrayList<>();
+        if (next.sceneLedger == null) next.sceneLedger = new ArrayList<>();
+        if (next.openLoopItems == null) next.openLoopItems = new ArrayList<>();
         if (next.lastUserMood == null || next.lastUserMood.isBlank()) next.lastUserMood = "neutral";
         if (next.lastUserIntent == null || next.lastUserIntent.isBlank()) next.lastUserIntent = "chat";
         if (next.lastResponseCadence == null || next.lastResponseCadence.isBlank()) next.lastResponseCadence = "steady_flow";
@@ -397,11 +400,79 @@ class AdaptiveMemoryService extends MemoryService {
         next.temporaryMemories = new ArrayList<>(summary.temporaryMemories);
         next.memoryMentionCounts = new LinkedHashMap<>(summary.memoryMentionCounts);
         next.memoryTouchedAt = new LinkedHashMap<>(summary.memoryTouchedAt);
+        next.factMemories = copyFacts(summary.factMemories);
+        next.sceneLedger = copyScenes(summary.sceneLedger);
+        next.openLoopItems = copyOpenLoops(summary.openLoopItems);
         next.lastUserMood = summary.lastUserMood;
         next.lastUserIntent = summary.lastUserIntent;
         next.lastResponseCadence = summary.lastResponseCadence;
         next.updatedAt = summary.updatedAt;
         return next;
+    }
+
+    private List<FactMemoryItem> copyFacts(List<FactMemoryItem> source) {
+        List<FactMemoryItem> result = new ArrayList<>();
+        if (source == null) {
+            return result;
+        }
+        for (FactMemoryItem item : source) {
+            if (item == null) {
+                continue;
+            }
+            FactMemoryItem copy = new FactMemoryItem();
+            copy.key = item.key;
+            copy.value = item.value;
+            copy.confidence = item.confidence;
+            copy.sourceTurn = item.sourceTurn;
+            copy.lastUsedTurn = item.lastUsedTurn;
+            copy.supersededBy = item.supersededBy;
+            copy.updatedAt = item.updatedAt;
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private List<SceneLedgerItem> copyScenes(List<SceneLedgerItem> source) {
+        List<SceneLedgerItem> result = new ArrayList<>();
+        if (source == null) {
+            return result;
+        }
+        for (SceneLedgerItem item : source) {
+            if (item == null) {
+                continue;
+            }
+            SceneLedgerItem copy = new SceneLedgerItem();
+            copy.sceneId = item.sceneId;
+            copy.location = item.location;
+            copy.summary = item.summary;
+            copy.sourceTurn = item.sourceTurn;
+            copy.lastUsedTurn = item.lastUsedTurn;
+            copy.updatedAt = item.updatedAt;
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private List<OpenLoopItem> copyOpenLoops(List<OpenLoopItem> source) {
+        List<OpenLoopItem> result = new ArrayList<>();
+        if (source == null) {
+            return result;
+        }
+        for (OpenLoopItem item : source) {
+            if (item == null) {
+                continue;
+            }
+            OpenLoopItem copy = new OpenLoopItem();
+            copy.id = item.id;
+            copy.summary = item.summary;
+            copy.sourceType = item.sourceType;
+            copy.resolved = item.resolved;
+            copy.sourceTurn = item.sourceTurn;
+            copy.lastUsedTurn = item.lastUsedTurn;
+            copy.updatedAt = item.updatedAt;
+            result.add(copy);
+        }
+        return result;
     }
 
     private int bumpMemoryMention(MemorySummary summary, String value, String nowIso) {

@@ -404,6 +404,10 @@ class AgentProfile implements Serializable {
     final List<String> boundaries;
     final String openingLine;
     final List<StoryEvent> storyEvents;
+    final String portraitAsset;
+    final String coverAsset;
+    final List<String> styleTags;
+    final List<String> moodPalette;
 
     AgentProfile(
             String id,
@@ -421,6 +425,42 @@ class AgentProfile implements Serializable {
             String openingLine,
             List<StoryEvent> storyEvents
     ) {
+        this(
+                id,
+                name,
+                archetype,
+                tagline,
+                palette,
+                avatarGlyph,
+                bio,
+                speechStyle,
+                likes,
+                dislikes,
+                relationshipRules,
+                boundaries,
+                openingLine,
+                storyEvents,
+                AgentVisualProfile.forAgent(id)
+        );
+    }
+
+    AgentProfile(
+            String id,
+            String name,
+            String archetype,
+            String tagline,
+            List<String> palette,
+            String avatarGlyph,
+            String bio,
+            String speechStyle,
+            List<String> likes,
+            List<String> dislikes,
+            String relationshipRules,
+            List<String> boundaries,
+            String openingLine,
+            List<StoryEvent> storyEvents,
+            AgentVisualProfile visualProfile
+    ) {
         this.id = id;
         this.name = name;
         this.archetype = archetype;
@@ -435,6 +475,70 @@ class AgentProfile implements Serializable {
         this.boundaries = boundaries;
         this.openingLine = openingLine;
         this.storyEvents = storyEvents;
+        this.portraitAsset = visualProfile.portraitAsset;
+        this.coverAsset = visualProfile.coverAsset;
+        this.styleTags = visualProfile.styleTags;
+        this.moodPalette = visualProfile.moodPalette;
+    }
+}
+
+class AgentVisualProfile implements Serializable {
+    final String portraitAsset;
+    final String coverAsset;
+    final List<String> styleTags;
+    final List<String> moodPalette;
+
+    AgentVisualProfile(
+            String portraitAsset,
+            String coverAsset,
+            List<String> styleTags,
+            List<String> moodPalette
+    ) {
+        this.portraitAsset = portraitAsset;
+        this.coverAsset = coverAsset;
+        this.styleTags = styleTags;
+        this.moodPalette = moodPalette;
+    }
+
+    static AgentVisualProfile forAgent(String agentId) {
+        return switch (agentId) {
+            case "healing" -> new AgentVisualProfile(
+                    "/characters/healing/portrait.svg",
+                    "/characters/healing/cover.svg",
+                    List.of("治愈系", "图书馆窗边", "慢热安慰"),
+                    List.of("暖杏", "奶霜粉", "旧书褐")
+            );
+            case "lively" -> new AgentVisualProfile(
+                    "/characters/lively/portrait.svg",
+                    "/characters/lively/cover.svg",
+                    List.of("元气感", "社团灯牌", "夜市热闹"),
+                    List.of("橘金", "蜂蜜黄", "琥珀棕")
+            );
+            case "cool" -> new AgentVisualProfile(
+                    "/characters/cool/portrait.svg",
+                    "/characters/cool/cover.svg",
+                    List.of("高冷慢热", "夜色楼道", "克制注视"),
+                    List.of("雾蓝", "冷银紫", "深海灰")
+            );
+            case "artsy" -> new AgentVisualProfile(
+                    "/characters/artsy/portrait.svg",
+                    "/characters/artsy/cover.svg",
+                    List.of("文艺感", "黄昏桥边", "镜头叙事"),
+                    List.of("奶灰紫", "落日晚霞", "雾粉")
+            );
+            case "sunny" -> new AgentVisualProfile(
+                    "/characters/sunny/portrait.svg",
+                    "/characters/sunny/cover.svg",
+                    List.of("行动派", "操场清风", "明亮直球"),
+                    List.of("清透蓝", "晨雾白", "运动场绿")
+            );
+            default -> new AgentVisualProfile(
+                    "",
+                    "",
+                    List.of("校园", "夜聊", "关系推进"),
+                    List.of("暖色", "冷色", "夜色")
+            );
+        };
     }
 }
 
@@ -453,6 +557,7 @@ class ConversationMessage implements Serializable {
     String sessionId;
     String role;
     String text;
+    String sceneText;
     String actionText;
     String speechText;
     String createdAt;
@@ -481,12 +586,53 @@ class MemorySummary implements Serializable {
     Map<String, String> memoryTouchedAt = new LinkedHashMap<>();
     List<String> callbackCandidates = new ArrayList<>();
     List<String> assistantOwnedThreads = new ArrayList<>();
+    List<FactMemoryItem> factMemories = new ArrayList<>();
+    List<SceneLedgerItem> sceneLedger = new ArrayList<>();
+    List<OpenLoopItem> openLoopItems = new ArrayList<>();
     String lastUserMood;
     String lastUserIntent;
     String lastResponseCadence;
     String lastMemoryUseMode;
     String lastMemoryRelevanceReason;
     String updatedAt;
+}
+
+class FactMemoryItem implements Serializable {
+    String key;
+    String value;
+    String confidence;
+    int sourceTurn;
+    int lastUsedTurn;
+    String supersededBy;
+    String updatedAt;
+}
+
+class SceneLedgerItem implements Serializable {
+    String sceneId;
+    String location;
+    String summary;
+    int sourceTurn;
+    int lastUsedTurn;
+    String updatedAt;
+}
+
+class OpenLoopItem implements Serializable {
+    String id;
+    String summary;
+    String sourceType;
+    boolean resolved;
+    int sourceTurn;
+    int lastUsedTurn;
+    String updatedAt;
+}
+
+class TemperamentProfile implements Serializable {
+    String warmStyle;
+    String teasingStyle;
+    int irritationThreshold;
+    int boundarySensitivity;
+    int forgivenessSpeed;
+    String initiativeStyle;
 }
 
 class RelationshipState implements Serializable {
@@ -513,6 +659,50 @@ class StoryEventProgress implements Serializable {
     String nextExpectedDirection;
 }
 
+class SceneState implements Serializable {
+    String location;
+    String subLocation;
+    String interactionMode;
+    String timeOfScene;
+    String weatherMood;
+    boolean transitionPending;
+    int transitionLockUntilTurn;
+    int lastConfirmedSceneTurn;
+    String sceneSummary;
+    String updatedAt;
+}
+
+class ArcCheckpointSummary implements Serializable {
+    int arcIndex;
+    int beatStart;
+    int beatEnd;
+    String title;
+    String routeTheme;
+    String relationshipSummary;
+    String sceneSummary;
+    String endingTendency;
+    String updatedAt;
+}
+
+class PlotArcState implements Serializable {
+    int beatIndex;
+    int arcIndex;
+    String phase;
+    String sceneFrame;
+    List<String> openThreads = new ArrayList<>();
+    int lastPlotTurn;
+    int forcePlotAtTurn;
+    String plotProgress;
+    String nextBeatHint;
+    boolean checkpointReady;
+    String runStatus;
+    String endingCandidate;
+    boolean canSettleScore;
+    boolean canContinue;
+    ArcCheckpointSummary latestArcSummary;
+    String updatedAt;
+}
+
 class SessionRecord implements Serializable {
     String id;
     String visitorId;
@@ -526,6 +716,8 @@ class SessionRecord implements Serializable {
     StoryEventProgress storyEventProgress;
     EmotionState emotionState;
     PlotState plotState;
+    PlotArcState plotArcState;
+    SceneState sceneState;
     PresenceState presenceState;
     String pendingChoiceEventId;
     List<ChoiceOption> pendingChoices = new ArrayList<>();
@@ -647,9 +839,12 @@ class LlmRequest {
     final TimeContext timeContext;
     final WeatherContext weatherContext;
     final String sceneFrame;
+    final SceneState sceneState;
     final MemoryUsePlan memoryUsePlan;
     final EmotionState emotionState;
     final String replySource;
+    final TemperamentProfile temperamentProfile;
+    final String searchContext;
 
     LlmRequest(
             AgentProfile agent,
@@ -666,9 +861,12 @@ class LlmRequest {
             TimeContext timeContext,
             WeatherContext weatherContext,
             String sceneFrame,
+            SceneState sceneState,
             MemoryUsePlan memoryUsePlan,
             EmotionState emotionState,
-            String replySource
+            String replySource,
+            TemperamentProfile temperamentProfile,
+            String searchContext
     ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
@@ -684,9 +882,12 @@ class LlmRequest {
         this.timeContext = timeContext;
         this.weatherContext = weatherContext;
         this.sceneFrame = sceneFrame;
+        this.sceneState = sceneState;
         this.memoryUsePlan = memoryUsePlan;
         this.emotionState = emotionState;
         this.replySource = replySource;
+        this.temperamentProfile = temperamentProfile;
+        this.searchContext = searchContext;
     }
 }
 
@@ -702,6 +903,7 @@ class ConversationSnippet {
 
 class LlmResponse {
     final String replyText;
+    final String sceneText;
     final String actionText;
     final String speechText;
     final String emotionTag;
@@ -713,6 +915,7 @@ class LlmResponse {
 
     LlmResponse(
             String replyText,
+            String sceneText,
             String actionText,
             String speechText,
             String emotionTag,
@@ -723,6 +926,7 @@ class LlmResponse {
             String provider
     ) {
         this.replyText = replyText;
+        this.sceneText = sceneText;
         this.actionText = actionText;
         this.speechText = speechText;
         this.emotionTag = emotionTag;
@@ -734,7 +938,7 @@ class LlmResponse {
     }
 
     LlmResponse(String replyText, String emotionTag, String confidenceStatus, int tokenUsage, String errorCode, boolean fallbackUsed, String provider) {
-        this(replyText, null, replyText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider);
+        this(replyText, null, null, replyText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider);
     }
 }
 

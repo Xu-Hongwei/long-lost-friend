@@ -1,0 +1,18 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="98" y1="40" x2="1040" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFDACC"/>
+      <stop offset="0.55" stop-color="#F4E2DA"/>
+      <stop offset="1" stop-color="#63414A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="900" rx="36" fill="url(#bg)"/>
+  <rect x="64" y="64" width="1072" height="772" rx="28" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.18)"/>
+  <circle cx="860" cy="180" r="140" fill="rgba(255,255,255,0.3)"/>
+  <path d="M126 786C214 668 352 574 514 568C684 562 842 676 938 786H126Z" fill="#704A53"/>
+  <path d="M412 612C412 494 498 392 612 392C720 392 796 488 796 606C796 730 712 808 604 808C490 808 412 726 412 612Z" fill="#F3CFC5"/>
+  <path d="M386 586C386 430 488 302 640 302C780 302 846 432 824 590C808 664 778 722 742 754C702 704 648 678 588 678C520 678 456 704 424 754C398 714 386 652 386 586Z" fill="#473344"/>
+  <text x="120" y="154" fill="white" fill-opacity="0.82" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif" letter-spacing="8">HEALING</text>
+  <text x="120" y="716" fill="white" fill-opacity="0.94" font-size="74" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">林晚栀</text>
+  <text x="120" y="766" fill="white" fill-opacity="0.66" font-size="28" font-family="Avenir Next, PingFang SC, Microsoft YaHei UI, sans-serif">雨天窗边的慢热安慰，会先把你的情绪接住。</text>
+</svg>

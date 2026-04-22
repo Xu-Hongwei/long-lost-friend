@@ -1,6 +1,7 @@
 package com.campuspulse;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 
 class AppConfig {
@@ -38,6 +39,8 @@ class AppConfig {
 
     static AppConfig load() {
         Path root = Path.of("").toAbsolutePath().normalize();
+        Path distDir = root.resolve("dist");
+        Path staticDir = Files.exists(distDir.resolve("index.html")) ? distDir : root.resolve("public");
         String portValue = getenvOrDefault("PORT", "3000");
         String timeoutValue = firstNonBlank(
                 System.getenv("ARK_TIMEOUT_MS"),
@@ -48,7 +51,7 @@ class AppConfig {
         return new AppConfig(
                 Integer.parseInt(portValue),
                 root,
-                root.resolve("public"),
+                staticDir,
                 root.resolve("data").resolve("runtime").resolve("state.bin"),
                 7L * 24 * 60 * 60 * 1000,
                 firstNonBlank(

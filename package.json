@@ -4,11 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
-    "dev": "powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
-    "test": "powershell -ExecutionPolicy Bypass -File ./test-java.ps1"
+    "start": "npm run build:web && powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
+    "dev": "npm run build:web && powershell -ExecutionPolicy Bypass -File ./run-java.ps1",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "check:web": "vue-tsc --noEmit",
+    "test": "npm run build:web && powershell -ExecutionPolicy Bypass -File ./test-java.ps1"
   },
   "dependencies": {
-    "openai": "^6.34.0"
+    "openai": "^6.34.0",
+    "pinia": "latest",
+    "vue": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "motion-v": "latest",
+    "tailwindcss": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vue-tsc": "latest"
   }
 }

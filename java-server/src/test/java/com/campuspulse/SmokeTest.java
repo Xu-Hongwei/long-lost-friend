@@ -158,8 +158,9 @@ public class SmokeTest {
         ));
 
         String reply = String.valueOf(result.get("reply_text"));
+        String scene = String.valueOf(result.getOrDefault("scene_text", ""));
         String action = String.valueOf(result.getOrDefault("action_text", ""));
-        String fullReply = (action == null ? "" : action) + " " + reply;
+        String fullReply = (scene == null ? "" : scene) + " " + (action == null ? "" : action) + " " + reply;
         assertTrue(fullReply.contains("气氛")
                         || fullReply.contains("空气")
                         || fullReply.contains("今天最压你的那一刻")
