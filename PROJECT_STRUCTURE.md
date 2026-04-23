@@ -735,3 +735,32 @@ Java HTTP 服务入口，负责：
   - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
   - `npm run check:web`
   - `npm run build:web`
+
+---
+
+## 2026-04-23 项目体检与无关文件清理记录
+
+- 本轮检查命令：
+  - `git status --short`
+  - `git status --short --ignored`
+  - `rg --files`
+  - `rg -n "TODO|FIXME|console\.log|debugger|<<<<<<<|>>>>>>>|\uFFFD" src java-server server public scripts PROJECT_STRUCTURE.md`
+  - `npm run check:web`
+  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
+  - `npm run build:web`
+- 检查结果：
+  - 前端 TypeScript/Vue 类型检查通过。
+  - Java smoke 与闭环回归测试通过。
+  - 前端生产构建通过。
+  - 未发现 Git 冲突标记、`debugger`、明显乱码替换符。
+  - 扫描到的 `console.log` 只存在于服务启动日志和剧情智能体 Node 桥接脚本标准输出，属于正常用途。
+- 可安全清理项：
+  - `build/`：Java 编译、测试、运行时生成目录，可由 `test-java.ps1` 或启动脚本重新生成。
+  - `dist/`：Vite 前端构建产物，可由 `npm run build:web` 重新生成。
+- 不建议删除项：
+  - `node_modules/`：依赖目录，虽然可重装，但删除后需要重新 `npm install`。
+  - `data/runtime/state.bin` 与 `data/runtime/state.json`：本地会话与记忆状态，删除会丢失当前试玩数据。
+  - `scripts/plot-director-agent.mjs`：剧情智能体 OpenAI-compatible Node 桥接脚本，是当前三智能体协作链路的一部分。
+- 本轮清理状态：
+  - 已确认 `build/` 与 `dist/` 位于项目根目录且在 `.gitignore` 中。
+  - 删除命令被用户侧拒绝执行，因此本轮没有实际删除文件。
