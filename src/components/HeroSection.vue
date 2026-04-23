@@ -31,7 +31,7 @@ const tags = computed(() => props.agent?.styleTags?.slice(0, 3) || props.agent?.
           今晚先心动，再慢慢靠近。
         </h1>
         <p class="mt-5 max-w-2xl text-sm leading-7 text-white/72 sm:text-base">
-          主页不再让一张大图占满视线，而是把角色吸引力、聊天入口和氛围感放在一个更轻、更顺眼的自适应布局里。你能先被角色打动，再自然进入今晚的聊天。
+          五个人格，一次选择，数次心动。
         </p>
 
         <div class="mt-7 flex flex-wrap items-center gap-3">

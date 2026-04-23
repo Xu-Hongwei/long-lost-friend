@@ -26,7 +26,7 @@ public class CampusPulseServer {
         this.config = config;
         StateRepository repository = new StateRepository(config.stateFile);
         AgentConfigService agentConfigService = new AgentConfigService();
-        MemoryService memoryService = new EnhancedSocialMemoryService(config.memoryRetentionMs);
+        MemoryService memoryService = ChatOrchestrator.createMemoryService(config.memoryRetentionMs);
         RelationshipService relationshipService = new NarrativeRelationshipService();
         EventEngine eventEngine = new EventEngine();
         SafetyService safetyService = new AdaptiveSafetyService();
@@ -41,7 +41,7 @@ public class CampusPulseServer {
                 llmClient,
                 safetyService,
                 analyticsService,
-                new PlotDirectorAgentService(config)
+                config
         );
     }
 
@@ -51,13 +51,16 @@ public class CampusPulseServer {
     }
 
     public void start() throws Exception {
-        ServerSocket serverSocket = new ServerSocket();
-        serverSocket.bind(new InetSocketAddress(config.port));
         ExecutorService executor = Executors.newCachedThreadPool();
-        System.out.println("Campus Pulse Java server is running at http://localhost:" + config.port);
-        while (true) {
-            Socket socket = serverSocket.accept();
-            executor.submit(() -> handleSocket(socket));
+        try (ServerSocket serverSocket = new ServerSocket()) {
+            serverSocket.bind(new InetSocketAddress(config.port));
+            System.out.println("Campus Pulse Java server is running at http://localhost:" + config.port);
+            while (true) {
+                Socket socket = serverSocket.accept();
+                executor.submit(() -> handleSocket(socket));
+            }
+        } finally {
+            executor.shutdownNow();
         }
     }
 
@@ -275,7 +278,6 @@ public class CampusPulseServer {
         request.method = parts[0];
         request.path = uri.getPath();
         request.query = parseQuery(uri);
-        request.headers = headers;
         request.body = new String(bodyBytes, StandardCharsets.UTF_8);
         return request;
     }
@@ -364,7 +366,6 @@ public class CampusPulseServer {
         String method;
         String path;
         Map<String, String> query;
-        Map<String, String> headers;
         String body;
     }
 

@@ -797,3 +797,22 @@ Java HTTP 服务入口，负责：
   - 主 CTA 强化为主要行动入口，辅助胶囊改为当前关系阶段或沉浸式夜聊说明，减少按钮感干扰。
   - 新增 `Roles / Memory / Plot` 三个轻量信息点，补足首屏信息密度。
   - 右侧角色视觉卡放大为真正主视觉，加入“当前主推”、角色背景信息和标签，减少大面积无效留白。
+
+---
+
+## 2026-04-23 Java IDE 静态检查清理
+
+- `java-server/src/main/java/com/campuspulse/CampusPulseServer.java`
+  - `ServerSocket` 改为 try-with-resources，避免 IDE 报资源泄漏。
+  - 启动失败或退出时会通过 `executor.shutdownNow()` 清理线程池。
+  - 删除 `HttpRequestData.headers` 字段和赋值；请求头仍在局部变量中用于读取 `content-length`，不再保留未使用字段。
+  - 入口构造不再直接引用 `EnhancedSocialMemoryService` 和 `PlotDirectorAgentService`，改为通过 `ChatOrchestrator` 创建，减少 VS Code Java 索引误报。
+- `java-server/src/main/java/com/campuspulse/Services.java`
+  - 新增 `ChatOrchestrator.createMemoryService(...)`，统一创建增强记忆服务。
+  - 新增带 `AppConfig` 的 `ChatOrchestrator` 构造函数，内部注入剧情导演智能体配置。
+  - 修复 `buildChoiceReply(...)` 的空指针风险：不再在 `agent == null` 分支访问 `agent.id`。
+- `java-server/src/main/java/com/campuspulse/ExpressiveLlmClient.java`
+  - 删除未被调用的旧方法 `buildSceneBridge(...)`、`buildLightSceneBridge(...)`、`shapeReply(...)` 及其启发式拆分辅助函数。
+  - 删除未使用的 `ReplyParts(String, String, String)` 三参数构造器，保留当前实际使用的四参数构造器。
+- 验证命令：
+  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`

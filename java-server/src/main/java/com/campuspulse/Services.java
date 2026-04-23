@@ -1423,6 +1423,10 @@ class ChatOrchestrator {
     private final HumanizationEvaluationService humanizationEvaluationService = new HumanizationEvaluationService();
     private final DialogueContinuityService dialogueContinuityService = new DialogueContinuityService();
 
+    static MemoryService createMemoryService(long retentionMs) {
+        return new EnhancedSocialMemoryService(retentionMs);
+    }
+
     ChatOrchestrator(
             StateRepository repository,
             AgentConfigService agentConfigService,
@@ -1443,6 +1447,30 @@ class ChatOrchestrator {
                 safetyService,
                 analyticsService,
                 new PlotDirectorAgentService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            AppConfig config
+    ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                new PlotDirectorAgentService(config)
         );
     }
 
@@ -3342,22 +3370,8 @@ class ChatOrchestrator {
     }
 
     private String buildChoiceReply(AgentProfile agent, StoryEvent event, ChoiceOption choice, RelationshipState state) {
-        if (agent != null) {
-            String cleanPrefix = switch (agent.id) {
-                case "healing" -> "她抬眼看向你，语气更轻了一点。";
-                case "lively" -> "她先是一怔，随后笑意慢慢亮了起来。";
-                case "cool" -> "他沉默了半拍，但没有把视线移开。";
-                case "artsy" -> "她像是把这句回应轻轻收进了晚风里。";
-                default -> "他把你的回应稳稳接住了。";
-            };
-            String cleanResultLine = switch (choice.outcomeType) {
-                case "success" -> "这次你给出的信号足够明确，关系明显往前走了一步。";
-                case "fail" -> "这次节奏有点错开了，气氛先慢了下来。";
-                default -> "这次气氛被维持住了，但还没到真正突破的时候。";
-            };
-            return cleanPrefix + " 在“" + event.title + "”这一刻，" + cleanResultLine + " " + state.relationshipFeedback;
-        }
-        String prefix = switch (agent.id) {
+        String agentId = agent == null ? "" : agent.id;
+        String prefix = switch (agentId) {
             case "healing" -> "她抬眼看向你，语气更轻了一点。";
             case "lively" -> "她先是一怔，随后笑意慢慢亮起来。";
             case "cool" -> "他沉默了半拍，但没有把视线移开。";
