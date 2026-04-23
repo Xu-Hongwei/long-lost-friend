@@ -28,7 +28,7 @@ const emits = defineEmits<{
       </p>
     </div>
 
-    <div class="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+    <div class="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 pr-3 [scrollbar-color:rgba(255,255,255,0.34)_rgba(255,255,255,0.08)] [scrollbar-width:thin]">
       <motion.button
         v-for="agent in agents"
         :key="agent.id"
@@ -36,7 +36,7 @@ const emits = defineEmits<{
         :initial="{ opacity: 0, y: 20 }"
         :animate="{ opacity: 1, y: 0 }"
         :transition="{ duration: 0.32 }"
-        class="group relative min-w-[250px] flex-1 overflow-hidden rounded-[1.75rem] border text-left transition duration-300 hover:-translate-y-1"
+        class="group relative min-w-[250px] flex-[0_0_clamp(250px,19vw,292px)] snap-start overflow-hidden rounded-[1.75rem] border text-left transition duration-300 hover:-translate-y-1"
         :class="selectedAgentId === agent.id
           ? 'border-white/20 bg-white/10 shadow-[0_22px_50px_rgba(8,10,26,0.38)]'
           : 'border-white/8 bg-white/5'"

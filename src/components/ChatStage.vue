@@ -25,8 +25,13 @@ const emits = defineEmits<{
 </script>
 
 <template>
-  <section class="grid gap-5 xl:grid-cols-[minmax(0,980px),360px] xl:justify-between">
-    <div class="rounded-[2rem] border border-white/10 bg-white/6 p-4 shadow-[0_20px_60px_rgba(5,6,18,0.28)] backdrop-blur sm:p-5 xl:max-w-[980px]">
+  <section
+    class="gap-5"
+    :class="uiMode === 'inspector'
+      ? 'grid xl:grid-cols-[minmax(0,1fr),360px]'
+      : 'mx-auto block w-full'"
+  >
+    <div class="w-full rounded-[2rem] border border-white/10 bg-white/6 p-4 shadow-[0_20px_60px_rgba(5,6,18,0.28)] backdrop-blur sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-4">
         <div>
           <p class="tracking-[0.28em] text-[0.68rem] text-white/44">聊天舞台</p>
