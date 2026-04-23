@@ -2500,6 +2500,7 @@ class PresenceHeartbeatService {
     private static final long SILENCE_MIN_SECONDS = 90;
     private static final long SILENCE_MAX_SECONDS = 150;
     private static final long LONG_CHAT_SECONDS = 6 * 60;
+    private static final long LONG_CHAT_MIN_SILENCE_SECONDS = 75;
 
     PresenceState normalizePresence(PresenceState presenceState, String nowIso) {
         PresenceState next = presenceState == null ? new PresenceState() : presenceState;
@@ -2557,7 +2558,7 @@ class PresenceHeartbeatService {
 
         if (chatSeconds >= LONG_CHAT_SECONDS
                 && Duration.between(lastLong, now).getSeconds() >= LONG_CHAT_SECONDS
-                && silenceSeconds >= 30
+                && silenceSeconds >= LONG_CHAT_MIN_SILENCE_SECONDS
                 && sinceLastProactive >= 120) {
             next.lastLongHeartbeatAt = observedIso;
             return new PresenceResult(next, true, "long_chat_heartbeat");

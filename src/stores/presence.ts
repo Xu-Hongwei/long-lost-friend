@@ -4,6 +4,7 @@ import { useSessionStore } from "./session";
 
 const OFFLINE_CHECK_INTERVAL = 15000;
 const TYPE_COOLDOWN_MS = 1200;
+const DRAFT_PING_DEBOUNCE_MS = 350;
 
 export const usePresenceStore = defineStore("presence", () => {
   const sessionStore = useSessionStore();
@@ -16,6 +17,7 @@ export const usePresenceStore = defineStore("presence", () => {
 
 let intervalId: number | null = null;
 let typingTimer: number | null = null;
+let draftPingTimer: number | null = null;
 let focusHandler: (() => void) | null = null;
 let blurHandler: (() => void) | null = null;
 let visibilityHandler: (() => void) | null = null;
@@ -50,6 +52,14 @@ let visibilityHandler: (() => void) | null = null;
     typingTimer = window.setTimeout(() => {
       isTyping.value = false;
     }, TYPE_COOLDOWN_MS);
+
+    if (draftPingTimer) {
+      window.clearTimeout(draftPingTimer);
+      draftPingTimer = null;
+    }
+    draftPingTimer = window.setTimeout(() => {
+      void ping();
+    }, DRAFT_PING_DEBOUNCE_MS);
   }
 
   function clearDraftState() {
@@ -100,6 +110,10 @@ let visibilityHandler: (() => void) | null = null;
     if (visibilityHandler) {
       document.removeEventListener("visibilitychange", visibilityHandler);
       visibilityHandler = null;
+    }
+    if (draftPingTimer) {
+      window.clearTimeout(draftPingTimer);
+      draftPingTimer = null;
     }
   }
 

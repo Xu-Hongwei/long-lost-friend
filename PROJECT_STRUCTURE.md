@@ -816,3 +816,15 @@ Java HTTP 服务入口，负责：
   - 删除未使用的 `ReplyParts(String, String, String)` 三参数构造器，保留当前实际使用的四参数构造器。
 - 验证命令：
   - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
+
+---
+
+## 2026-04-23 长聊心跳防打断输入优化
+
+- `src/stores/presence.ts`
+  - 新增 `DRAFT_PING_DEBOUNCE_MS = 350`。
+  - 输入框内容变化后会在 350ms 后主动补发一次 `/api/session/presence`，让后端尽快知道 `is_typing / draft_length / last_input_at`。
+  - 这样可以减少“心跳请求发出时还没输入、返回时用户已经在输入”的竞态打断。
+- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
+  - 新增长聊心跳最小沉默门槛 `LONG_CHAT_MIN_SILENCE_SECONDS = 75`。
+  - 长聊心跳不再只要 30 秒无用户发送就触发，降低用户思考或正在组织输入时被插话的概率。
