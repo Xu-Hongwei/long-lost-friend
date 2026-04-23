@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import HeroSection from "./components/HeroSection.vue";
 import AgentRail from "./components/AgentRail.vue";
 import ChatStage from "./components/ChatStage.vue";
@@ -16,6 +16,7 @@ const uiStore = useUiStore();
 const presenceStore = usePresenceStore();
 const chatStore = useChatStore();
 const checkpointStore = useCheckpointStore();
+const cityDraft = ref("");
 
 const activeDrawerTitle = computed(() => {
   const mapping = {
@@ -48,6 +49,10 @@ async function handleStart(agentId: string) {
   await sessionStore.startSession(agentId);
 }
 
+async function saveCity() {
+  await sessionStore.saveVisitorContext(cityDraft.value.trim());
+}
+
 watch(
   () => sessionStore.currentSession?.sessionId,
   (sessionId) => {
@@ -63,6 +68,14 @@ watch(
 watch(
   () => sessionStore.currentSession?.plotArcState?.checkpointReady,
   () => checkpointStore.syncWithSession(),
+  { immediate: true }
+);
+
+watch(
+  () => sessionStore.preferredCity,
+  (city) => {
+    cityDraft.value = city || "";
+  },
   { immediate: true }
 );
 
@@ -131,15 +144,22 @@ onMounted(async () => {
         >
           观察模式
         </button>
-        <div class="ml-auto flex items-center gap-3">
+        <form class="ml-auto flex items-center gap-2" @submit.prevent="saveCity">
           <input
-            :value="sessionStore.preferredCity"
+            v-model="cityDraft"
             type="text"
             placeholder="输入天气城市，比如杭州"
             class="w-56 rounded-full border border-white/10 bg-white/6 px-4 py-2 text-sm text-white outline-none placeholder:text-white/34"
-            @change="sessionStore.saveVisitorContext(($event.target as HTMLInputElement).value)"
+            @blur="saveCity"
           />
-        </div>
+          <button
+            type="submit"
+            class="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm text-white/72 transition hover:bg-white/12 disabled:opacity-45"
+            :disabled="sessionStore.syncingContext"
+          >
+            {{ sessionStore.syncingContext ? "保存中" : "保存城市" }}
+          </button>
+        </form>
       </div>
     </div>
 
@@ -149,8 +169,22 @@ onMounted(async () => {
       :relationship="sessionStore.currentSession?.relationshipState || null"
       :memory="sessionStore.currentSession?.memorySummary || null"
       :plot="sessionStore.currentSession?.storyEventProgress || null"
+      :plot-state="sessionStore.currentSession?.plotState || null"
+      :plot-arc-state="sessionStore.currentSession?.plotArcState || null"
       :analytics="sessionStore.analytics"
       :presence="sessionStore.currentSession?.presenceState || null"
+      :scene-state="sessionStore.currentSession?.sceneState || null"
+      :time-context="sessionStore.currentSession?.timeContext || null"
+      :weather-context="sessionStore.currentSession?.weatherContext || null"
+      :emotion-state="sessionStore.currentSession?.emotionState || null"
+      :intent-state="sessionStore.currentSession?.lastIntentState || null"
+      :response-plan="sessionStore.currentSession?.lastResponsePlan || null"
+      :humanization-audit="sessionStore.currentSession?.lastHumanizationAudit || null"
+      :reality-audit="sessionStore.currentSession?.lastRealityAudit || null"
+      :plot-gate="sessionStore.currentSession?.lastPlotGateDecision || null"
+      :turn-context="sessionStore.currentSession?.lastTurnContext || null"
+      :dialogue-continuity="sessionStore.currentSession?.dialogueContinuityState || null"
+      :tension-state="sessionStore.currentSession?.tensionState || null"
       @close="uiStore.toggleDrawer('none')"
     />
 

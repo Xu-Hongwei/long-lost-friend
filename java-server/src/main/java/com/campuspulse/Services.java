@@ -99,6 +99,7 @@ class AgentConfigService {
             item.put("coverAsset", agent.coverAsset);
             item.put("styleTags", agent.styleTags);
             item.put("moodPalette", agent.moodPalette);
+            item.put("backstory", AgentPresentation.backstoryMap(agent.backstory));
             result.add(item);
         }
         return result;
@@ -115,6 +116,31 @@ class AgentConfigService {
 
     List<AgentProfile> getAgents() {
         return agents;
+    }
+}
+
+final class AgentPresentation {
+    private AgentPresentation() {
+    }
+
+    static Map<String, Object> backstoryMap(AgentBackstory backstory) {
+        if (backstory == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("age", backstory.age);
+        map.put("grade", backstory.grade);
+        map.put("major", backstory.major);
+        map.put("hometown", backstory.hometown);
+        map.put("currentCity", backstory.currentCity);
+        map.put("campusPlaces", backstory.campusPlaces);
+        map.put("hobbies", backstory.hobbies);
+        map.put("lifestyle", backstory.lifestyle);
+        map.put("boundaryDetails", backstory.boundaryDetails);
+        map.put("emotionPattern", backstory.emotionPattern);
+        map.put("hiddenFacts", backstory.hiddenFacts);
+        map.put("plotHooks", backstory.plotHooks);
+        return map;
     }
 }
 
@@ -1383,11 +1409,19 @@ class ChatOrchestrator {
     private final SafetyService safetyService;
     private final AnalyticsService analyticsService;
     private final AffectionJudgeService affectionJudgeService = new AffectionJudgeService();
-    private final EnhancedPlotDirectorService plotDirectorService = new EnhancedPlotDirectorService();
+    private final EnhancedPlotDirectorService plotDirectorService;
     private final EnhancedPresenceHeartbeatService presenceHeartbeatService = new EnhancedPresenceHeartbeatService();
     private final RealityContextService realityContextService = new RealityContextService();
     private final SearchDecisionService searchDecisionService = new SearchDecisionService();
     private final SceneDirectorService sceneDirectorService = new SceneDirectorService();
+    private final IntentInferenceService intentInferenceService = new IntentInferenceService();
+    private final ResponsePlanningService responsePlanningService = new ResponsePlanningService();
+    private final InitiativePolicyService initiativePolicyService = new InitiativePolicyService();
+    private final BoundaryResponseService boundaryResponseService = new BoundaryResponseService();
+    private final PlotGateService plotGateService = new PlotGateService();
+    private final RealityGuardService realityGuardService = new RealityGuardService();
+    private final HumanizationEvaluationService humanizationEvaluationService = new HumanizationEvaluationService();
+    private final DialogueContinuityService dialogueContinuityService = new DialogueContinuityService();
 
     ChatOrchestrator(
             StateRepository repository,
@@ -1399,6 +1433,30 @@ class ChatOrchestrator {
             SafetyService safetyService,
             AnalyticsService analyticsService
     ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                new PlotDirectorAgentService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            PlotDirectorAgentService plotDirectorAgentService
+    ) {
         this.repository = repository;
         this.agentConfigService = agentConfigService;
         this.memoryService = memoryService;
@@ -1407,6 +1465,7 @@ class ChatOrchestrator {
         this.llmClient = llmClient;
         this.safetyService = safetyService;
         this.analyticsService = analyticsService;
+        this.plotDirectorService = new EnhancedPlotDirectorService(plotDirectorAgentService);
     }
 
     Map<String, Object> initVisitor(String visitorId) throws Exception {
@@ -1540,7 +1599,10 @@ class ChatOrchestrator {
             session.storyEventProgress = new StoryEventProgress();
             session.emotionState = affectionJudgeService.createInitial(createdAt);
             session.plotState = plotDirectorService.normalizePlot(null, createdAt);
+            session.plotArcState = plotDirectorService.normalizeArc(null, createdAt);
+            session.sceneState = sceneDirectorService.normalize(null, createdAt);
             session.presenceState = presenceHeartbeatService.normalizePresence(null, createdAt);
+            session.tensionState = boundaryResponseService.normalize(null, createdAt);
             session.pendingChoices = new ArrayList<>();
             state.sessions.add(session);
 
@@ -1661,9 +1723,36 @@ class ChatOrchestrator {
             userEntry.replySource = "user_turn";
             state.messages.add(userEntry);
 
+            List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            IntentState intentState = intentInferenceService.infer(
+                    userMessage,
+                    shortTerm,
+                    session.relationshipState,
+                    session.sceneState,
+                    session.tensionState,
+                    session.memorySummary,
+                    messageCreatedAt
+            );
+            DialogueContinuityState dialogueContinuity = dialogueContinuityService.update(
+                    session.dialogueContinuityState,
+                    userMessage,
+                    shortTerm,
+                    session.sceneState,
+                    messageCreatedAt
+            );
             StoryEvent triggeredEvent = null;
+            PlotGateDecision plotGateDecision = emptyPlotGate(messageCreatedAt);
             TurnEvaluation relationship = new TurnEvaluation(session.relationshipState, new Delta());
             EmotionState nextEmotion = affectionJudgeService.normalizeEmotion(session.emotionState, messageCreatedAt);
+            RelationalTensionState nextTension = boundaryResponseService.normalize(session.tensionState, messageCreatedAt);
+            TurnContext turnContext = buildTurnContext(
+                    intentState,
+                    relationship,
+                    session.sceneState,
+                    "user_turn",
+                    messageCreatedAt
+            );
+            applyContinuityToTurnContext(turnContext, dialogueContinuity);
             PlotDecision plotDecision = new PlotDecision(
                     plotDirectorService.normalizePlot(session.plotState, messageCreatedAt),
                     plotDirectorService.normalizeArc(session.plotArcState, messageCreatedAt),
@@ -1677,6 +1766,31 @@ class ChatOrchestrator {
             TimeContext timeContext = realityContextService.buildTimeContext(visitor, messageCreatedAt);
             WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, messageCreatedAt);
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, "user_turn", plotDecision.sceneFrame);
+            ResponsePlan responsePlan = responsePlanningService.plan(
+                    intentState,
+                    session.relationshipState,
+                    nextEmotion,
+                    nextTension,
+                    plotGateDecision,
+                    "user_turn",
+                    messageCreatedAt
+            );
+            InitiativeDecision initiativeDecision = initiativePolicyService.decide(
+                    intentState,
+                    responsePlan,
+                    nextEmotion,
+                    nextTension,
+                    plotGateDecision,
+                    "user_turn",
+                    messageCreatedAt
+            );
+            SearchDecision searchDecision = new SearchDecision(false, "", "skip", "skip", false);
+            SearchGroundingSummary searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+            UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
+            RealityAudit realityAudit = passRealityAudit();
+            HumanizationAudit humanizationAudit = emptyHumanizationAudit();
+            List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
 
             if (inspection.blocked) {
                 nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, messageCreatedAt);
@@ -1690,8 +1804,8 @@ class ChatOrchestrator {
                         "safety"
                 );
             } else {
-                triggeredEvent = eventEngine.findTriggeredEvent(agent, session, userMessage);
-                StoryEvent scoringEvent = triggeredEvent != null && triggeredEvent.keyChoiceEvent ? null : triggeredEvent;
+                StoryEvent candidateEvent = eventEngine.findTriggeredEvent(agent, session, userMessage);
+                StoryEvent scoringEvent = candidateEvent != null && candidateEvent.keyChoiceEvent ? null : candidateEvent;
                 AffectionScoreResult affectionScoreResult = affectionJudgeService.evaluateTurn(
                         userMessage,
                         session.relationshipState,
@@ -1703,6 +1817,21 @@ class ChatOrchestrator {
                 );
                 relationship = affectionScoreResult.turnEvaluation;
                 nextEmotion = affectionScoreResult.nextEmotion;
+                nextTension = boundaryResponseService.evaluate(
+                        userMessage,
+                        session.tensionState,
+                        relationship,
+                        temperamentProfileFor(agent),
+                        messageCreatedAt
+                );
+                turnContext = buildTurnContext(
+                        intentState,
+                        relationship,
+                        session.sceneState,
+                        "user_turn",
+                        messageCreatedAt
+                );
+                applyContinuityToTurnContext(turnContext, dialogueContinuity);
                 plotDecision = plotDirectorService.decide(
                         session,
                         userMessage,
@@ -1712,20 +1841,57 @@ class ChatOrchestrator {
                         timeContext,
                         weatherContext,
                         "user_turn",
+                        messageCreatedAt,
+                        turnContext
+                );
+                relationship = applyPlotMacroScore(
+                        relationship,
+                        plotDecision,
+                        turnContext,
+                        nextTension,
                         messageCreatedAt
                 );
+                plotGateDecision = plotGateService.decide(
+                        candidateEvent,
+                        session,
+                        plotDecision.nextSceneState,
+                        relationship.nextState,
+                        nextTension,
+                        messageCreatedAt
+                );
+                triggeredEvent = plotGateDecision.allowed ? candidateEvent : null;
                 memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, plotDecision.replySource, plotDecision.sceneFrame);
-
-                List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
                 String longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
-                MemoryRecall recall = memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2);
+                MemoryRecall recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
+                memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, recall);
                 String currentUserMood = memoryService.detectMood(userMessage);
+                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState);
+                searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+                realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+                uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
+                responsePlan = responsePlanningService.plan(
+                        intentState,
+                        relationship.nextState,
+                        nextEmotion,
+                        nextTension,
+                        plotGateDecision,
+                        plotDecision.replySource,
+                        messageCreatedAt
+                );
+                initiativeDecision = initiativePolicyService.decide(
+                        intentState,
+                        responsePlan,
+                        nextEmotion,
+                        nextTension,
+                        plotGateDecision,
+                        plotDecision.replySource,
+                        messageCreatedAt
+                );
                 String responseCadence = memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
                 String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent)
                         + " 当前记忆使用模式：" + memoryUsePlan.useMode
                         + "。原因：" + memoryUsePlan.relevanceReason).trim();
 
-                SearchDecision searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState);
                 llmReply = llmClient.generateReply(new LlmRequest(
                         agent,
                         relationship.nextState,
@@ -1746,8 +1912,34 @@ class ChatOrchestrator {
                         nextEmotion,
                         plotDecision.replySource,
                         temperamentProfileFor(agent),
-                        searchDecision.enabled ? searchDecision.query : ""
+                        searchDecision.enabled ? searchDecision.query : "",
+                        intentState,
+                        responsePlan,
+                        uncertaintyState,
+                        initiativeDecision,
+                        memoryIntentBindings,
+                        realityEnvelope,
+                        nextTension,
+                        plotGateDecision,
+                        dialogueContinuity
                 ));
+
+                RealityGuardResult guardResult = realityGuardService.auditAndRepair(
+                        llmReply,
+                        realityEnvelope,
+                        userMessage,
+                        plotDecision.nextSceneState
+                );
+                llmReply = guardResult.reply;
+                realityAudit = guardResult.realityAudit;
+                humanizationAudit = humanizationEvaluationService.evaluate(
+                        userMessage,
+                        llmReply,
+                        intentState,
+                        responsePlan,
+                        memoryUsePlan,
+                        realityAudit
+                );
 
                 InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
                 if (outputInspection.blocked) {
@@ -1787,10 +1979,18 @@ class ChatOrchestrator {
             session.userTurnCount += 1;
             session.relationshipState = relationship.nextState;
             session.emotionState = nextEmotion;
+            session.tensionState = nextTension;
             session.plotState = plotDecision.nextPlotState;
             session.plotArcState = plotDecision.nextPlotArcState == null ? session.plotArcState : plotDecision.nextPlotArcState;
             session.sceneState = plotDecision.nextSceneState == null ? session.sceneState : plotDecision.nextSceneState;
             session.presenceState = presenceHeartbeatService.registerUserTurn(session.presenceState, replyCreatedAt);
+            session.lastIntentState = intentState;
+            session.lastResponsePlan = responsePlan;
+            session.lastHumanizationAudit = humanizationAudit;
+            session.lastRealityAudit = realityAudit;
+            session.lastPlotGateDecision = plotGateDecision;
+            session.lastTurnContext = turnContext;
+            session.dialogueContinuityState = dialogueContinuity;
             if (!inspection.blocked) {
                 session.memorySummary = memoryService.updateTieredSummary(
                         session.memorySummary,
@@ -1856,6 +2056,15 @@ class ChatOrchestrator {
             response.put("ending_candidate", session.relationshipState.endingCandidate);
             response.put("behavior_tags", relationship.behaviorTags);
             response.put("risk_flags", relationship.riskFlags);
+            response.put("intent_state", intentStateMap(session.lastIntentState));
+            response.put("response_plan", responsePlanMap(session.lastResponsePlan));
+            response.put("humanization_audit", humanizationAuditMap(session.lastHumanizationAudit));
+            response.put("reality_audit", realityAuditMap(session.lastRealityAudit));
+            response.put("plot_gate_reason", plotGateDecisionMap(session.lastPlotGateDecision));
+            response.put("turn_context", turnContextMap(session.lastTurnContext));
+            response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
+            response.put("plot_director_decision", plotDecision.plotDirectorReason);
+            response.put("tension_state", tensionStateMap(session.tensionState));
             response.put("emotion_state", emotionStateMap(session.emotionState));
             response.put("plot_progress", plotStateMap(session.plotState));
             response.put("scene_state", sceneStateMap(session.sceneState));
@@ -1912,6 +2121,10 @@ class ChatOrchestrator {
             response.put("trigger_reason", presenceResult.triggerReason);
             response.put("blocked_reason", presenceResult.blockedReason);
             response.put("heartbeat_explain", presenceResult.heartbeatExplain);
+            response.put("initiative_decision", Map.of());
+            response.put("humanization_audit", Map.of());
+            response.put("reality_audit", Map.of());
+            response.put("interaction_mode", session.sceneState == null ? "" : session.sceneState.interactionMode);
 
             if (!presenceResult.shouldSend) {
                 return response;
@@ -1933,6 +2146,7 @@ class ChatOrchestrator {
             TimeContext timeContext = realityContextService.buildTimeContext(visitor, nowIso);
             WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, nowIso);
             EmotionState nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, nowIso);
+            RelationalTensionState nextTension = boundaryResponseService.normalize(session.tensionState, nowIso);
             PlotDecision plotDecision = plotDirectorService.decide(
                     session,
                     "",
@@ -1946,6 +2160,40 @@ class ChatOrchestrator {
             );
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
+            IntentState intentState = intentInferenceService.infer(
+                    "",
+                    shortTerm,
+                    session.relationshipState,
+                    plotDecision.nextSceneState,
+                    nextTension,
+                    session.memorySummary,
+                    nowIso
+            );
+            PlotGateDecision plotGateDecision = emptyPlotGate(nowIso);
+            ResponsePlan responsePlan = responsePlanningService.plan(
+                    intentState,
+                    session.relationshipState,
+                    nextEmotion,
+                    nextTension,
+                    plotGateDecision,
+                    presenceResult.replySource,
+                    nowIso
+            );
+            InitiativeDecision initiativeDecision = initiativePolicyService.decide(
+                    intentState,
+                    responsePlan,
+                    nextEmotion,
+                    nextTension,
+                    plotGateDecision,
+                    presenceResult.replySource,
+                    nowIso
+            );
+            SearchDecision searchDecision = new SearchDecision(false, "", "skip", "skip", false);
+            SearchGroundingSummary searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+            UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, nowIso);
+            List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
             String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, "", session.relationshipState, null)
                     + " 当前这是角色主动发出的消息。reply_source=" + presenceResult.replySource
                     + "。记忆使用原因：" + memoryUsePlan.relevanceReason).trim();
@@ -1970,8 +2218,34 @@ class ChatOrchestrator {
                     nextEmotion,
                     presenceResult.replySource,
                     temperamentProfileFor(agent),
-                    ""
+                    "",
+                    intentState,
+                    responsePlan,
+                    uncertaintyState,
+                    initiativeDecision,
+                    memoryIntentBindings,
+                    realityEnvelope,
+                    nextTension,
+                    plotGateDecision,
+                    dialogueContinuity
             ));
+
+            RealityGuardResult guardResult = realityGuardService.auditAndRepair(
+                    llmReply,
+                    realityEnvelope,
+                    "",
+                    plotDecision.nextSceneState
+            );
+            llmReply = guardResult.reply;
+            RealityAudit realityAudit = guardResult.realityAudit;
+            HumanizationAudit humanizationAudit = humanizationEvaluationService.evaluate(
+                    "",
+                    llmReply,
+                    intentState,
+                    responsePlan,
+                    memoryUsePlan,
+                    realityAudit
+            );
 
             InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
             if (outputInspection.blocked) {
@@ -2003,11 +2277,18 @@ class ChatOrchestrator {
             state.messages.add(proactiveEntry);
 
             session.emotionState = nextEmotion;
+            session.tensionState = nextTension;
             session.plotState = plotDecision.nextPlotState;
             session.plotArcState = plotDecision.nextPlotArcState == null ? session.plotArcState : plotDecision.nextPlotArcState;
             session.sceneState = plotDecision.nextSceneState == null ? session.sceneState : plotDecision.nextSceneState;
             session.lastProactiveMessageAt = nowIso;
             session.memoryExpireAt = memoryService.createMemoryExpiry(now);
+            session.lastIntentState = intentState;
+            session.lastResponsePlan = responsePlan;
+            session.lastHumanizationAudit = humanizationAudit;
+            session.lastRealityAudit = realityAudit;
+            session.lastPlotGateDecision = plotGateDecision;
+            session.dialogueContinuityState = dialogueContinuity;
             if (plotDecision.advanced) {
                 session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
                 session.storyEventProgress.lastTriggeredTheme = plotDecision.sceneFrame;
@@ -2023,12 +2304,18 @@ class ChatOrchestrator {
             ));
 
             response.put("proactive_message", messageMap(proactiveEntry));
+            response.put("initiative_decision", initiativeDecisionMap(initiativeDecision));
+            response.put("humanization_audit", humanizationAuditMap(humanizationAudit));
+            response.put("reality_audit", realityAuditMap(realityAudit));
+            response.put("interaction_mode", session.sceneState == null ? "" : session.sceneState.interactionMode);
             response.put("emotion_state", emotionStateMap(session.emotionState));
             response.put("plot_progress", plotStateMap(session.plotState));
             response.put("plot_arc_state", plotArcStateMap(session.plotArcState));
             response.put("scene_state", sceneStateMap(session.sceneState));
             response.put("scene_frame", session.plotState.sceneFrame);
             response.put("reply_source", presenceResult.replySource);
+            response.put("plot_director_decision", plotDecision.plotDirectorReason);
+            response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
             response.put("arc_summary_preview", arcSummaryMap(session.plotArcState == null ? null : session.plotArcState.latestArcSummary));
@@ -2217,6 +2504,7 @@ class ChatOrchestrator {
         agentMap.put("coverAsset", agent.coverAsset);
         agentMap.put("styleTags", agent.styleTags);
         agentMap.put("moodPalette", agent.moodPalette);
+        agentMap.put("backstory", AgentPresentation.backstoryMap(agent.backstory));
 
         Map<String, Object> relationshipMap = new LinkedHashMap<>();
         relationshipMap.put("closeness", session.relationshipState.closeness);
@@ -2274,10 +2562,18 @@ class ChatOrchestrator {
         payload.put("memorySummary", memoryMap);
         payload.put("storyEventProgress", eventProgressMap);
         payload.put("emotionState", emotionStateMap(session.emotionState));
+        payload.put("tensionState", tensionStateMap(session.tensionState));
         payload.put("plotState", plotStateMap(session.plotState));
         payload.put("plotArcState", plotArcStateMap(session.plotArcState));
         payload.put("sceneState", sceneStateMap(session.sceneState));
         payload.put("presenceState", presenceStateMap(session.presenceState));
+        payload.put("lastIntentState", intentStateMap(session.lastIntentState));
+        payload.put("lastResponsePlan", responsePlanMap(session.lastResponsePlan));
+        payload.put("lastHumanizationAudit", humanizationAuditMap(session.lastHumanizationAudit));
+        payload.put("lastRealityAudit", realityAuditMap(session.lastRealityAudit));
+        payload.put("lastPlotGateDecision", plotGateDecisionMap(session.lastPlotGateDecision));
+        payload.put("lastTurnContext", turnContextMap(session.lastTurnContext));
+        payload.put("dialogueContinuityState", dialogueContinuityMap(session.dialogueContinuityState));
         payload.put("visitorContext", Map.of(
                 "timezone", visitor.timezone == null ? "" : visitor.timezone,
                 "preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity
@@ -2348,6 +2644,8 @@ class ChatOrchestrator {
         session.plotArcState = plotDirectorService.normalizeArc(session.plotArcState, session.createdAt);
         session.sceneState = sceneDirectorService.normalize(session.sceneState, session.createdAt);
         session.presenceState = presenceHeartbeatService.normalizePresence(session.presenceState, session.createdAt);
+        session.tensionState = boundaryResponseService.normalize(session.tensionState, session.createdAt);
+        session.dialogueContinuityState = dialogueContinuityService.normalize(session.dialogueContinuityState, session.createdAt);
     }
 
     private void markEventTriggered(SessionRecord session, StoryEvent event) {
@@ -2403,6 +2701,308 @@ class ChatOrchestrator {
         map.put("triggeredEventId", message.triggeredEventId);
         map.put("affectionDelta", message.affectionDelta);
         map.put("replySource", message.replySource);
+        return map;
+    }
+
+    private Map<String, Object> intentStateMap(IntentState intentState) {
+        if (intentState == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("primaryIntent", blankTo(intentState.primaryIntent, ""));
+        map.put("secondaryIntent", blankTo(intentState.secondaryIntent, ""));
+        map.put("emotion", blankTo(intentState.emotion, ""));
+        map.put("clarity", blankTo(intentState.clarity, ""));
+        map.put("needsEmpathy", intentState.needsEmpathy);
+        map.put("needsStructure", intentState.needsStructure);
+        map.put("needsFollowup", intentState.needsFollowup);
+        map.put("isBoundarySensitive", intentState.isBoundarySensitive);
+        map.put("rationale", blankTo(intentState.rationale, ""));
+        map.put("updatedAt", blankTo(intentState.updatedAt, ""));
+        return map;
+    }
+
+    private TurnContext buildTurnContext(
+            IntentState intentState,
+            TurnEvaluation relationship,
+            SceneState sceneState,
+            String replySource,
+            String nowIso
+    ) {
+        TurnContext context = new TurnContext();
+        context.primaryIntent = intentState == null ? "" : blankTo(intentState.primaryIntent, "");
+        context.secondaryIntent = intentState == null ? "" : blankTo(intentState.secondaryIntent, "");
+        context.clarity = intentState == null ? "" : blankTo(intentState.clarity, "");
+        context.userEmotion = intentState == null ? "" : blankTo(intentState.emotion, "");
+        context.replySource = blankTo(replySource, "user_turn");
+        Delta delta = relationship == null || relationship.affectionDelta == null ? new Delta() : relationship.affectionDelta;
+        context.affectionDeltaTotal = delta.total;
+        context.closenessDelta = delta.closeness;
+        context.trustDelta = delta.trust;
+        context.resonanceDelta = delta.resonance;
+        context.behaviorTags = relationship == null || relationship.behaviorTags == null ? new ArrayList<>() : new ArrayList<>(relationship.behaviorTags);
+        context.riskFlags = relationship == null || relationship.riskFlags == null ? new ArrayList<>() : new ArrayList<>(relationship.riskFlags);
+        context.sceneLocation = sceneState == null ? "" : blankTo(sceneState.location, "");
+        context.interactionMode = sceneState == null ? "" : blankTo(sceneState.interactionMode, "");
+        context.updatedAt = nowIso;
+        return context;
+    }
+
+    private void applyContinuityToTurnContext(TurnContext context, DialogueContinuityState continuity) {
+        if (context == null || continuity == null) {
+            return;
+        }
+        context.continuityObjective = blankTo(continuity.currentObjective, "");
+        context.continuityAcceptedPlan = blankTo(continuity.acceptedPlan, "");
+        context.continuityNextBestMove = blankTo(continuity.nextBestMove, "");
+        context.continuityGuards = continuity.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(continuity.mustNotContradict);
+    }
+
+    private TurnEvaluation applyPlotMacroScore(
+            TurnEvaluation relationship,
+            PlotDecision plotDecision,
+            TurnContext turnContext,
+            RelationalTensionState tensionState,
+            String nowIso
+    ) {
+        if (relationship == null || plotDecision == null || !plotDecision.advanced) {
+            return relationship;
+        }
+        if (tensionState != null && tensionState.guarded) {
+            return relationship;
+        }
+        if (turnContext != null && turnContext.riskFlags != null && !turnContext.riskFlags.isEmpty()) {
+            return relationship;
+        }
+
+        String action = turnContext == null ? "" : blankTo(turnContext.plotDirectorAction, "");
+        boolean heartbeatNudge = "heartbeat_nudge".equals(action);
+        int closenessBonus = heartbeatNudge ? 1 : 2;
+        int trustBonus = heartbeatNudge ? 0 : 1;
+        int resonanceBonus = heartbeatNudge ? 1 : 2;
+
+        String primaryIntent = turnContext == null ? "" : blankTo(turnContext.primaryIntent, "");
+        if ("romantic_probe".equals(primaryIntent)) {
+            trustBonus += 1;
+        }
+        if ("scene_push".equals(primaryIntent)) {
+            resonanceBonus += 1;
+        }
+
+        RelationshipState nextState = copyRelationshipState(relationship.nextState);
+        String previousStage = blankTo(nextState.relationshipStage, "");
+        nextState.closeness = Math.max(0, nextState.closeness + closenessBonus);
+        nextState.trust = Math.max(0, nextState.trust + trustBonus);
+        nextState.resonance = Math.max(0, nextState.resonance + resonanceBonus);
+        nextState.affectionScore = nextState.closeness + nextState.trust + nextState.resonance;
+        nextState.relationshipStage = relationshipStageForScore(nextState.affectionScore);
+        nextState.stageProgressHint = heartbeatNudge
+                ? "\u957f\u804a\u6c14\u6c1b\u88ab\u8f7b\u8f7b\u63a8\u52a8\u4e86\u4e00\u70b9\u3002"
+                : "\u8fd9\u4e00\u62cd\u5267\u60c5\u6709\u771f\u6b63\u63a8\u8fdb\uff0c\u5173\u7cfb\u6bd4\u666e\u901a\u804a\u5929\u66f4\u660e\u663e\u5730\u5f80\u524d\u8d70\u4e86\u4e00\u6b65\u3002";
+        nextState.relationshipFeedback = nextState.stageProgressHint;
+        nextState.routeTag = blankTo(nextState.routeTag, heartbeatNudge ? "\u957f\u804a\u56de\u6696" : "\u5267\u60c5\u63a8\u8fdb");
+
+        Delta delta = new Delta();
+        Delta base = relationship.affectionDelta == null ? new Delta() : relationship.affectionDelta;
+        delta.closeness = base.closeness + closenessBonus;
+        delta.trust = base.trust + trustBonus;
+        delta.resonance = base.resonance + resonanceBonus;
+        delta.total = delta.closeness + delta.trust + delta.resonance;
+
+        List<String> behaviorTags = new ArrayList<>(relationship.behaviorTags == null ? List.of() : relationship.behaviorTags);
+        behaviorTags.add(heartbeatNudge ? "heartbeat_macro_score" : "plot_macro_score");
+        boolean stageChanged = relationship.stageChanged || !Objects.equals(previousStage, nextState.relationshipStage);
+        String stageProgress = plotDecision.nextPlotState == null ? relationship.stageProgress : plotDecision.nextPlotState.plotProgress;
+
+        if (turnContext != null) {
+            turnContext.closenessDelta = delta.closeness;
+            turnContext.trustDelta = delta.trust;
+            turnContext.resonanceDelta = delta.resonance;
+            turnContext.affectionDeltaTotal = delta.total;
+            turnContext.behaviorTags = behaviorTags;
+            turnContext.updatedAt = nowIso;
+        }
+
+        return new TurnEvaluation(
+                nextState,
+                delta,
+                behaviorTags,
+                relationship.riskFlags == null ? List.of() : relationship.riskFlags,
+                stageChanged,
+                blankTo(stageProgress, ""),
+                nextState.relationshipFeedback
+        );
+    }
+
+    private RelationshipState copyRelationshipState(RelationshipState source) {
+        RelationshipState next = new RelationshipState();
+        if (source == null) {
+            return next;
+        }
+        next.closeness = source.closeness;
+        next.trust = source.trust;
+        next.resonance = source.resonance;
+        next.affectionScore = source.affectionScore;
+        next.relationshipStage = source.relationshipStage;
+        next.ending = source.ending;
+        next.stageProgressHint = source.stageProgressHint;
+        next.stagnationLevel = source.stagnationLevel;
+        next.routeTag = source.routeTag;
+        next.endingCandidate = source.endingCandidate;
+        next.relationshipFeedback = source.relationshipFeedback;
+        return next;
+    }
+
+    private String relationshipStageForScore(int score) {
+        if (score >= 76) return "\u786e\u8ba4\u5173\u7cfb";
+        if (score >= 50) return "\u9760\u8fd1";
+        if (score >= 28) return "\u5fc3\u52a8";
+        if (score >= 12) return "\u5347\u6e29";
+        return "\u521d\u8bc6";
+    }
+
+    private Map<String, Object> turnContextMap(TurnContext context) {
+        if (context == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("primaryIntent", blankTo(context.primaryIntent, ""));
+        map.put("secondaryIntent", blankTo(context.secondaryIntent, ""));
+        map.put("clarity", blankTo(context.clarity, ""));
+        map.put("userEmotion", blankTo(context.userEmotion, ""));
+        map.put("replySource", blankTo(context.replySource, ""));
+        map.put("affectionDeltaTotal", context.affectionDeltaTotal);
+        map.put("closenessDelta", context.closenessDelta);
+        map.put("trustDelta", context.trustDelta);
+        map.put("resonanceDelta", context.resonanceDelta);
+        map.put("behaviorTags", context.behaviorTags == null ? List.of() : context.behaviorTags);
+        map.put("riskFlags", context.riskFlags == null ? List.of() : context.riskFlags);
+        map.put("sceneLocation", blankTo(context.sceneLocation, ""));
+        map.put("interactionMode", blankTo(context.interactionMode, ""));
+        map.put("plotGap", context.plotGap);
+        map.put("plotSignal", context.plotSignal);
+        map.put("plotDirectorAction", blankTo(context.plotDirectorAction, ""));
+        map.put("plotWhyNow", blankTo(context.plotWhyNow, ""));
+        map.put("plotDirectorConfidence", context.plotDirectorConfidence);
+        map.put("plotRiskIfAdvance", blankTo(context.plotRiskIfAdvance, ""));
+        map.put("requiredUserSignal", blankTo(context.requiredUserSignal, ""));
+        map.put("continuityObjective", blankTo(context.continuityObjective, ""));
+        map.put("continuityAcceptedPlan", blankTo(context.continuityAcceptedPlan, ""));
+        map.put("continuityNextBestMove", blankTo(context.continuityNextBestMove, ""));
+        map.put("continuityGuards", context.continuityGuards == null ? List.of() : context.continuityGuards);
+        map.put("updatedAt", blankTo(context.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> dialogueContinuityMap(DialogueContinuityState state) {
+        if (state == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("currentObjective", blankTo(state.currentObjective, ""));
+        map.put("pendingUserOffer", blankTo(state.pendingUserOffer, ""));
+        map.put("acceptedPlan", blankTo(state.acceptedPlan, ""));
+        map.put("lastAssistantQuestion", blankTo(state.lastAssistantQuestion, ""));
+        map.put("userAnsweredLastQuestion", state.userAnsweredLastQuestion);
+        map.put("sceneTransitionNeeded", state.sceneTransitionNeeded);
+        map.put("nextBestMove", blankTo(state.nextBestMove, ""));
+        map.put("mustNotContradict", state.mustNotContradict == null ? List.of() : state.mustNotContradict);
+        map.put("confidence", state.confidence);
+        map.put("updatedAt", blankTo(state.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> responsePlanMap(ResponsePlan responsePlan) {
+        if (responsePlan == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("firstMove", blankTo(responsePlan.firstMove, ""));
+        map.put("coreTask", blankTo(responsePlan.coreTask, ""));
+        map.put("initiativeLevel", blankTo(responsePlan.initiativeLevel, ""));
+        map.put("responseLength", blankTo(responsePlan.responseLength, ""));
+        map.put("dialogueMode", blankTo(responsePlan.dialogueMode, ""));
+        map.put("shouldReferenceMemory", responsePlan.shouldReferenceMemory);
+        map.put("shouldAdvanceScene", responsePlan.shouldAdvanceScene);
+        map.put("shouldAdvancePlot", responsePlan.shouldAdvancePlot);
+        map.put("shouldUseUncertainty", responsePlan.shouldUseUncertainty);
+        map.put("allowFollowupQuestion", responsePlan.allowFollowupQuestion);
+        map.put("explanation", blankTo(responsePlan.explanation, ""));
+        map.put("updatedAt", blankTo(responsePlan.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> initiativeDecisionMap(InitiativeDecision initiativeDecision) {
+        if (initiativeDecision == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("allowed", initiativeDecision.allowed);
+        map.put("action", blankTo(initiativeDecision.action, ""));
+        map.put("level", blankTo(initiativeDecision.level, ""));
+        map.put("reason", blankTo(initiativeDecision.reason, ""));
+        map.put("updatedAt", blankTo(initiativeDecision.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> humanizationAuditMap(HumanizationAudit audit) {
+        if (audit == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("feltHeard", audit.feltHeard);
+        map.put("answeredCoreQuestion", audit.answeredCoreQuestion);
+        map.put("usedMemoryNaturally", audit.usedMemoryNaturally);
+        map.put("initiativeAppropriate", audit.initiativeAppropriate);
+        map.put("sceneConsistent", audit.sceneConsistent);
+        map.put("emotionMatched", audit.emotionMatched);
+        map.put("overacted", audit.overacted);
+        map.put("tooMechanical", audit.tooMechanical);
+        map.put("notes", audit.notes == null ? List.of() : audit.notes);
+        return map;
+    }
+
+    private Map<String, Object> realityAuditMap(RealityAudit audit) {
+        if (audit == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("timeConsistent", audit.timeConsistent);
+        map.put("weatherConsistent", audit.weatherConsistent);
+        map.put("sceneConsistent", audit.sceneConsistent);
+        map.put("interactionConsistent", audit.interactionConsistent);
+        map.put("grounded", audit.grounded);
+        map.put("notes", audit.notes == null ? List.of() : audit.notes);
+        return map;
+    }
+
+    private Map<String, Object> plotGateDecisionMap(PlotGateDecision decision) {
+        if (decision == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("allowed", decision.allowed);
+        map.put("triggerReason", blankTo(decision.triggerReason, ""));
+        map.put("blockedReason", blankTo(decision.blockedReason, ""));
+        map.put("requiredScene", blankTo(decision.requiredScene, ""));
+        map.put("requiredRelationFloor", decision.requiredRelationFloor);
+        map.put("requiredGap", decision.requiredGap);
+        map.put("candidateEventId", blankTo(decision.candidateEventId, ""));
+        map.put("updatedAt", blankTo(decision.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> tensionStateMap(RelationalTensionState tensionState) {
+        if (tensionState == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("annoyance", tensionState.annoyance);
+        map.put("hurt", tensionState.hurt);
+        map.put("guarded", tensionState.guarded);
+        map.put("repairReadiness", tensionState.repairReadiness);
+        map.put("recentBoundaryHits", tensionState.recentBoundaryHits);
+        map.put("updatedAt", blankTo(tensionState.updatedAt, ""));
         return map;
     }
 
@@ -2598,6 +3198,116 @@ class ChatOrchestrator {
             ));
         }
         return result;
+    }
+
+    private PlotGateDecision emptyPlotGate(String nowIso) {
+        PlotGateDecision decision = new PlotGateDecision();
+        decision.allowed = false;
+        decision.triggerReason = "none";
+        decision.blockedReason = "no_candidate";
+        decision.requiredScene = "";
+        decision.requiredRelationFloor = 0;
+        decision.requiredGap = 0;
+        decision.candidateEventId = "";
+        decision.updatedAt = nowIso;
+        return decision;
+    }
+
+    private RealityAudit passRealityAudit() {
+        RealityAudit audit = new RealityAudit();
+        audit.timeConsistent = true;
+        audit.weatherConsistent = true;
+        audit.sceneConsistent = true;
+        audit.interactionConsistent = true;
+        audit.grounded = true;
+        return audit;
+    }
+
+    private HumanizationAudit emptyHumanizationAudit() {
+        HumanizationAudit audit = new HumanizationAudit();
+        audit.feltHeard = true;
+        audit.answeredCoreQuestion = true;
+        audit.usedMemoryNaturally = true;
+        audit.initiativeAppropriate = true;
+        audit.sceneConsistent = true;
+        audit.emotionMatched = true;
+        audit.overacted = false;
+        audit.tooMechanical = false;
+        return audit;
+    }
+
+    private UncertaintyState buildUncertaintyState(IntentState intentState, SearchDecision searchDecision, PlotGateDecision plotGateDecision, String nowIso) {
+        UncertaintyState state = new UncertaintyState();
+        if (searchDecision != null && searchDecision.mustNotGuess) {
+            state.level = "low";
+            state.reason = "must_not_guess";
+            state.shouldClarify = true;
+        } else if (intentState != null && "low".equals(intentState.clarity)) {
+            state.level = "medium";
+            state.reason = "low_clarity";
+            state.shouldClarify = true;
+        } else if (plotGateDecision != null && !plotGateDecision.allowed && "scene_mismatch".equals(plotGateDecision.blockedReason)) {
+            state.level = "medium";
+            state.reason = "scene_gate";
+            state.shouldClarify = false;
+        } else {
+            state.level = "high";
+            state.reason = "stable";
+            state.shouldClarify = false;
+        }
+        state.updatedAt = nowIso;
+        return state;
+    }
+
+    private List<MemoryIntentBinding> buildMemoryIntentBindings(MemoryUsePlan memoryUsePlan, MemoryRecall recall) {
+        List<MemoryIntentBinding> bindings = new ArrayList<>();
+        if (memoryUsePlan == null) {
+            return bindings;
+        }
+        int index = 0;
+        for (String memory : memoryUsePlan.selectedMemories) {
+            MemoryIntentBinding binding = new MemoryIntentBinding();
+            binding.memoryId = "memory-" + index++;
+            binding.usageGoal = blankTo(memoryUsePlan.useMode, "hold");
+            binding.relevanceScore = Math.max(20, 80 - index * 10);
+            binding.safeToRecall = !"hold".equals(memoryUsePlan.useMode);
+            binding.repeatRisk = recall != null && recall.selectedMemories.contains(memory);
+            bindings.add(binding);
+        }
+        return bindings;
+    }
+
+    private MemoryRecall sanitizeMemoryRecall(MemoryRecall recall) {
+        if (recall == null || recall.selectedMemories == null || recall.selectedMemories.isEmpty()) {
+            return recall == null ? new MemoryRecall("none", List.of(), "") : recall;
+        }
+        List<String> filtered = new ArrayList<>();
+        for (String item : recall.selectedMemories) {
+            if (!isGreetingLikeMemory(item)) {
+                filtered.add(item);
+            }
+        }
+        if (filtered.isEmpty()) {
+            return new MemoryRecall("none", List.of(), "");
+        }
+        return new MemoryRecall(recall.tier, filtered, String.join("；", filtered));
+    }
+
+    private boolean isGreetingLikeMemory(String item) {
+        if (item == null || item.isBlank()) {
+            return true;
+        }
+        String compact = item.trim();
+        String tail = compact.contains(":") ? compact.substring(compact.lastIndexOf(':') + 1).trim() : compact;
+        return tail.length() <= 8
+                || tail.contains("你好")
+                || tail.contains("在吗")
+                || tail.contains("嗨")
+                || tail.contains("好啊");
+    }
+
+    private String blankTo(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private TemperamentProfile temperamentProfileFor(AgentProfile agent) {

@@ -216,12 +216,24 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private String buildReactiveReply(LlmRequest request) {
+        String policySpeech = buildPolicySpeech(request);
         boolean hasQuestion = containsQuestion(request.userMessage);
         String directAnswer = buildDirectAnswer(request);
         boolean answeredDirectly = !directAnswer.isBlank();
 
         String sceneLine = buildSceneLine(request, hasQuestion, answeredDirectly);
         String actionLine = buildActionLine(request, hasQuestion, answeredDirectly);
+        if (!policySpeech.isBlank()) {
+            List<String> guardedParts = new ArrayList<>();
+            if (!sceneLine.isBlank()) {
+                guardedParts.add(wrapScene(sceneLine));
+            }
+            if (!actionLine.isBlank()) {
+                guardedParts.add(wrapAction(actionLine));
+            }
+            guardedParts.add(policySpeech);
+            return joinNonBlank(limitSentences(guardedParts, actionLine.isBlank() && sceneLine.isBlank() ? 3 : 5));
+        }
         List<String> speechParts = new ArrayList<>();
         if (answeredDirectly) {
             speechParts.add(directAnswer);
@@ -318,8 +330,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "；原因=" + blankTo(request.memoryUsePlan.relevanceReason, "无")
                 + "；候选记忆=" + (request.memoryUsePlan.selectedMemories.isEmpty() ? "无" : String.join(" | ", request.memoryUsePlan.selectedMemories));
 
+        String continuityText = buildContinuityText(request.dialogueContinuityState);
+        String backstoryText = buildBackstoryText(request.agent);
+
         return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
                 + "说话风格：" + request.agent.speechStyle + "\n"
+                + "角色具体背景：" + backstoryText + "\n"
                 + "喜欢：" + String.join("、", request.agent.likes) + "\n"
                 + "雷点：" + String.join("、", request.agent.dislikes) + "\n"
                 + "关系推进规则：" + request.agent.relationshipRules + "\n"
@@ -335,6 +351,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "优先召回的记忆层级：" + recallTier + "\n"
                 + "高相关记忆：" + recallText + "\n"
                 + "记忆使用计划：" + memoryPlanText + "\n"
+                + "上下文智能层：" + continuityText + "\n"
                 + "当前事件：" + eventText + "\n"
                 + "本轮回应策略：" + blankTo(request.responseDirective, "保持角色一致，顺着当前聊天自然展开。") + "\n"
                 + "边界：" + String.join("；", request.agent.boundaries) + "\n"
@@ -348,7 +365,55 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "7. 如果 reply_source 是 plot_push，表示当前对话里顺势往前走半步，不是切到聊天外发消息，不要写成“给你发消息”“看到你回复”“屏幕那头”这种异步联系口吻。\n"
                 + "8. 如果 reply_source 是 silence_heartbeat 或 long_chat_heartbeat，才说明这是角色主动发出的轻消息；要像顺手接话，不像系统提醒。\n"
                 + "9. 如果用户输入很短，不要把压力丢回给用户，由你主动给一个容易接的话头。\n"
+                + "10. 如果上下文智能层给出当前共同目标、已确认计划、下一句必须承接或禁止违背事实，必须优先遵守；不要重新问已经确认的计划，不要把具体行动泛化成无关闲逛。\n"
+                + "10. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
+                + "11. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
                 + "10. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
+    }
+
+    private String buildBackstoryText(AgentProfile agent) {
+        if (agent == null || agent.backstory == null) {
+            return "暂无更具体背景。";
+        }
+        AgentBackstory backstory = agent.backstory;
+        List<String> parts = new ArrayList<>();
+        parts.add("年龄=" + backstory.age);
+        parts.add("年级=" + blankTo(backstory.grade, "未设定"));
+        parts.add("专业=" + blankTo(backstory.major, "未设定"));
+        parts.add("出生地=" + blankTo(backstory.hometown, "未设定"));
+        parts.add("当前城市=" + blankTo(backstory.currentCity, "未设定"));
+        parts.add("常去地点=" + joinOrEmpty(backstory.campusPlaces));
+        parts.add("爱好=" + joinOrEmpty(backstory.hobbies));
+        parts.add("生活节奏=" + blankTo(backstory.lifestyle, "未设定"));
+        parts.add("边界细节=" + blankTo(backstory.boundaryDetails, "未设定"));
+        parts.add("情绪模式=" + blankTo(backstory.emotionPattern, "未设定"));
+        parts.add("隐藏经历=" + joinOrEmpty(backstory.hiddenFacts));
+        parts.add("剧情钩子=" + joinOrEmpty(backstory.plotHooks));
+        return String.join("；", parts);
+    }
+
+    private String buildContinuityText(DialogueContinuityState state) {
+        if (state == null) {
+            return "暂无明确行动链。";
+        }
+        List<String> parts = new ArrayList<>();
+        parts.add("当前共同目标=" + blankTo(state.currentObjective, "无"));
+        parts.add("待回应提议=" + blankTo(state.pendingUserOffer, "无"));
+        parts.add("已确认计划=" + blankTo(state.acceptedPlan, "无"));
+        parts.add("上一轮问题=" + blankTo(state.lastAssistantQuestion, "无"));
+        parts.add("用户是否回答上一问=" + (state.userAnsweredLastQuestion ? "是" : "否"));
+        parts.add("是否需要场景过渡=" + (state.sceneTransitionNeeded ? "是" : "否"));
+        parts.add("下一句最好承接=" + blankTo(state.nextBestMove, "无"));
+        parts.add("禁止违背=" + (state.mustNotContradict == null || state.mustNotContradict.isEmpty() ? "无" : String.join("；", state.mustNotContradict)));
+        parts.add("置信度=" + state.confidence);
+        return String.join("；", parts);
+    }
+
+    private String joinOrEmpty(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "无";
+        }
+        return String.join("、", values);
     }
 
     private String buildUserCue(LlmRequest request) {
@@ -362,6 +427,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         String text = compact(request.userMessage);
         if (!containsQuestion(text)) {
             return "";
+        }
+        if ((text.contains("歌词") || text.contains("台词"))
+                && request.realityEnvelope != null
+                && request.realityEnvelope.searchGrounding != null
+                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing) {
+            return "这类需要逐字准确的内容，我现在不能确认准确版本，所以不想乱编。";
         }
         if (text.contains("有好感") || text.contains("喜欢我") || text.contains("对我也") || text.contains("会不会也喜欢")) {
             return "如果你要我现在认真回答，那答案是有，而且我没有把它当成一句随口的话。";
@@ -424,6 +495,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     private String buildSceneLine(LlmRequest request, boolean hasQuestion, boolean answeredDirectly) {
         if (request == null) {
             return "";
+        }
+        if (request.dialogueContinuityState != null
+                && request.dialogueContinuityState.sceneTransitionNeeded
+                && request.dialogueContinuityState.currentObjective != null
+                && request.dialogueContinuityState.currentObjective.contains("热饮")) {
+            return "你们顺着刚刚说好的方向往热饮那边走，话题没有散开。";
         }
         if (request.sceneState != null && request.sceneState.transitionPending) {
             return blankTo(request.sceneFrame, "");
@@ -489,6 +566,11 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private String buildInitiativeLine(LlmRequest request) {
         boolean askBack = shouldAskBack(request);
+        if (request.dialogueContinuityState != null
+                && request.dialogueContinuityState.acceptedPlan != null
+                && request.dialogueContinuityState.acceptedPlan.contains("热饮")) {
+            return "那我们就先去买热饮，路上你不用重新找话题，我会接着刚才那句慢慢聊。";
+        }
         if (isShortInput(request.userMessage)) {
             return askBack ? "要不要先从今天最想说的那一小段开始，我来陪你把后面的情绪慢慢拽出来？" : "你先把最想说的那一小段交给我，后面的情绪我们慢慢往外带。";
         }
@@ -882,6 +964,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private String inferEmotionTag(LlmRequest request) {
+        if (request.tensionState != null && request.tensionState.guarded) {
+            return "guarded";
+        }
         if (request.emotionState != null && request.emotionState.currentMood != null && !request.emotionState.currentMood.isBlank()) {
             return request.emotionState.currentMood;
         }
@@ -893,5 +978,66 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             return "comfort";
         }
         return "steady";
+    }
+
+    private String buildPolicySpeech(LlmRequest request) {
+        if (request == null) {
+            return "";
+        }
+        String text = compact(request.userMessage);
+        if (request.intentState != null && "meta_repair".equals(request.intentState.primaryIntent)) {
+            String location = request.sceneState == null ? "这里" : blankTo(request.sceneState.location, "这里");
+            return "你说得对，我先把前面的错位收回来。我们现在还是在" + location + "这边顺着聊，不是突然变成隔着屏幕发消息。";
+        }
+        if (isLaughter(text) && lastAssistantMentionedSong(request)) {
+            return "你笑成这样，我就先当作刚才那句歌没有跑调太严重。别急着换新话题，我还挺想知道，你是觉得歌词好笑，还是我唱出来这件事本身比较好笑？";
+        }
+        if ((text.contains("歌词") || text.contains("台词"))
+                && request.realityEnvelope != null
+                && request.realityEnvelope.searchGrounding != null
+                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing) {
+            return "这类需要逐字准确的内容，我现在不能确认准确版本，所以不想乱编。你要是愿意，我可以只聊它给人的感觉，或者等有可靠依据时再回答。";
+        }
+        if (request.tensionState != null && request.tensionState.guarded) {
+            if (text.contains("对不起") || text.contains("抱歉")) {
+                return "我听到了你的道歉。现在我还没有一下子完全放松下来，但我愿意先把语气放缓一点，看看我们能不能慢慢接回来。";
+            }
+            return "你刚才那句话让我有点不舒服，所以我现在不会顺着甜下去。要继续聊可以，但得先把这份不舒服放在桌面上。";
+        }
+        if (request.intentState != null
+                && "romantic_probe".equals(request.intentState.primaryIntent)
+                && request.relationshipState != null
+                && "初识".equals(request.relationshipState.relationshipStage)) {
+            return "我会在意你，也确实会被你吸引，但现在的我更想把这份靠近走稳一点，不想一上来就把话说满。";
+        }
+        return "";
+    }
+    private boolean isLaughter(String text) {
+        String compact = text == null ? "" : text.replaceAll("\\s+", "");
+        return compact.contains("哈哈")
+                || compact.contains("嘿嘿")
+                || compact.contains("笑死")
+                || compact.equalsIgnoreCase("lol");
+    }
+
+    private boolean lastAssistantMentionedSong(LlmRequest request) {
+        if (request == null || request.shortTermContext == null) {
+            return false;
+        }
+        for (int index = request.shortTermContext.size() - 1; index >= 0; index--) {
+            ConversationSnippet snippet = request.shortTermContext.get(index);
+            if (!"assistant".equals(snippet.role)) {
+                continue;
+            }
+            String text = snippet.text == null ? "" : snippet.text;
+            return text.contains("唱")
+                    || text.contains("歌")
+                    || text.contains("歌词")
+                    || text.contains("哼")
+                    || text.contains("旋律")
+                    || text.contains("song")
+                    || text.contains("lyric");
+        }
+        return false;
     }
 }

@@ -33,6 +33,7 @@ public class SmokeTest {
                 new AnalyticsService()
         );
 
+        shouldExposeAgentBackstory(orchestrator);
         shouldCreateStructuredMemory(orchestrator);
         shouldRecallRelevantMemory(orchestrator);
         shouldBeProactiveOnShortInput(orchestrator);
@@ -42,14 +43,37 @@ public class SmokeTest {
         shouldExposeStructuredReplyParts(orchestrator);
         shouldPersistVisitorContext(orchestrator);
         shouldTriggerPresenceHeartbeat(orchestrator);
-        shouldNotStackHeartbeatAfterPlotPush(orchestrator);
+        shouldHoldPlotOnEarlyTurns(orchestrator);
+        shouldTransferSceneBeforePlot(orchestrator);
         shouldKeepPlotPushInsideCurrentConversation(orchestrator);
         shouldPreferWeightedEvent(orchestrator);
         shouldBlockStageJumpByTrustGate(orchestrator);
         shouldOfferChoiceInteraction(orchestrator);
         shouldApplyChoiceOutcome(orchestrator);
         shouldSoftBlockUnsafeInput(orchestrator);
+        ClosedLoopAgentTest.run(orchestrator);
+        HumanizationRegressionTest.run(orchestrator);
         System.out.println("Java smoke tests passed.");
+    }
+
+    private static void shouldExposeAgentBackstory(ChatOrchestrator orchestrator) throws Exception {
+        List<Map<String, Object>> agents = orchestrator.listAgents();
+        assertTrue(agents.size() == 5, "five agents should be exposed");
+        for (Map<String, Object> agent : agents) {
+            Map<String, Object> backstory = castMap(agent.get("backstory"));
+            assertTrue(backstory.get("age") instanceof Number, "agent backstory should expose age");
+            assertTrue(String.valueOf(backstory.get("grade")).length() > 0, "agent backstory should expose grade");
+            assertTrue(String.valueOf(backstory.get("major")).length() > 0, "agent backstory should expose major");
+            assertTrue(String.valueOf(backstory.get("hometown")).length() > 0, "agent backstory should expose hometown");
+            assertTrue(!Json.asArray(backstory.get("hobbies")).isEmpty(), "agent backstory should expose hobbies");
+            assertTrue(!Json.asArray(backstory.get("plotHooks")).isEmpty(), "agent backstory should expose plot hooks");
+        }
+
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+        Map<String, Object> state = orchestrator.getSessionState((String) session.get("sessionId"));
+        Map<String, Object> sessionAgent = castMap(state.get("agent"));
+        assertTrue(castMap(sessionAgent.get("backstory")).containsKey("campusPlaces"), "session state should include agent backstory");
     }
 
     private static void shouldCreateStructuredMemory(ChatOrchestrator orchestrator) throws Exception {
@@ -200,6 +224,9 @@ public class SmokeTest {
         ));
 
         assertTrue("杭州".equals(String.valueOf(updated.get("preferredCity"))), "preferred city should be saved");
+        assertTrue(castMap(updated.get("timeContext")).containsKey("timezone"), "context update should return refreshed time context");
+        Map<String, Object> weatherContext = castMap(updated.get("weatherContext"));
+        assertTrue("杭州".equals(String.valueOf(weatherContext.get("city"))), "context update should return refreshed weather city");
     }
 
     private static void shouldTriggerPresenceHeartbeat(ChatOrchestrator orchestrator) throws Exception {
@@ -226,10 +253,9 @@ public class SmokeTest {
         assertTrue(result.get("proactive_message") != null, "presence heartbeat should be able to emit a proactive message");
     }
 
-    private static void shouldNotStackHeartbeatAfterPlotPush(ChatOrchestrator orchestrator) throws Exception {
+    private static void shouldHoldPlotOnEarlyTurns(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");
         Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
-        Instant base = Instant.parse(String.valueOf(session.get("memoryExpireAt"))).minusSeconds(7L * 24 * 60 * 60);
 
         orchestrator.sendMessage(Map.of(
                 "visitorId", visitor.get("visitorId"),
@@ -245,19 +271,26 @@ public class SmokeTest {
                 "userMessage", "上次你说的热可可，真的有这么多味道吗？"
         ));
 
-        assertTrue("plot_push".equals(String.valueOf(secondTurn.get("reply_source"))), "second turn should advance plot for this regression test");
-
-        Map<String, Object> result = orchestrator.updatePresence(Map.of(
-                "visitorId", visitor.get("visitorId"),
-                "sessionId", session.get("sessionId"),
-                "visible", true,
-                "focused", true,
-                "clientTime", base.plusSeconds(150).toString()
-        ));
-
-        assertTrue(result.get("proactive_message") == null, "heartbeat should not stack immediately after a proactive plot reply");
+        assertTrue(!"plot_push".equals(String.valueOf(secondTurn.get("reply_source"))), "second turn should not advance plot too early");
+        assertTrue(String.valueOf(secondTurn.get("plot_director_decision")).contains("hold_plot"), "plot director should explain holding plot");
     }
 
+    private static void shouldTransferSceneBeforePlot(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+
+        Map<String, Object> result = orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "我们去操场逛逛吧"
+        ));
+
+        Map<String, Object> sceneState = castMap(result.get("scene_state"));
+        assertTrue(String.valueOf(sceneState.get("location")).contains("操场"), "scene transition should move to playground");
+        assertTrue(!"plot_push".equals(String.valueOf(result.get("reply_source"))), "explicit scene transition should not be treated as plot push");
+        assertTrue(String.valueOf(result.get("plot_director_decision")).contains("transition_only"), "plot director should mark transition-only turns");
+    }
     private static void shouldKeepPlotPushInsideCurrentConversation(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");
         Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");

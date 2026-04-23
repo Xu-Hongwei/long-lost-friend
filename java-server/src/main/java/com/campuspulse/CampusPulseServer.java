@@ -40,7 +40,8 @@ public class CampusPulseServer {
                 eventEngine,
                 llmClient,
                 safetyService,
-                analyticsService
+                analyticsService,
+                new PlotDirectorAgentService(config)
         );
     }
 

@@ -6,6 +6,7 @@ import type {
   AnalyticsOverview,
   PresenceResponse,
   SessionRecord,
+  VisitorContextUpdateResult,
   VisitorInitResult
 } from "../types";
 
@@ -131,10 +132,7 @@ export const useSessionStore = defineStore("session", () => {
     syncingContext.value = true;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
     try {
-      const result = await api<{
-        preferredCity: string;
-        timezone: string;
-      }>("/api/visitor/context", {
+      const result = await api<VisitorContextUpdateResult>("/api/visitor/context", {
         method: "POST",
         body: JSON.stringify({
           visitor_id: visitorId.value,
@@ -149,6 +147,12 @@ export const useSessionStore = defineStore("session", () => {
           timezone: result.timezone,
           preferredCity: result.preferredCity
         };
+        if (result.timeContext) {
+          currentSession.value.timeContext = result.timeContext;
+        }
+        if (result.weatherContext) {
+          currentSession.value.weatherContext = result.weatherContext;
+        }
       }
     } finally {
       syncingContext.value = false;
@@ -278,6 +282,9 @@ export const useSessionStore = defineStore("session", () => {
       }
       if (result.scene_state) {
         currentSession.value.sceneState = result.scene_state;
+      }
+      if (result.dialogue_continuity) {
+        currentSession.value.dialogueContinuityState = result.dialogue_continuity;
       }
     }
 

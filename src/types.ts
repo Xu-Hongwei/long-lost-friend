@@ -1,3 +1,18 @@
+export interface AgentBackstory {
+  age?: number;
+  grade?: string;
+  major?: string;
+  hometown?: string;
+  currentCity?: string;
+  campusPlaces?: string[];
+  hobbies?: string[];
+  lifestyle?: string;
+  boundaryDetails?: string;
+  emotionPattern?: string;
+  hiddenFacts?: string[];
+  plotHooks?: string[];
+}
+
 export interface AgentProfile {
   id: string;
   name: string;
@@ -11,6 +26,7 @@ export interface AgentProfile {
   coverAsset?: string;
   styleTags?: string[];
   moodPalette?: string[];
+  backstory?: AgentBackstory;
 }
 
 export interface ConversationMessage {
@@ -96,6 +112,116 @@ export interface EmotionState {
   initiative: number;
   vulnerability: number;
   currentMood: string;
+  updatedAt?: string;
+}
+
+export interface TensionState {
+  annoyance?: number;
+  hurt?: number;
+  guarded?: boolean;
+  repairReadiness?: number;
+  recentBoundaryHits?: number;
+  updatedAt?: string;
+}
+
+export interface IntentState {
+  primaryIntent?: string;
+  secondaryIntent?: string;
+  emotion?: string;
+  clarity?: string;
+  needsEmpathy?: boolean;
+  needsStructure?: boolean;
+  needsFollowup?: boolean;
+  isBoundarySensitive?: boolean;
+  rationale?: string;
+  updatedAt?: string;
+}
+
+export interface ResponsePlan {
+  firstMove?: string;
+  coreTask?: string;
+  initiativeLevel?: string;
+  responseLength?: string;
+  dialogueMode?: string;
+  shouldReferenceMemory?: boolean;
+  shouldAdvanceScene?: boolean;
+  shouldAdvancePlot?: boolean;
+  shouldUseUncertainty?: boolean;
+  allowFollowupQuestion?: boolean;
+  explanation?: string;
+  updatedAt?: string;
+}
+
+export interface HumanizationAudit {
+  feltHeard?: boolean;
+  answeredCoreQuestion?: boolean;
+  usedMemoryNaturally?: boolean;
+  initiativeAppropriate?: boolean;
+  sceneConsistent?: boolean;
+  emotionMatched?: boolean;
+  overacted?: boolean;
+  tooMechanical?: boolean;
+  notes?: string[];
+}
+
+export interface RealityAudit {
+  timeConsistent?: boolean;
+  weatherConsistent?: boolean;
+  sceneConsistent?: boolean;
+  interactionConsistent?: boolean;
+  grounded?: boolean;
+  notes?: string[];
+}
+
+export interface PlotGateDecision {
+  allowed?: boolean;
+  triggerReason?: string;
+  blockedReason?: string;
+  requiredScene?: string;
+  requiredRelationFloor?: number;
+  requiredGap?: number;
+  candidateEventId?: string;
+  updatedAt?: string;
+}
+
+export interface TurnContext {
+  primaryIntent?: string;
+  secondaryIntent?: string;
+  clarity?: string;
+  userEmotion?: string;
+  replySource?: string;
+  affectionDeltaTotal?: number;
+  closenessDelta?: number;
+  trustDelta?: number;
+  resonanceDelta?: number;
+  behaviorTags?: string[];
+  riskFlags?: string[];
+  sceneLocation?: string;
+  interactionMode?: string;
+  plotGap?: number;
+  plotSignal?: number;
+  plotDirectorAction?: string;
+  plotWhyNow?: string;
+  plotDirectorConfidence?: number;
+  plotRiskIfAdvance?: string;
+  requiredUserSignal?: string;
+  continuityObjective?: string;
+  continuityAcceptedPlan?: string;
+  continuityNextBestMove?: string;
+  continuityGuards?: string[];
+  updatedAt?: string;
+}
+
+export interface DialogueContinuityState {
+  currentObjective?: string;
+  pendingUserOffer?: string;
+  acceptedPlan?: string;
+  lastAssistantQuestion?: string;
+  userAnsweredLastQuestion?: boolean;
+  sceneTransitionNeeded?: boolean;
+  nextBestMove?: string;
+  mustNotContradict?: string[];
+  confidence?: number;
   updatedAt?: string;
 }
 
@@ -186,10 +312,18 @@ export interface SessionRecord {
   memorySummary: MemorySummary;
   storyEventProgress: StoryEventProgress;
   emotionState: EmotionState;
+  tensionState?: TensionState;
   plotState: PlotState;
   plotArcState: PlotArcState;
   sceneState: SceneState;
   presenceState: PresenceState;
+  lastIntentState?: IntentState;
+  lastResponsePlan?: ResponsePlan;
+  lastHumanizationAudit?: HumanizationAudit;
+  lastRealityAudit?: RealityAudit;
+  lastPlotGateDecision?: PlotGateDecision;
+  lastTurnContext?: TurnContext;
+  dialogueContinuityState?: DialogueContinuityState;
   visitorContext: VisitorContext;
   timeContext: TimeContext;
   weatherContext: WeatherContext;
@@ -231,6 +365,14 @@ export interface VisitorInitResult {
   };
 }
 
+export interface VisitorContextUpdateResult {
+  saved: boolean;
+  timezone?: string;
+  preferredCity?: string;
+  timeContext?: TimeContext;
+  weatherContext?: WeatherContext;
+}
+
 export interface PresenceResponse {
   online: boolean;
   presenceState: PresenceState;
@@ -238,12 +380,19 @@ export interface PresenceResponse {
   trigger_reason?: string;
   blocked_reason?: string;
   heartbeat_explain?: string;
+  initiative_decision?: Record<string, unknown>;
+  humanization_audit?: HumanizationAudit;
+  reality_audit?: RealityAudit;
+  interaction_mode?: string;
   emotion_state?: EmotionState;
+  turn_context?: TurnContext;
+  dialogue_continuity?: DialogueContinuityState;
   plot_progress?: PlotState;
   plot_arc_state?: PlotArcState;
   scene_state?: SceneState;
   scene_frame?: string;
   reply_source?: string;
+  plot_director_decision?: string;
   run_status?: string;
   checkpoint_ready?: boolean;
   arc_summary_preview?: ArcSummary;

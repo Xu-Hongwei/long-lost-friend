@@ -14,6 +14,10 @@ class AppConfig {
     final String llmApiKey;
     final String llmModel;
     final Duration llmTimeout;
+    final String plotLlmBaseUrl;
+    final String plotLlmApiKey;
+    final String plotLlmModel;
+    final Duration plotLlmTimeout;
 
     AppConfig(
             int port,
@@ -26,6 +30,38 @@ class AppConfig {
             String llmModel,
             Duration llmTimeout
     ) {
+        this(
+                port,
+                rootDir,
+                publicDir,
+                stateFile,
+                memoryRetentionMs,
+                llmBaseUrl,
+                llmApiKey,
+                llmModel,
+                llmTimeout,
+                llmBaseUrl,
+                llmApiKey,
+                llmModel,
+                llmTimeout
+        );
+    }
+
+    AppConfig(
+            int port,
+            Path rootDir,
+            Path publicDir,
+            Path stateFile,
+            long memoryRetentionMs,
+            String llmBaseUrl,
+            String llmApiKey,
+            String llmModel,
+            Duration llmTimeout,
+            String plotLlmBaseUrl,
+            String plotLlmApiKey,
+            String plotLlmModel,
+            Duration plotLlmTimeout
+    ) {
         this.port = port;
         this.rootDir = rootDir;
         this.publicDir = publicDir;
@@ -35,6 +71,10 @@ class AppConfig {
         this.llmApiKey = llmApiKey;
         this.llmModel = llmModel;
         this.llmTimeout = llmTimeout;
+        this.plotLlmBaseUrl = plotLlmBaseUrl;
+        this.plotLlmApiKey = plotLlmApiKey;
+        this.plotLlmModel = plotLlmModel;
+        this.plotLlmTimeout = plotLlmTimeout;
     }
 
     static AppConfig load() {
@@ -47,6 +87,30 @@ class AppConfig {
                 System.getenv("OPENAI_TIMEOUT_MS"),
                 "12000"
         );
+        String llmBaseUrl = firstNonBlank(
+                System.getenv("ARK_BASE_URL"),
+                System.getenv("OPENAI_API_BASE"),
+                System.getenv("OPENAI_BASE_URL"),
+                System.getenv("OPENAI_BASE"),
+                "https://ark.cn-beijing.volces.com/api/v3"
+        );
+        String llmApiKey = firstNonBlank(
+                System.getenv("ARK_API_KEY"),
+                System.getenv("OPENAI_API_KEY"),
+                ""
+        );
+        String llmModel = firstNonBlank(
+                System.getenv("ARK_MODEL"),
+                System.getenv("OPENAI_MODEL"),
+                "ep-20260418203515-nw4jb"
+        );
+        Duration llmTimeout = Duration.ofMillis(Long.parseLong(timeoutValue));
+        String plotTimeoutValue = firstNonBlank(
+                System.getenv("PLOT_LLM_TIMEOUT_MS"),
+                System.getenv("DASHSCOPE_TIMEOUT_MS"),
+                System.getenv("OPENAI_TIMEOUT_MS"),
+                timeoutValue
+        );
 
         return new AppConfig(
                 Integer.parseInt(portValue),
@@ -54,22 +118,32 @@ class AppConfig {
                 staticDir,
                 root.resolve("data").resolve("runtime").resolve("state.bin"),
                 7L * 24 * 60 * 60 * 1000,
+                llmBaseUrl,
+                llmApiKey,
+                llmModel,
+                llmTimeout,
                 firstNonBlank(
-                        System.getenv("ARK_BASE_URL"),
+                        System.getenv("PLOT_LLM_BASE_URL"),
+                        System.getenv("DASHSCOPE_BASE_URL"),
+                        System.getenv("DASHSCOPE_BASE"),
+                        System.getenv("OPENAI_API_BASE"),
                         System.getenv("OPENAI_BASE_URL"),
-                        "https://ark.cn-beijing.volces.com/api/v3"
+                        System.getenv("OPENAI_BASE"),
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1"
                 ),
                 firstNonBlank(
-                        System.getenv("ARK_API_KEY"),
+                        System.getenv("PLOT_LLM_API_KEY"),
+                        System.getenv("DASHSCOPE_API_KEY"),
                         System.getenv("OPENAI_API_KEY"),
-                        ""
+                        llmApiKey
                 ),
                 firstNonBlank(
-                        System.getenv("ARK_MODEL"),
+                        System.getenv("PLOT_LLM_MODEL"),
+                        System.getenv("DASHSCOPE_MODEL"),
                         System.getenv("OPENAI_MODEL"),
-                        "ep-20260418203515-nw4jb"
+                        "qwen-plus"
                 ),
-                Duration.ofMillis(Long.parseLong(timeoutValue))
+                Duration.ofMillis(Long.parseLong(plotTimeoutValue))
         );
     }
 
@@ -78,14 +152,16 @@ class AppConfig {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private static String firstNonBlank(String first, String second, String fallback) {
-        if (first != null && !first.isBlank()) {
-            return normalize(first);
+    private static String firstNonBlank(String... values) {
+        if (values == null || values.length == 0) {
+            return "";
         }
-        if (second != null && !second.isBlank()) {
-            return normalize(second);
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return normalize(value);
+            }
         }
-        return normalize(fallback);
+        return "";
     }
 
     private static String normalize(String value) {

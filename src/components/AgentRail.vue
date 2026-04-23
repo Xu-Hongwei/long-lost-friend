@@ -24,7 +24,7 @@ const emits = defineEmits<{
         </h2>
       </div>
       <p class="hidden max-w-md text-sm leading-6 text-white/58 xl:block">
-        角色卡会先用图像、色温和标签建立第一眼吸引力，再把你带进聊天主舞台。
+        角色卡先用图像、色温和标签建立第一眼吸引力，再把你带进今晚的聊天。
       </p>
     </div>
 
@@ -56,11 +56,15 @@ const emits = defineEmits<{
               :style="{ background: `linear-gradient(180deg, transparent 0%, ${agent.palette?.[2] || '#23192a'} 100%)` }"
             ></div>
           </div>
-          <div class="space-y-4 p-4">
+
+          <div class="flex flex-1 flex-col p-4">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <p class="text-[0.72rem] uppercase tracking-[0.28em] text-white/42">{{ agent.archetype }}</p>
                 <h3 class="mt-2 text-xl font-semibold tracking-[-0.04em] text-white">{{ agent.name }}</h3>
+                <p v-if="agent.backstory" class="mt-1 text-xs leading-5 text-white/50">
+                  {{ agent.backstory.grade }} · {{ agent.backstory.major }} · {{ agent.backstory.hometown }}
+                </p>
                 <p class="mt-2 text-sm leading-6 text-white/68">{{ agent.tagline }}</p>
               </div>
               <span v-if="activeSessionAgentId === agent.id" class="rounded-full bg-white/12 px-3 py-1 text-[11px] text-white/72">
@@ -68,7 +72,7 @@ const emits = defineEmits<{
               </span>
             </div>
 
-            <div class="flex flex-wrap gap-2">
+            <div class="mt-4 flex flex-wrap gap-2">
               <span
                 v-for="tag in (agent.styleTags || agent.likes || []).slice(0, 3)"
                 :key="tag"
@@ -80,7 +84,7 @@ const emits = defineEmits<{
 
             <button
               type="button"
-              class="inline-flex items-center rounded-full border border-white/12 px-4 py-2 text-sm text-white/78 transition hover:border-white/24 hover:bg-white/6"
+              class="mt-auto inline-flex items-center self-start rounded-full border border-white/12 px-4 py-2 text-sm text-white/78 transition hover:border-white/24 hover:bg-white/6"
               @click.stop="emits('start', agent.id)"
             >
               {{ activeSessionAgentId === agent.id ? "回到聊天" : "选她开场" }}

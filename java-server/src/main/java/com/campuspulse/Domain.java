@@ -408,6 +408,7 @@ class AgentProfile implements Serializable {
     final String coverAsset;
     final List<String> styleTags;
     final List<String> moodPalette;
+    final AgentBackstory backstory;
 
     AgentProfile(
             String id,
@@ -440,7 +441,8 @@ class AgentProfile implements Serializable {
                 boundaries,
                 openingLine,
                 storyEvents,
-                AgentVisualProfile.forAgent(id)
+                AgentVisualProfile.forAgent(id),
+                AgentBackstory.forAgent(id)
         );
     }
 
@@ -461,6 +463,44 @@ class AgentProfile implements Serializable {
             List<StoryEvent> storyEvents,
             AgentVisualProfile visualProfile
     ) {
+        this(
+                id,
+                name,
+                archetype,
+                tagline,
+                palette,
+                avatarGlyph,
+                bio,
+                speechStyle,
+                likes,
+                dislikes,
+                relationshipRules,
+                boundaries,
+                openingLine,
+                storyEvents,
+                visualProfile,
+                AgentBackstory.forAgent(id)
+        );
+    }
+
+    AgentProfile(
+            String id,
+            String name,
+            String archetype,
+            String tagline,
+            List<String> palette,
+            String avatarGlyph,
+            String bio,
+            String speechStyle,
+            List<String> likes,
+            List<String> dislikes,
+            String relationshipRules,
+            List<String> boundaries,
+            String openingLine,
+            List<StoryEvent> storyEvents,
+            AgentVisualProfile visualProfile,
+            AgentBackstory backstory
+    ) {
         this.id = id;
         this.name = name;
         this.archetype = archetype;
@@ -479,6 +519,139 @@ class AgentProfile implements Serializable {
         this.coverAsset = visualProfile.coverAsset;
         this.styleTags = visualProfile.styleTags;
         this.moodPalette = visualProfile.moodPalette;
+        this.backstory = backstory;
+    }
+}
+
+class AgentBackstory implements Serializable {
+    final int age;
+    final String grade;
+    final String major;
+    final String hometown;
+    final String currentCity;
+    final List<String> campusPlaces;
+    final List<String> hobbies;
+    final String lifestyle;
+    final String boundaryDetails;
+    final String emotionPattern;
+    final List<String> hiddenFacts;
+    final List<String> plotHooks;
+
+    AgentBackstory(
+            int age,
+            String grade,
+            String major,
+            String hometown,
+            String currentCity,
+            List<String> campusPlaces,
+            List<String> hobbies,
+            String lifestyle,
+            String boundaryDetails,
+            String emotionPattern,
+            List<String> hiddenFacts,
+            List<String> plotHooks
+    ) {
+        this.age = age;
+        this.grade = grade;
+        this.major = major;
+        this.hometown = hometown;
+        this.currentCity = currentCity;
+        this.campusPlaces = campusPlaces;
+        this.hobbies = hobbies;
+        this.lifestyle = lifestyle;
+        this.boundaryDetails = boundaryDetails;
+        this.emotionPattern = emotionPattern;
+        this.hiddenFacts = hiddenFacts;
+        this.plotHooks = plotHooks;
+    }
+
+    static AgentBackstory forAgent(String agentId) {
+        return switch (agentId) {
+            case "healing" -> new AgentBackstory(
+                    20,
+                    "大二",
+                    "心理学专业，辅修中文",
+                    "江苏苏州",
+                    "杭州",
+                    List.of("图书馆三楼靠窗位", "心理咨询中心外的长椅", "南门热饮店"),
+                    List.of("读散文和心理学书", "写手帐", "买热可可", "雨天听白噪音"),
+                    "作息偏慢，常在图书馆待到闭馆前，喜欢把一天收进几行手帐里。",
+                    "不喜欢被催着表态，也不喜欢别人拿脆弱开玩笑；被逼急时会安静后退。",
+                    "慢热、柔软，先照顾别人的情绪；被认真接住后才会主动靠近。",
+                    List.of("高三时有过一段转学经历，所以很在意被稳定选择。", "家里希望她更理性，她却一直舍不得文字和情绪本身。"),
+                    List.of("图书馆便签", "热可可口味", "雨天共伞", "深夜未说完的话")
+            );
+            case "lively" -> new AgentBackstory(
+                    19,
+                    "大二",
+                    "新闻传播专业，校学生会活动部",
+                    "重庆",
+                    "南京",
+                    List.of("社团活动室", "礼堂后台", "夜市小吃街", "天台边的风口"),
+                    List.of("策划活动", "拍立得", "逛夜市", "收集好玩的店", "听现场乐队"),
+                    "日程很满，白天像小太阳，晚上收工后偶尔会突然安静下来。",
+                    "很怕被冷场和失约；连续敷衍会让她嘴上开玩笑、心里退半步。",
+                    "外放、热烈，但不是没有脆弱；越在意一个人越容易用玩笑试探。",
+                    List.of("她其实害怕自己只是热闹里的气氛组，而不是被真正记住的人。"),
+                    List.of("社团招新", "夜市投喂", "天台秘密", "合照留念")
+            );
+            case "cool" -> new AgentBackstory(
+                    21,
+                    "大三",
+                    "计算机科学与技术专业",
+                    "山东青岛",
+                    "上海",
+                    List.of("实验楼走廊", "机房角落", "自动贩卖机旁", "教学楼天台"),
+                    List.of("写代码", "黑咖啡", "拼模型", "夜间散步", "整理待办清单"),
+                    "效率感很强，常把情绪藏在行动里，记得细节但不急着说。",
+                    "不喜欢被强行窥探隐私，也不喜欢轻浮地试探底线。",
+                    "克制、慢热、观察力强；信任建立前少说，信任建立后会用行动保护。",
+                    List.of("对失败很敏感，习惯把压力一个人扛到很晚。"),
+                    List.of("实验楼偶遇", "多买的一杯咖啡", "记住小习惯", "雨夜等人")
+            );
+            case "artsy" -> new AgentBackstory(
+                    20,
+                    "大二",
+                    "视觉传达专业，常去文学社",
+                    "福建厦门",
+                    "广州",
+                    List.of("摄影社暗房", "黄昏天桥", "湖边石阶", "旧教学楼楼梯间"),
+                    List.of("胶片摄影", "旧歌单", "写短诗", "看独立电影", "收集明信片"),
+                    "生活节奏像慢慢显影的胶片，喜欢用画面和比喻表达真实情绪。",
+                    "讨厌粗暴打断和假装懂；对逐字歌词、引用和作品出处会比较认真。",
+                    "敏感、文艺、会绕开直白表白；真正被理解时才会把话说得很近。",
+                    List.of("写过一封没寄出的信，收信人一直没有改过。"),
+                    List.of("黄昏取景", "共享歌单", "暗房秘密", "未寄出的信")
+            );
+            case "sunny" -> new AgentBackstory(
+                    20,
+                    "大二",
+                    "运动康复专业，田径队成员",
+                    "陕西西安",
+                    "成都",
+                    List.of("操场外圈", "篮球场", "看台第二排", "校门口早餐铺"),
+                    List.of("晨跑", "篮球", "研究运动拉伸", "吃热早餐", "做行动计划"),
+                    "习惯早起和用行动解决问题，嘴上直接，关心常常落在具体安排里。",
+                    "不喜欢反复失约、装作没事和消耗自己；被冒犯时会直接停下来讲清楚。",
+                    "明亮、坦率、保护欲强；生气也来得直接，但真诚修复后回暖很快。",
+                    List.of("曾经因为旧伤错过一次重要比赛，所以很在意别人是否逞强。"),
+                    List.of("操场并肩跑", "晨光早餐", "看台谈心", "旧伤与重新开始")
+            );
+            default -> new AgentBackstory(
+                    20,
+                    "大二",
+                    "未设定专业",
+                    "未设定出生地",
+                    "当前校区所在城市",
+                    List.of("教学楼", "图书馆", "操场"),
+                    List.of("校园散步", "聊天", "记录日常"),
+                    "普通校园作息，关系会随对话慢慢展开。",
+                    "尊重边界，不接受冒犯和强迫。",
+                    "先观察，再靠近。",
+                    List.of(),
+                    List.of("日常相遇", "共同话题", "关系推进")
+            );
+        };
     }
 }
 
@@ -635,6 +808,162 @@ class TemperamentProfile implements Serializable {
     String initiativeStyle;
 }
 
+class IntentState implements Serializable {
+    String primaryIntent;
+    String secondaryIntent;
+    String emotion;
+    String clarity;
+    boolean needsEmpathy;
+    boolean needsStructure;
+    boolean needsFollowup;
+    boolean isBoundarySensitive;
+    String rationale;
+    String updatedAt;
+}
+
+class ResponsePlan implements Serializable {
+    String firstMove;
+    String coreTask;
+    String initiativeLevel;
+    String responseLength;
+    String dialogueMode;
+    boolean shouldReferenceMemory;
+    boolean shouldAdvanceScene;
+    boolean shouldAdvancePlot;
+    boolean shouldUseUncertainty;
+    boolean allowFollowupQuestion;
+    String explanation;
+    String updatedAt;
+}
+
+class UncertaintyState implements Serializable {
+    String level;
+    String reason;
+    boolean shouldClarify;
+    String updatedAt;
+}
+
+class InitiativeDecision implements Serializable {
+    boolean allowed;
+    String action;
+    String level;
+    String reason;
+    String updatedAt;
+}
+
+class MemoryIntentBinding implements Serializable {
+    String memoryId;
+    String usageGoal;
+    int relevanceScore;
+    boolean safeToRecall;
+    boolean repeatRisk;
+}
+
+class SearchGroundingSummary implements Serializable {
+    String mode;
+    String query;
+    List<String> groundedFacts = new ArrayList<>();
+    String confidence;
+    boolean canQuote;
+    boolean mustDeclineIfMissing;
+}
+
+class RealityEnvelope implements Serializable {
+    String timeTruth;
+    String weatherTruth;
+    String sceneTruth;
+    String interactionTruth;
+    SearchGroundingSummary searchGrounding;
+}
+
+class RelationalTensionState implements Serializable {
+    int annoyance;
+    int hurt;
+    boolean guarded;
+    int repairReadiness;
+    int recentBoundaryHits;
+    String updatedAt;
+}
+
+class PlotGateDecision implements Serializable {
+    boolean allowed;
+    String triggerReason;
+    String blockedReason;
+    String requiredScene;
+    int requiredRelationFloor;
+    int requiredGap;
+    String candidateEventId;
+    String updatedAt;
+}
+
+class TurnContext implements Serializable {
+    String primaryIntent;
+    String secondaryIntent;
+    String clarity;
+    String userEmotion;
+    String replySource;
+    int affectionDeltaTotal;
+    int closenessDelta;
+    int trustDelta;
+    int resonanceDelta;
+    List<String> behaviorTags = new ArrayList<>();
+    List<String> riskFlags = new ArrayList<>();
+    String sceneLocation;
+    String interactionMode;
+    int plotGap;
+    int plotSignal;
+    String plotDirectorAction;
+    String plotWhyNow;
+    int plotDirectorConfidence;
+    String plotRiskIfAdvance;
+    String requiredUserSignal;
+    String continuityObjective;
+    String continuityAcceptedPlan;
+    String continuityNextBestMove;
+    List<String> continuityGuards = new ArrayList<>();
+    String updatedAt;
+}
+
+class DialogueContinuityState implements Serializable {
+    String currentObjective;
+    String pendingUserOffer;
+    String acceptedPlan;
+    String lastAssistantQuestion;
+    boolean userAnsweredLastQuestion;
+    boolean sceneTransitionNeeded;
+    String nextBestMove;
+    List<String> mustNotContradict = new ArrayList<>();
+    int confidence;
+    String updatedAt;
+}
+
+class SceneConsistencyAudit implements Serializable {
+    boolean consistent;
+    boolean fixed;
+    String reason;
+}
+
+class RealityAudit implements Serializable {
+    boolean timeConsistent;
+    boolean weatherConsistent;
+    boolean sceneConsistent;
+    boolean interactionConsistent;
+    boolean grounded;
+    List<String> notes = new ArrayList<>();
+}
+
+class HumanizationAudit implements Serializable {
+    boolean feltHeard;
+    boolean answeredCoreQuestion;
+    boolean usedMemoryNaturally;
+    boolean initiativeAppropriate;
+    boolean sceneConsistent;
+    boolean emotionMatched;
+    boolean overacted;
+    boolean tooMechanical;
+    List<String> notes = new ArrayList<>();
+}
+
 class RelationshipState implements Serializable {
     int closeness;
     int trust;
@@ -719,10 +1048,18 @@ class SessionRecord implements Serializable {
     PlotArcState plotArcState;
     SceneState sceneState;
     PresenceState presenceState;
+    RelationalTensionState tensionState;
     String pendingChoiceEventId;
     List<ChoiceOption> pendingChoices = new ArrayList<>();
     String pendingEventContext;
     String lastProactiveMessageAt;
+    IntentState lastIntentState;
+    ResponsePlan lastResponsePlan;
+    HumanizationAudit lastHumanizationAudit;
+    RealityAudit lastRealityAudit;
+    PlotGateDecision lastPlotGateDecision;
+    TurnContext lastTurnContext;
+    DialogueContinuityState dialogueContinuityState;
 }
 
 class UserFeedback implements Serializable {
@@ -845,6 +1182,15 @@ class LlmRequest {
     final String replySource;
     final TemperamentProfile temperamentProfile;
     final String searchContext;
+    final IntentState intentState;
+    final ResponsePlan responsePlan;
+    final UncertaintyState uncertaintyState;
+    final InitiativeDecision initiativeDecision;
+    final List<MemoryIntentBinding> memoryIntentBindings;
+    final RealityEnvelope realityEnvelope;
+    final RelationalTensionState tensionState;
+    final PlotGateDecision plotGateDecision;
+    final DialogueContinuityState dialogueContinuityState;
 
     LlmRequest(
             AgentProfile agent,
@@ -866,7 +1212,16 @@ class LlmRequest {
             EmotionState emotionState,
             String replySource,
             TemperamentProfile temperamentProfile,
-            String searchContext
+            String searchContext,
+            IntentState intentState,
+            ResponsePlan responsePlan,
+            UncertaintyState uncertaintyState,
+            InitiativeDecision initiativeDecision,
+            List<MemoryIntentBinding> memoryIntentBindings,
+            RealityEnvelope realityEnvelope,
+            RelationalTensionState tensionState,
+            PlotGateDecision plotGateDecision,
+            DialogueContinuityState dialogueContinuityState
     ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
@@ -888,6 +1243,15 @@ class LlmRequest {
         this.replySource = replySource;
         this.temperamentProfile = temperamentProfile;
         this.searchContext = searchContext;
+        this.intentState = intentState;
+        this.responsePlan = responsePlan;
+        this.uncertaintyState = uncertaintyState;
+        this.initiativeDecision = initiativeDecision;
+        this.memoryIntentBindings = memoryIntentBindings;
+        this.realityEnvelope = realityEnvelope;
+        this.tensionState = tensionState;
+        this.plotGateDecision = plotGateDecision;
+        this.dialogueContinuityState = dialogueContinuityState;
     }
 }
 
