@@ -3,10 +3,6 @@ package com.campuspulse;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -1176,226 +1172,13 @@ interface LlmClient {
     LlmResponse generateReply(LlmRequest request) throws Exception;
 }
 
-class MockLlmClient implements LlmClient {
-    private final Map<String, List<String>> openings = Map.of(
-            "healing", List.of("我在，先别急。", "你可以慢一点说，我都在听。", "嗯，我有认真接住你。"),
-            "lively", List.of("哎，这句一出来我就精神了。", "你一开口，空气都像亮了一点。", "好，这题我超想接。"),
-            "cool", List.of("我听到了。", "嗯，这句有分量。", "可以，继续说。"),
-            "artsy", List.of("这句话像傍晚时分慢慢落下来的风。", "你刚刚那句，让画面一下子清楚起来了。", "嗯，我好像听见情绪落在纸面上的声音。"),
-            "sunny", List.of("收到，这事我跟你一起扛。", "行，我听懂重点了。", "好，先别乱，我们一件件来。")
-    );
-    private final Map<String, List<String>> closers = Map.of(
-            "healing", List.of("如果你愿意，我还想多陪你一会儿。", "这部分心情，我们可以一起把它放轻一点。", "你不用一个人扛着。"),
-            "lively", List.of("要不要我继续陪你把气氛点亮一点？", "下一句也交给我，我接得住。", "你这样讲，我真的会越来越在意你。"),
-            "cool", List.of("你说得够坦白，我会记住。", "这件事，我不会轻轻放过去。", "如果你愿意，我可以一直在这个位置。"),
-            "artsy", List.of("如果你愿意，我们把这段心情再写长一点。", "我想把你这句话安静地记很久。", "再多说一点吧，我不想让它匆匆结束。"),
-            "sunny", List.of("接下来我继续陪你往前走。", "别怕，我们能把这段路跑顺。", "你肯说出来，本身就已经很厉害了。")
-    );
-
-    @Override
-    public LlmResponse generateReply(LlmRequest request) {
-        String opening = choose(openings.get(request.agent.id), request.agent.id + ":" + request.userMessage);
-        String closing = choose(closers.get(request.agent.id), request.userMessage + ":" + request.relationshipState.relationshipStage);
-        String topic = compact(request.userMessage);
-        if (topic.length() > 18) {
-            topic = topic.substring(0, 18);
-        }
-
-        String memoryTierHint = request.recalledMemoryTier == null || request.recalledMemoryTier.isBlank() || "none".equals(request.recalledMemoryTier)
-                ? ""
-                : "这次我会先顺着" + request.recalledMemoryTier + "里的那部分记忆去接你。";
-
-        String memoryHint = request.recalledMemoryText == null || request.recalledMemoryText.isBlank()
-                ? "我想把你刚刚说的这部分好好记下来。"
-                : "我还记得" + request.recalledMemoryText + "，所以这次更想顺着它把你接住。";
-
-        String moodLine = switch (request.currentUserMood) {
-            case "stressed" -> "你这次的语气里有点累，我会先把节奏放慢一点。";
-            case "warm" -> "你提到这件事的时候，情绪明显柔和下来。";
-            case "curious" -> "你是在认真追问，我不会敷衍带过去。";
-            default -> "我能感觉到，这句不是随口说说。";
-        };
-
-        String eventLine = request.event != null
-                ? "而且刚好想到“" + request.event.title + "”这件事，它让现在的气氛更像我们真的在同一段校园夜色里。"
-                : switch (request.relationshipState.relationshipStage) {
-                    case "确认线路" -> "坦白说，我已经不太想只把你当普通聊天对象了。";
-                    case "靠近" -> "你现在靠近的方式，会让我有点想再往前一步。";
-                    default -> "先别急着把答案定死，我们可以继续把彼此看清一点。";
-                };
-
-        String reply = opening
-                + "你提到“" + topic + "”，" + moodLine
-                + memoryHint
-                + memoryTierHint
-                + eventLine
-                + closing;
-
-        return new LlmResponse(
-                reply,
-                inferEmotionTag(request.userMessage),
-                "mock",
-                Math.max(32, reply.length()),
-                null,
-                false,
-                "mock"
-        );
-    }
-
-    private String choose(List<String> values, String seedSource) {
-        int sum = 0;
-        for (int index = 0; index < seedSource.length(); index++) {
-            sum += seedSource.charAt(index);
-        }
-        return values.get(Math.floorMod(sum, values.size()));
-    }
-
-    private String compact(String text) {
-        return text == null ? "" : text.replaceAll("\\s+", "");
-    }
-
-    private String inferEmotionTag(String text) {
-        if (text.matches(".*(开心|喜欢|想你|期待).*")) {
-            return "warm";
-        }
-        if (text.matches(".*(压力|迷茫|累|难过).*")) {
-            return "comfort";
-        }
-        return "steady";
-    }
-}
-
-class OpenAiLlmClient implements LlmClient {
-    private final AppConfig config;
-
-    OpenAiLlmClient(AppConfig config) {
-        this.config = config;
-    }
-
-    @Override
-    public LlmResponse generateReply(LlmRequest request) throws Exception {
-        String systemPrompt = buildSystemPrompt(request);
-        List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", systemPrompt));
-        for (ConversationSnippet snippet : request.shortTermContext) {
-            messages.add(Map.of("role", snippet.role, "content", snippet.text));
-        }
-        messages.add(Map.of("role", "user", "content", request.userMessage));
-
-        String body = Json.stringify(Map.of(
-                "model", config.llmModel,
-                "temperature", 0.85,
-                "messages", messages
-        ));
-
-        HttpURLConnection connection = (HttpURLConnection) URI.create(config.llmBaseUrl + "/chat/completions").toURL().openConnection();
-        connection.setRequestMethod("POST");
-        connection.setConnectTimeout((int) config.llmTimeout.toMillis());
-        connection.setReadTimeout((int) config.llmTimeout.toMillis());
-        connection.setDoOutput(true);
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + config.llmApiKey);
-        try (OutputStream output = connection.getOutputStream()) {
-            output.write(body.getBytes(StandardCharsets.UTF_8));
-        }
-
-        int statusCode = connection.getResponseCode();
-        if (statusCode < 200 || statusCode >= 300) {
-            throw new IOException("LLM request failed: " + statusCode);
-        }
-
-        String responseBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        Map<String, Object> payload = Json.asObject(Json.parse(responseBody));
-        List<Object> choices = Json.asArray(payload.get("choices"));
-        Map<String, Object> choice = Json.asObject(choices.getFirst());
-        Map<String, Object> message = Json.asObject(choice.get("message"));
-        Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
-        String reply = Json.asString(message.get("content")).trim();
-
-        return new LlmResponse(
-                reply,
-                inferEmotionTag(request.userMessage),
-                "remote",
-                Json.asInt(usage.get("total_tokens"), reply.length()),
-                null,
-                false,
-                "remote"
-        );
-    }
-
-    private String buildSystemPrompt(LlmRequest request) {
-        String summaryText = request.longTermSummary == null || request.longTermSummary.isBlank() ? "暂无长期记忆。" : request.longTermSummary;
-        String recallText = request.recalledMemoryText == null || request.recalledMemoryText.isBlank() ? "暂无高相关记忆。" : request.recalledMemoryText;
-        String eventText = request.event == null ? "本轮无事件触发。" : request.event.title + "：" + request.event.theme;
-
-        return "你在扮演大学生恋爱互动游戏中的角色：" + request.agent.name + "（" + request.agent.archetype + "）。\n"
-                + "说话风格：" + request.agent.speechStyle + "\n"
-                + "喜欢：" + String.join("、", request.agent.likes) + "\n"
-                + "雷点：" + String.join("、", request.agent.dislikes) + "\n"
-                + "关系推进规则：" + request.agent.relationshipRules + "\n"
-                + "当前关系阶段：" + request.relationshipState.relationshipStage + "，总好感：" + request.relationshipState.affectionScore + "\n"
-                + "用户当前情绪：" + request.currentUserMood + "\n"
-                + "长期记忆摘要：" + summaryText + "\n"
-                + "高相关记忆：" + recallText + "\n"
-                + "当前事件：" + eventText + "\n"
-                + "本轮回应策略：" + request.responseDirective + "\n"
-                + "边界：" + String.join("；", request.agent.boundaries) + "\n"
-                + "要求：只输出角色回复本身，保持 2 到 4 句中文，自然、亲近、连续，不要像系统提示词，不要复述规则。";
-    }
-
-    private String inferEmotionTag(String text) {
-        if (text.matches(".*(开心|喜欢|想你|期待).*")) {
-            return "warm";
-        }
-        if (text.matches(".*(压力|迷茫|累|难过).*")) {
-            return "comfort";
-        }
-        return "steady";
-    }
-}
-
-class CompositeLlmClient implements LlmClient {
-    private final AppConfig config;
-    private final MockLlmClient mock = new MockLlmClient();
-    private OpenAiLlmClient openAi;
-
+abstract class CompositeLlmClient implements LlmClient {
     CompositeLlmClient(AppConfig config) {
-        this.config = config;
-    }
-
-    @Override
-    public LlmResponse generateReply(LlmRequest request) throws Exception {
-        if (config.llmApiKey == null || config.llmApiKey.isBlank()) {
-            return mock.generateReply(request);
-        }
-        if (openAi == null) {
-            openAi = new OpenAiLlmClient(config);
-        }
-        try {
-            return openAi.generateReply(request);
-        } catch (Exception error) {
-            LlmResponse fallback = mock.generateReply(request);
-            return new LlmResponse(
-                    fallback.replyText,
-                    fallback.emotionTag,
-                    "fallback",
-                    fallback.tokenUsage,
-                    error.getClass().getSimpleName(),
-                    true,
-                    "mock"
-            );
-        }
     }
 
     String buildFallbackReply(AgentProfile agent, String reason) {
-        Map<String, String> fallbackMap = Map.of(
-                "healing", "我想先把你稳稳接住。刚刚那一下有点卡住了，不过你还在这里的话，我们就继续慢慢说。",
-                "lively", "哎，刚才像是信号打了个结。不过没关系，我还在线，下一句继续丢给我。",
-                "cool", "刚刚中断了一下。现在恢复了，你继续，我在听。",
-                "artsy", "刚才那段像被风吹散了一点，但没关系，我们还能把它重新捡回来。",
-                "sunny", "刚才掉了一拍，现在接上了。来，继续，我们别停。"
-        );
-        return fallbackMap.getOrDefault(agent.id, "刚刚有点小问题（" + reason + "），但我们可以继续。");
+        String name = agent == null ? "我" : agent.name;
+        return name + "刚刚有点卡住了，不过现在可以继续。";
     }
 }
 
@@ -1408,7 +1191,7 @@ class ChatOrchestrator {
     private final CompositeLlmClient llmClient;
     private final SafetyService safetyService;
     private final AnalyticsService analyticsService;
-    private final AffectionJudgeService affectionJudgeService = new AffectionJudgeService();
+    private final AffectionJudgeService affectionJudgeService;
     private final EnhancedPlotDirectorService plotDirectorService;
     private final EnhancedPresenceHeartbeatService presenceHeartbeatService = new EnhancedPresenceHeartbeatService();
     private final RealityContextService realityContextService = new RealityContextService();
@@ -1422,6 +1205,7 @@ class ChatOrchestrator {
     private final RealityGuardService realityGuardService = new RealityGuardService();
     private final HumanizationEvaluationService humanizationEvaluationService = new HumanizationEvaluationService();
     private final DialogueContinuityService dialogueContinuityService = new DialogueContinuityService();
+    private final SemanticRuntimeAgentService semanticRuntimeAgentService;
 
     static MemoryService createMemoryService(long retentionMs) {
         return new EnhancedSocialMemoryService(retentionMs);
@@ -1470,7 +1254,9 @@ class ChatOrchestrator {
                 llmClient,
                 safetyService,
                 analyticsService,
-                new PlotDirectorAgentService(config)
+                AgentRuntimeFactory.plotDirector(config),
+                AgentRuntimeFactory.semanticRuntime(config),
+                AgentRuntimeFactory.affectionJudge(config)
         );
     }
 
@@ -1485,6 +1271,61 @@ class ChatOrchestrator {
             AnalyticsService analyticsService,
             PlotDirectorAgentService plotDirectorAgentService
     ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                plotDirectorAgentService,
+                new SemanticRuntimeAgentService(),
+                new LocalAffectionJudgeService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            PlotDirectorAgentService plotDirectorAgentService,
+            SemanticRuntimeAgentService semanticRuntimeAgentService
+    ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                plotDirectorAgentService,
+                semanticRuntimeAgentService,
+                new LocalAffectionJudgeService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            PlotDirectorAgentService plotDirectorAgentService,
+            SemanticRuntimeAgentService semanticRuntimeAgentService,
+            AffectionJudgeService affectionJudgeService
+    ) {
         this.repository = repository;
         this.agentConfigService = agentConfigService;
         this.memoryService = memoryService;
@@ -1494,6 +1335,8 @@ class ChatOrchestrator {
         this.safetyService = safetyService;
         this.analyticsService = analyticsService;
         this.plotDirectorService = new EnhancedPlotDirectorService(plotDirectorAgentService);
+        this.semanticRuntimeAgentService = semanticRuntimeAgentService == null ? new SemanticRuntimeAgentService() : semanticRuntimeAgentService;
+        this.affectionJudgeService = affectionJudgeService == null ? new LocalAffectionJudgeService() : affectionJudgeService;
     }
 
     Map<String, Object> initVisitor(String visitorId) throws Exception {
@@ -1752,6 +1595,20 @@ class ChatOrchestrator {
             state.messages.add(userEntry);
 
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            TimeContext timeContext = realityContextService.buildTimeContext(visitor, messageCreatedAt);
+            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, messageCreatedAt);
+            SemanticRuntimeDecision semanticDecision = semanticRuntimeAgentService.analyze(
+                    userMessage,
+                    shortTerm,
+                    session.sceneState,
+                    session.relationshipState,
+                    session.tensionState,
+                    session.memorySummary,
+                    timeContext,
+                    weatherContext,
+                    "user_turn",
+                    messageCreatedAt
+            );
             IntentState intentState = intentInferenceService.infer(
                     userMessage,
                     shortTerm,
@@ -1759,7 +1616,8 @@ class ChatOrchestrator {
                     session.sceneState,
                     session.tensionState,
                     session.memorySummary,
-                    messageCreatedAt
+                    messageCreatedAt,
+                    semanticDecision
             );
             DialogueContinuityState dialogueContinuity = dialogueContinuityService.update(
                     session.dialogueContinuityState,
@@ -1791,8 +1649,6 @@ class ChatOrchestrator {
                     ""
             );
             LlmResponse llmReply;
-            TimeContext timeContext = realityContextService.buildTimeContext(visitor, messageCreatedAt);
-            WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, messageCreatedAt);
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, "user_turn", plotDecision.sceneFrame);
             ResponsePlan responsePlan = responsePlanningService.plan(
                     intentState,
@@ -1814,7 +1670,7 @@ class ChatOrchestrator {
             );
             SearchDecision searchDecision = new SearchDecision(false, "", "skip", "skip", false);
             SearchGroundingSummary searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
-            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary, semanticDecision);
             UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
             RealityAudit realityAudit = passRealityAudit();
             HumanizationAudit humanizationAudit = emptyHumanizationAudit();
@@ -1841,7 +1697,12 @@ class ChatOrchestrator {
                         scoringEvent,
                         session.memorySummary,
                         relationshipService,
-                        messageCreatedAt
+                        messageCreatedAt,
+                        intentState,
+                        session.sceneState,
+                        session.tensionState,
+                        dialogueContinuity,
+                        "user_turn"
                 );
                 relationship = affectionScoreResult.turnEvaluation;
                 nextEmotion = affectionScoreResult.nextEmotion;
@@ -1872,6 +1733,16 @@ class ChatOrchestrator {
                         messageCreatedAt,
                         turnContext
                 );
+                plotDecision = applySemanticSceneDecision(
+                        session.sceneState,
+                        plotDecision,
+                        semanticDecision,
+                        userMessage,
+                        timeContext,
+                        weatherContext,
+                        session.userTurnCount,
+                        messageCreatedAt
+                );
                 relationship = applyPlotMacroScore(
                         relationship,
                         plotDecision,
@@ -1893,9 +1764,9 @@ class ChatOrchestrator {
                 MemoryRecall recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
                 memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, recall);
                 String currentUserMood = memoryService.detectMood(userMessage);
-                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState);
+                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState, semanticDecision);
                 searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
-                realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+                realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary, semanticDecision);
                 uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
                 responsePlan = responsePlanningService.plan(
                         intentState,
@@ -1949,7 +1820,8 @@ class ChatOrchestrator {
                         realityEnvelope,
                         nextTension,
                         plotGateDecision,
-                        dialogueContinuity
+                        dialogueContinuity,
+                        semanticDecision
                 ));
 
                 RealityGuardResult guardResult = realityGuardService.auditAndRepair(
@@ -2018,6 +1890,7 @@ class ChatOrchestrator {
             session.lastRealityAudit = realityAudit;
             session.lastPlotGateDecision = plotGateDecision;
             session.lastTurnContext = turnContext;
+            session.lastSemanticRuntimeDecision = semanticDecision;
             session.dialogueContinuityState = dialogueContinuity;
             if (!inspection.blocked) {
                 session.memorySummary = memoryService.updateTieredSummary(
@@ -2090,6 +1963,7 @@ class ChatOrchestrator {
             response.put("reality_audit", realityAuditMap(session.lastRealityAudit));
             response.put("plot_gate_reason", plotGateDecisionMap(session.lastPlotGateDecision));
             response.put("turn_context", turnContextMap(session.lastTurnContext));
+            response.put("semantic_runtime", semanticRuntimeMap(session.lastSemanticRuntimeDecision));
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
             response.put("tension_state", tensionStateMap(session.tensionState));
@@ -2188,6 +2062,18 @@ class ChatOrchestrator {
             );
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            SemanticRuntimeDecision semanticDecision = semanticRuntimeAgentService.analyze(
+                    "",
+                    shortTerm,
+                    plotDecision.nextSceneState,
+                    session.relationshipState,
+                    nextTension,
+                    session.memorySummary,
+                    timeContext,
+                    weatherContext,
+                    presenceResult.replySource,
+                    nowIso
+            );
             DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
             IntentState intentState = intentInferenceService.infer(
                     "",
@@ -2196,7 +2082,8 @@ class ChatOrchestrator {
                     plotDecision.nextSceneState,
                     nextTension,
                     session.memorySummary,
-                    nowIso
+                    nowIso,
+                    semanticDecision
             );
             PlotGateDecision plotGateDecision = emptyPlotGate(nowIso);
             ResponsePlan responsePlan = responsePlanningService.plan(
@@ -2219,7 +2106,7 @@ class ChatOrchestrator {
             );
             SearchDecision searchDecision = new SearchDecision(false, "", "skip", "skip", false);
             SearchGroundingSummary searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
-            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+            RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary, semanticDecision);
             UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, nowIso);
             List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
             String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, "", session.relationshipState, null)
@@ -2255,7 +2142,8 @@ class ChatOrchestrator {
                     realityEnvelope,
                     nextTension,
                     plotGateDecision,
-                    dialogueContinuity
+                    dialogueContinuity,
+                    semanticDecision
             ));
 
             RealityGuardResult guardResult = realityGuardService.auditAndRepair(
@@ -2316,6 +2204,7 @@ class ChatOrchestrator {
             session.lastHumanizationAudit = humanizationAudit;
             session.lastRealityAudit = realityAudit;
             session.lastPlotGateDecision = plotGateDecision;
+            session.lastSemanticRuntimeDecision = semanticDecision;
             session.dialogueContinuityState = dialogueContinuity;
             if (plotDecision.advanced) {
                 session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
@@ -2343,6 +2232,7 @@ class ChatOrchestrator {
             response.put("scene_frame", session.plotState.sceneFrame);
             response.put("reply_source", presenceResult.replySource);
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
+            response.put("semantic_runtime", semanticRuntimeMap(session.lastSemanticRuntimeDecision));
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
@@ -2601,6 +2491,7 @@ class ChatOrchestrator {
         payload.put("lastRealityAudit", realityAuditMap(session.lastRealityAudit));
         payload.put("lastPlotGateDecision", plotGateDecisionMap(session.lastPlotGateDecision));
         payload.put("lastTurnContext", turnContextMap(session.lastTurnContext));
+        payload.put("lastSemanticRuntimeDecision", semanticRuntimeMap(session.lastSemanticRuntimeDecision));
         payload.put("dialogueContinuityState", dialogueContinuityMap(session.dialogueContinuityState));
         payload.put("visitorContext", Map.of(
                 "timezone", visitor.timezone == null ? "" : visitor.timezone,
@@ -2786,6 +2677,50 @@ class ChatOrchestrator {
         context.continuityGuards = continuity.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(continuity.mustNotContradict);
     }
 
+    private PlotDecision applySemanticSceneDecision(
+            SceneState previousScene,
+            PlotDecision plotDecision,
+            SemanticRuntimeDecision semanticDecision,
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            int currentTurn,
+            String nowIso
+    ) {
+        if (plotDecision == null || semanticDecision == null) {
+            return plotDecision;
+        }
+        boolean hasSemanticScene = semanticDecision.sceneTransition
+                || semanticDecision.sceneLocation != null && !semanticDecision.sceneLocation.isBlank()
+                || semanticDecision.interactionMode != null && !semanticDecision.interactionMode.isBlank();
+        if (!hasSemanticScene) {
+            return plotDecision;
+        }
+        SceneState nextScene = sceneDirectorService.evolve(
+                previousScene,
+                userMessage,
+                timeContext,
+                weatherContext,
+                currentTurn,
+                nowIso,
+                semanticDecision
+        );
+        String sceneText = plotDecision.sceneText;
+        if (semanticDecision.sceneTransition) {
+            sceneText = sceneDirectorService.buildSceneText(previousScene, nextScene);
+        }
+        return new PlotDecision(
+                plotDecision.nextPlotState,
+                plotDecision.nextPlotArcState,
+                nextScene,
+                plotDecision.advanced,
+                plotDecision.replySource,
+                plotDecision.sceneFrame,
+                sceneText,
+                plotDecision.plotDirectorReason
+        );
+    }
+
     private TurnEvaluation applyPlotMacroScore(
             TurnEvaluation relationship,
             PlotDecision plotDecision,
@@ -2919,6 +2854,32 @@ class ChatOrchestrator {
         map.put("continuityNextBestMove", blankTo(context.continuityNextBestMove, ""));
         map.put("continuityGuards", context.continuityGuards == null ? List.of() : context.continuityGuards);
         map.put("updatedAt", blankTo(context.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> semanticRuntimeMap(SemanticRuntimeDecision decision) {
+        if (decision == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("source", blankTo(decision.source, ""));
+        map.put("remoteUsed", decision.remoteUsed);
+        map.put("reason", blankTo(decision.reason, ""));
+        map.put("primaryIntent", blankTo(decision.primaryIntent, ""));
+        map.put("secondaryIntent", blankTo(decision.secondaryIntent, ""));
+        map.put("emotion", blankTo(decision.emotion, ""));
+        map.put("clarity", blankTo(decision.clarity, ""));
+        map.put("sceneLocation", blankTo(decision.sceneLocation, ""));
+        map.put("sceneSubLocation", blankTo(decision.sceneSubLocation, ""));
+        map.put("interactionMode", blankTo(decision.interactionMode, ""));
+        map.put("sceneTransition", decision.sceneTransition);
+        map.put("sceneSummary", blankTo(decision.sceneSummary, ""));
+        map.put("searchMode", blankTo(decision.searchMode, ""));
+        map.put("searchReason", blankTo(decision.searchReason, ""));
+        map.put("mustNotGuess", decision.mustNotGuess);
+        map.put("directAnswerPolicy", blankTo(decision.directAnswerPolicy, ""));
+        map.put("sceneAtmosphere", blankTo(decision.sceneAtmosphere, ""));
+        map.put("updatedAt", blankTo(decision.updatedAt, ""));
         return map;
     }
 

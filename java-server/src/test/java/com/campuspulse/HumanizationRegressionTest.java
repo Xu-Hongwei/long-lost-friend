@@ -17,6 +17,7 @@ final class HumanizationRegressionTest {
         shouldRaiseGuardedStateAfterRepeatedOffense(orchestrator);
         shouldBlockPlotGateWhenSceneDoesNotMatch();
         shouldKeepShortLaughInSongContext();
+        shouldKeepAgentFuturePlanSeparateFromUserPlan();
     }
 
     private static void shouldDeclineLyricsGuess(ChatOrchestrator orchestrator) throws Exception {
@@ -236,6 +237,7 @@ final class HumanizationRegressionTest {
                 null,
                 null,
                 null,
+                null,
                 null
         );
 
@@ -243,6 +245,104 @@ final class HumanizationRegressionTest {
         String reply = safe(response.speechText);
         assertTrue(reply.contains("歌") || reply.contains("跑调") || reply.contains("歌词"), "short laugh should stay attached to the previous song context");
         assertTrue(!reply.contains("分享"), "short laugh after singing should not be treated as a new share prompt");
+    }
+
+    private static void shouldKeepAgentFuturePlanSeparateFromUserPlan() throws Exception {
+        Path root = Files.createTempDirectory("campus-pulse-agent-plan");
+        AppConfig config = new AppConfig(
+                0,
+                root,
+                root.resolve("public"),
+                root.resolve("runtime").resolve("state.bin"),
+                7L * 24 * 60 * 60 * 1000,
+                "",
+                "",
+                "mock",
+                java.time.Duration.ofSeconds(5)
+        );
+        ExpressiveLlmClient client = new ExpressiveLlmClient(config);
+        AgentProfile agent = Domain.buildAgents().stream()
+                .filter(item -> "healing".equals(item.id))
+                .findFirst()
+                .orElseThrow();
+        RelationshipState relationshipState = new RelationshipState();
+        relationshipState.relationshipStage = "初识";
+
+        LlmResponse futurePlan = client.generateReply(new LlmRequest(
+                agent,
+                relationshipState,
+                List.of(new ConversationSnippet("user", "我打算去互联网大厂干几年，攒些钱，然后环游世界。")),
+                "",
+                "none",
+                "",
+                "curious",
+                "answer_first",
+                "",
+                null,
+                "那你以后有什么打算？",
+                null,
+                null,
+                "",
+                null,
+                null,
+                null,
+                "user_turn",
+                null,
+                "",
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                null,
+                null,
+                null,
+                null,
+                null
+        ));
+
+        assertTrue(safe(futurePlan.speechText).contains("心理") || safe(futurePlan.speechText).contains("咨询"), "agent future plan should stay tied to healing backstory");
+        assertTrue(!safe(futurePlan.speechText).contains("大厂攒"), "agent should not copy user's big-tech money plan");
+
+        LlmResponse correction = client.generateReply(new LlmRequest(
+                agent,
+                relationshipState,
+                List.of(
+                        new ConversationSnippet("user", "我打算去互联网大厂干几年，攒些钱，然后环游世界。"),
+                        new ConversationSnippet("assistant", "我还是想继续深造，以后做一名心理咨询师。")
+                ),
+                "",
+                "none",
+                "",
+                "curious",
+                "answer_first",
+                "",
+                null,
+                "去大厂当心理咨询师？",
+                null,
+                null,
+                "",
+                null,
+                null,
+                null,
+                "user_turn",
+                null,
+                "",
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                null,
+                null,
+                null,
+                null,
+                null
+        ));
+
+        assertTrue(safe(correction.speechText).contains("心理") || safe(correction.speechText).contains("咨询"), "correction should keep agent career tied to backstory");
+        assertTrue(safe(correction.speechText).contains("你的计划") || safe(correction.speechText).contains("你刚才说"), "correction should identify mixed-in plan as user's plan");
+        assertTrue(!safe(correction.speechText).contains("我自己的方向是：去大厂"), "agent should not adopt user's big-tech plan as self plan");
     }
 
     @SuppressWarnings("unchecked")

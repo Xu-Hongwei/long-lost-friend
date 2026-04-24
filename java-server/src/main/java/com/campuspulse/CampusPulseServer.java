@@ -31,7 +31,7 @@ public class CampusPulseServer {
         EventEngine eventEngine = new EventEngine();
         SafetyService safetyService = new AdaptiveSafetyService();
         AnalyticsService analyticsService = new AnalyticsService();
-        CompositeLlmClient llmClient = new ExpressiveLlmClient(config);
+        CompositeLlmClient llmClient = AgentRuntimeFactory.chatClient(config);
         this.chatOrchestrator = new ChatOrchestrator(
                 repository,
                 agentConfigService,

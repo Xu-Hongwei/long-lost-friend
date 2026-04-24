@@ -534,6 +534,7 @@ class AgentBackstory implements Serializable {
     final String lifestyle;
     final String boundaryDetails;
     final String emotionPattern;
+    final String futurePlan;
     final List<String> hiddenFacts;
     final List<String> plotHooks;
 
@@ -548,6 +549,7 @@ class AgentBackstory implements Serializable {
             String lifestyle,
             String boundaryDetails,
             String emotionPattern,
+            String futurePlan,
             List<String> hiddenFacts,
             List<String> plotHooks
     ) {
@@ -561,6 +563,7 @@ class AgentBackstory implements Serializable {
         this.lifestyle = lifestyle;
         this.boundaryDetails = boundaryDetails;
         this.emotionPattern = emotionPattern;
+        this.futurePlan = futurePlan;
         this.hiddenFacts = hiddenFacts;
         this.plotHooks = plotHooks;
     }
@@ -578,6 +581,7 @@ class AgentBackstory implements Serializable {
                     "作息偏慢，常在图书馆待到闭馆前，喜欢把一天收进几行手帐里。",
                     "不喜欢被催着表态，也不喜欢别人拿脆弱开玩笑；被逼急时会安静后退。",
                     "慢热、柔软，先照顾别人的情绪；被认真接住后才会主动靠近。",
+                    "继续深造，把心理学学得更扎实；未来想做心理咨询或校园心理支持相关的工作，慢慢陪别人把心里的结解开。",
                     List.of("高三时有过一段转学经历，所以很在意被稳定选择。", "家里希望她更理性，她却一直舍不得文字和情绪本身。"),
                     List.of("图书馆便签", "热可可口味", "雨天共伞", "深夜未说完的话")
             );
@@ -592,6 +596,7 @@ class AgentBackstory implements Serializable {
                     "日程很满，白天像小太阳，晚上收工后偶尔会突然安静下来。",
                     "很怕被冷场和失约；连续敷衍会让她嘴上开玩笑、心里退半步。",
                     "外放、热烈，但不是没有脆弱；越在意一个人越容易用玩笑试探。",
+                    "想做活动策划、内容传播或品牌相关的工作，把很多人聚到同一个热闹又有记忆点的现场里。",
                     List.of("她其实害怕自己只是热闹里的气氛组，而不是被真正记住的人。"),
                     List.of("社团招新", "夜市投喂", "天台秘密", "合照留念")
             );
@@ -606,6 +611,7 @@ class AgentBackstory implements Serializable {
                     "效率感很强，常把情绪藏在行动里，记得细节但不急着说。",
                     "不喜欢被强行窥探隐私，也不喜欢轻浮地试探底线。",
                     "克制、慢热、观察力强；信任建立前少说，信任建立后会用行动保护。",
+                    "先把技术能力打稳，往工程研发或系统方向走；比起漂亮话，更想做出稳定可用的东西。",
                     List.of("对失败很敏感，习惯把压力一个人扛到很晚。"),
                     List.of("实验楼偶遇", "多买的一杯咖啡", "记住小习惯", "雨夜等人")
             );
@@ -620,6 +626,7 @@ class AgentBackstory implements Serializable {
                     "生活节奏像慢慢显影的胶片，喜欢用画面和比喻表达真实情绪。",
                     "讨厌粗暴打断和假装懂；对逐字歌词、引用和作品出处会比较认真。",
                     "敏感、文艺、会绕开直白表白；真正被理解时才会把话说得很近。",
+                    "想继续做视觉、影像或文字相关的事；希望工作能养活自己，也给不太实用但重要的表达留空间。",
                     List.of("写过一封没寄出的信，收信人一直没有改过。"),
                     List.of("黄昏取景", "共享歌单", "暗房秘密", "未寄出的信")
             );
@@ -634,6 +641,7 @@ class AgentBackstory implements Serializable {
                     "习惯早起和用行动解决问题，嘴上直接，关心常常落在具体安排里。",
                     "不喜欢反复失约、装作没事和消耗自己；被冒犯时会直接停下来讲清楚。",
                     "明亮、坦率、保护欲强；生气也来得直接，但真诚修复后回暖很快。",
+                    "往运动康复或训练支持方向走，帮别人从受伤、低谷或混乱里一点点恢复行动力。",
                     List.of("曾经因为旧伤错过一次重要比赛，所以很在意别人是否逞强。"),
                     List.of("操场并肩跑", "晨光早餐", "看台谈心", "旧伤与重新开始")
             );
@@ -648,6 +656,7 @@ class AgentBackstory implements Serializable {
                     "普通校园作息，关系会随对话慢慢展开。",
                     "尊重边界，不接受冒犯和强迫。",
                     "先观察，再靠近。",
+                    "顺着自己长期在意的方向慢慢走，不只被眼前的热闹推着跑。",
                     List.of(),
                     List.of("日常相遇", "共同话题", "关系推进")
             );
@@ -874,6 +883,34 @@ class RealityEnvelope implements Serializable {
     String sceneTruth;
     String interactionTruth;
     SearchGroundingSummary searchGrounding;
+    SemanticRuntimeDecision semanticDecision;
+}
+
+class SemanticRuntimeDecision implements Serializable {
+    boolean remoteUsed;
+    String source;
+    String reason;
+    String primaryIntent;
+    String secondaryIntent;
+    String emotion;
+    String clarity;
+    boolean needsEmpathy;
+    boolean needsStructure;
+    boolean needsFollowup;
+    boolean isBoundarySensitive;
+    String sceneLocation;
+    String sceneSubLocation;
+    String interactionMode;
+    boolean sceneTransition;
+    String sceneSummary;
+    String searchMode;
+    String searchReason;
+    String searchQuery;
+    boolean mustNotGuess;
+    String directAnswerPolicy;
+    String directAnswerHint;
+    String sceneAtmosphere;
+    String updatedAt;
 }
 
 class RelationalTensionState implements Serializable {
@@ -1059,6 +1096,7 @@ class SessionRecord implements Serializable {
     RealityAudit lastRealityAudit;
     PlotGateDecision lastPlotGateDecision;
     TurnContext lastTurnContext;
+    SemanticRuntimeDecision lastSemanticRuntimeDecision;
     DialogueContinuityState dialogueContinuityState;
 }
 
@@ -1191,6 +1229,7 @@ class LlmRequest {
     final RelationalTensionState tensionState;
     final PlotGateDecision plotGateDecision;
     final DialogueContinuityState dialogueContinuityState;
+    final SemanticRuntimeDecision semanticDecision;
 
     LlmRequest(
             AgentProfile agent,
@@ -1221,7 +1260,8 @@ class LlmRequest {
             RealityEnvelope realityEnvelope,
             RelationalTensionState tensionState,
             PlotGateDecision plotGateDecision,
-            DialogueContinuityState dialogueContinuityState
+            DialogueContinuityState dialogueContinuityState,
+            SemanticRuntimeDecision semanticDecision
     ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
@@ -1252,6 +1292,7 @@ class LlmRequest {
         this.tensionState = tensionState;
         this.plotGateDecision = plotGateDecision;
         this.dialogueContinuityState = dialogueContinuityState;
+        this.semanticDecision = semanticDecision;
     }
 }
 

@@ -23,6 +23,91 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+final class SceneLexicon {
+    static final List<String> LOCATIONS = List.of("图书馆", "操场", "食堂", "宿舍", "市区");
+    private static final List<String> PATH_KEYWORDS = List.of("路上", "送你回", "送她回", "一起走");
+    private static final List<String> ONLINE_KEYWORDS = List.of("手机", "发消息", "回消息", "聊天框");
+    private static final List<String> PHONE_KEYWORDS = List.of("打电话", "电话");
+    private static final List<String> HOT_DRINK_KEYWORDS = List.of("热饮", "热可可", "奶茶", "咖啡");
+
+    private SceneLexicon() {
+    }
+
+    static boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isScenePush(String text) {
+        return containsAny(text, List.of("送你回宿舍", "回宿舍", "去食堂", "去操场", "一起走", "路上", "去图书馆", "夜跑", "去市区", "换个地方"));
+    }
+
+    static boolean hasSceneMovementSignal(String text) {
+        return containsAny(text, List.of("去", "走吧", "一起走", "一起去", "送你", "送她", "回宿舍", "操场", "食堂", "图书馆", "市区"));
+    }
+
+    static boolean hasHotDrinkContext(String text) {
+        return containsAny(text, HOT_DRINK_KEYWORDS) || containsAny(text, List.of("买一杯", "喝的"));
+    }
+
+    static String detectLocation(String text, String fallback) {
+        if (containsAny(text, PATH_KEYWORDS)) return "回去的路上";
+        if (containsAny(text, ONLINE_KEYWORDS)) return "线上聊天";
+        for (String location : LOCATIONS) {
+            if (text != null && text.contains(location)) {
+                return location;
+            }
+        }
+        return fallback == null || fallback.isBlank() ? "聊天现场" : fallback;
+    }
+
+    static String detectSubLocation(String text) {
+        if (text != null && text.contains("窗边")) return "窗边";
+        if (text != null && text.contains("门口")) return "门口";
+        if (text != null && text.contains("走廊")) return "走廊";
+        if (text != null && text.contains("看台")) return "看台";
+        return "";
+    }
+
+    static String detectInteractionMode(String text, String fallback) {
+        if (containsAny(text, PHONE_KEYWORDS)) return "phone_call";
+        if (containsAny(text, ONLINE_KEYWORDS)) return "online_chat";
+        if (containsAny(text, PATH_KEYWORDS)) return "mixed_transition";
+        return fallback == null || fallback.isBlank() ? "face_to_face" : fallback;
+    }
+
+    static String objectiveFromText(String text) {
+        String compact = text == null ? "" : text;
+        if (hasHotDrinkContext(compact)) return "一起去买热饮。";
+        if (compact.contains("操场")) return "一起去操场。";
+        if (compact.contains("食堂")) return "一起去食堂。";
+        if (compact.contains("图书馆")) return "一起去图书馆。";
+        if (compact.contains("宿舍")) return "送她回宿舍。";
+        if (compact.contains("市区")) return "一起去市区。";
+        if (containsAny(compact, List.of("走吧", "一起走", "一起去"))) return "一起往前走。";
+        return "";
+    }
+
+    static String sceneSummary(String location) {
+        return switch (location == null ? "" : location) {
+            case "宿舍" -> "场景已经转到宿舍附近，气氛更像并肩慢慢走着继续聊。";
+            case "图书馆" -> "你们把话题带到了图书馆相关的安静场景里。";
+            case "食堂" -> "场景被带到了食堂这一侧，更像日常陪伴。";
+            case "回去的路上", "路上" -> "场景开始从原地移动，变成并肩走着继续聊天。";
+            case "操场" -> "场景被带到操场这一侧，步子和语气都更适合慢下来。";
+            case "市区" -> "场景被带到市区这一侧，话题也多了一点真实生活的烟火气。";
+            default -> "";
+        };
+    }
+}
+
 class EmotionState implements Serializable {
     int warmth;
     int safety;
@@ -254,25 +339,30 @@ class IntentInferenceService {
             SceneState sceneState,
             RelationalTensionState tensionState,
             MemorySummary memorySummary,
-            String nowIso
+            String nowIso,
+            SemanticRuntimeDecision semanticDecision
     ) {
         String text = userMessage == null ? "" : userMessage.trim();
         IntentState state = new IntentState();
-        state.primaryIntent = detectPrimary(text);
-        state.secondaryIntent = detectSecondary(text, relationshipState, sceneState);
-        state.emotion = detectEmotion(text, tensionState);
-        state.clarity = detectClarity(text);
-        state.needsEmpathy = "emotion_share".equals(state.primaryIntent)
+        state.primaryIntent = firstNonBlank(semanticDecision == null ? "" : semanticDecision.primaryIntent, detectPrimary(text));
+        state.secondaryIntent = firstNonBlank(semanticDecision == null ? "" : semanticDecision.secondaryIntent, detectSecondary(text, relationshipState, sceneState));
+        state.emotion = firstNonBlank(semanticDecision == null ? "" : semanticDecision.emotion, detectEmotion(text, tensionState));
+        state.clarity = firstNonBlank(semanticDecision == null ? "" : semanticDecision.clarity, detectClarity(text));
+        state.needsEmpathy = semanticDecision != null && semanticDecision.needsEmpathy
+                || "emotion_share".equals(state.primaryIntent)
                 || "romantic_probe".equals(state.primaryIntent)
                 || "sad".equals(state.emotion)
                 || "angry".equals(state.emotion);
-        state.needsStructure = "advice_seek".equals(state.primaryIntent);
-        state.needsFollowup = "low".equals(state.clarity)
+        state.needsStructure = semanticDecision != null && semanticDecision.needsStructure || "advice_seek".equals(state.primaryIntent);
+        state.needsFollowup = semanticDecision != null && semanticDecision.needsFollowup
+                || "low".equals(state.clarity)
                 || "scene_push".equals(state.primaryIntent)
                 || "romantic_probe".equals(state.primaryIntent);
-        state.isBoundarySensitive = containsAny(text, List.of("别碰", "别问", "不要逼我", "烦", "滚", "讨厌"))
+        state.isBoundarySensitive = semanticDecision != null && semanticDecision.isBoundarySensitive
+                || containsAny(text, List.of("别碰", "别问", "不要逼我", "烦", "滚", "讨厌"))
                 || tensionState != null && tensionState.guarded;
-        state.rationale = buildRationale(text, recentContext, sceneState, memorySummary);
+        state.rationale = buildRationale(text, recentContext, sceneState, memorySummary)
+                + "; semantic=" + (semanticDecision == null ? "fallback" : semanticDecision.source + ":" + semanticDecision.reason);
         state.updatedAt = nowIso;
         return state;
     }
@@ -285,7 +375,7 @@ class IntentInferenceService {
         if (containsAny(text, List.of("喜欢你", "喜欢我", "对我有好感", "是不是喜欢我", "有点吸引", "心动", "在意我"))) {
             return "romantic_probe";
         }
-        if (containsAny(text, List.of("送你回宿舍", "回宿舍", "去食堂", "去操场", "一起走", "路上", "去图书馆", "夜跑"))) {
+        if (SceneLexicon.isScenePush(text)) {
             return "scene_push";
         }
         if (containsAny(text, List.of("怎么办", "建议", "怎么选", "该不该", "要不要"))) {
@@ -363,6 +453,10 @@ class IntentInferenceService {
         }
         return false;
     }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? fallback : preferred;
+    }
 }
 
 class DialogueContinuityService {
@@ -391,8 +485,8 @@ class DialogueContinuityService {
         String previousUser = lastText(recentContext, "user");
         boolean acceptedPrevious = isAcceptance(compact)
                 && (looksLikeProposal(lastAssistant) || next.currentObjective != null && !next.currentObjective.isBlank());
-        boolean hotDrinkContext = containsAny(compact + lastAssistant + previousUser + blank(next.currentObjective), List.of("热饮", "热可可", "奶茶", "咖啡", "买一杯", "喝的"));
-        boolean scenePush = containsAny(compact, List.of("去", "走吧", "一起走", "一起去", "送你", "回宿舍", "操场", "食堂", "图书馆", "市区"));
+        boolean hotDrinkContext = SceneLexicon.hasHotDrinkContext(compact + lastAssistant + previousUser + blank(next.currentObjective));
+        boolean scenePush = SceneLexicon.hasSceneMovementSignal(compact);
 
         next.updatedAt = nowIso;
         next.lastAssistantQuestion = containsQuestion(lastAssistant) ? lastAssistant : "";
@@ -482,23 +576,13 @@ class DialogueContinuityService {
             return state.currentObjective;
         }
         String all = compact(lastAssistant + previousUser);
-        if (hotDrinkContext) return "一起去买热饮。";
-        if (all.contains("操场")) return "一起去操场。";
-        if (all.contains("食堂")) return "一起去食堂。";
-        if (all.contains("图书馆")) return "一起去图书馆。";
-        if (all.contains("宿舍")) return "送她回宿舍。";
+        String inferred = SceneLexicon.objectiveFromText(all);
+        if (!inferred.isBlank()) return inferred;
         return "承接上一轮已经确认的共同计划。";
     }
 
     private String inferSceneObjective(String compact) {
-        if (compact.contains("操场")) return "一起去操场。";
-        if (compact.contains("食堂")) return "一起去食堂。";
-        if (compact.contains("图书馆")) return "一起去图书馆。";
-        if (compact.contains("宿舍")) return "送她回宿舍。";
-        if (compact.contains("市区")) return "一起去市区。";
-        if (compact.contains("热饮") || compact.contains("热可可") || compact.contains("奶茶") || compact.contains("咖啡")) return "一起去买热饮。";
-        if (compact.contains("走吧") || compact.contains("一起走") || compact.contains("一起去")) return "一起往前走。";
-        return "";
+        return SceneLexicon.objectiveFromText(compact);
     }
 
     private List<String> guardsForObjective(String objective, SceneState sceneState) {
@@ -862,12 +946,17 @@ class PlotGateService {
 
 class RealityGuardService {
     RealityEnvelope buildEnvelope(TimeContext timeContext, WeatherContext weatherContext, SceneState sceneState, SearchGroundingSummary grounding) {
+        return buildEnvelope(timeContext, weatherContext, sceneState, grounding, null);
+    }
+
+    RealityEnvelope buildEnvelope(TimeContext timeContext, WeatherContext weatherContext, SceneState sceneState, SearchGroundingSummary grounding, SemanticRuntimeDecision semanticDecision) {
         RealityEnvelope envelope = new RealityEnvelope();
         envelope.timeTruth = timeContext == null ? "" : blank(timeContext.dayPart) + " " + blank(timeContext.localTime);
         envelope.weatherTruth = weatherContext == null ? "" : blank(weatherContext.city) + " " + blank(weatherContext.summary);
         envelope.sceneTruth = sceneState == null ? "" : blank(sceneState.location) + " " + blank(sceneState.sceneSummary);
         envelope.interactionTruth = sceneState == null ? "" : blank(sceneState.interactionMode);
         envelope.searchGrounding = grounding;
+        envelope.semanticDecision = semanticDecision;
         return envelope;
     }
 
@@ -1017,7 +1106,7 @@ class RealityGuardService {
     }
 
     private boolean mentionsConflictingLocation(String text, String currentLocation) {
-        for (String candidate : List.of("图书馆", "操场", "食堂", "宿舍", "市区")) {
+        for (String candidate : SceneLexicon.LOCATIONS) {
             if (!candidate.equals(currentLocation) && text.contains(candidate)) {
                 return true;
             }
@@ -1031,7 +1120,7 @@ class RealityGuardService {
 
     private String removeForeignLocations(String text, String currentLocation) {
         String next = safe(text);
-        for (String candidate : List.of("图书馆", "操场", "食堂", "宿舍", "市区")) {
+        for (String candidate : SceneLexicon.LOCATIONS) {
             if (!candidate.equals(currentLocation)) {
                 next = next.replace(candidate, "这里");
             }
@@ -1395,21 +1484,8 @@ class EnhancedSocialMemoryService extends SocialMemoryService {
         if (userMessage == null || userMessage.isBlank()) {
             return;
         }
-        String location = "";
-        String scene = "";
-        if (userMessage.contains("宿舍")) {
-            location = "宿舍";
-            scene = "场景已经转到宿舍附近，气氛更像并肩慢慢走着继续聊。";
-        } else if (userMessage.contains("图书馆")) {
-            location = "图书馆";
-            scene = "你们把话题带到了图书馆相关的安静场景里。";
-        } else if (userMessage.contains("食堂")) {
-            location = "食堂";
-            scene = "场景被带到了食堂这一侧，更像日常陪伴。";
-        } else if (userMessage.contains("路上") || userMessage.contains("送你回") || userMessage.contains("一起走")) {
-            location = "路上";
-            scene = "场景开始从原地移动，变成并肩走着继续聊天。";
-        }
+        String location = SceneLexicon.detectLocation(userMessage, "");
+        String scene = SceneLexicon.sceneSummary(location);
         if (scene.isBlank()) {
             return;
         }
@@ -1554,14 +1630,31 @@ class AffectionJudgeService {
         boolean strained = evaluation.riskFlags.contains("boundary_hit") || evaluation.riskFlags.contains("low_quality_turn");
 
         nextEmotion.warmth = clamp(nextEmotion.warmth + closeness + resonance / 2 - (strained ? 2 : 0), 0, 100);
-        nextEmotion.safety = clamp(nextEmotion.safety + openness + (evaluation.behaviorTags.contains("灏婇噸杈圭晫") ? 2 : 0) - (strained ? 3 : 0), 0, 100);
+        nextEmotion.safety = clamp(nextEmotion.safety + openness + (evaluation.behaviorTags.contains("尊重边界") ? 2 : 0) - (strained ? 3 : 0), 0, 100);
         nextEmotion.longing = clamp(nextEmotion.longing + closeness + (evaluation.stageChanged ? 3 : 0) - (strained ? 2 : 0), 0, 100);
-        nextEmotion.initiative = clamp(nextEmotion.initiative + (evaluation.affectionDelta.total > 0 ? 2 : -2) + (evaluation.behaviorTags.contains("涓诲姩鍥炲簲") ? 1 : 0), 0, 100);
-        nextEmotion.vulnerability = clamp(nextEmotion.vulnerability + openness + (evaluation.behaviorTags.contains("鎺ヤ綇鎯呯华") ? 2 : 0) - (strained ? 1 : 0), 0, 100);
+        nextEmotion.initiative = clamp(nextEmotion.initiative + (evaluation.affectionDelta.total > 0 ? 2 : -2) + (evaluation.behaviorTags.contains("主动回应") ? 1 : 0), 0, 100);
+        nextEmotion.vulnerability = clamp(nextEmotion.vulnerability + openness + (evaluation.behaviorTags.contains("接住情绪") ? 2 : 0) - (strained ? 1 : 0), 0, 100);
         nextEmotion.currentMood = deriveMood(nextEmotion, evaluation);
         nextEmotion.updatedAt = nowIso;
 
         return new AffectionScoreResult(evaluation, nextEmotion);
+    }
+
+    AffectionScoreResult evaluateTurn(
+            String userMessage,
+            RelationshipState relationshipState,
+            EmotionState emotionState,
+            StoryEvent event,
+            MemorySummary memorySummary,
+            RelationshipService relationshipService,
+            String nowIso,
+            IntentState intentState,
+            SceneState sceneState,
+            RelationalTensionState tensionState,
+            DialogueContinuityState continuityState,
+            String replySource
+    ) {
+        return evaluateTurn(userMessage, relationshipState, emotionState, event, memorySummary, relationshipService, nowIso);
     }
 
     EmotionState applyChoiceOutcome(EmotionState previous, ChoiceOption choice, RelationshipState nextState, String nowIso) {
@@ -1626,7 +1719,7 @@ class AffectionJudgeService {
         return emotion;
     }
 
-    private String deriveMood(EmotionState emotion, TurnEvaluation evaluation) {
+    String deriveMood(EmotionState emotion, TurnEvaluation evaluation) {
         if (evaluation.riskFlags.contains("boundary_hit")) {
             return "uneasy";
         }
@@ -1636,13 +1729,13 @@ class AffectionJudgeService {
         if (emotion.initiative >= 55 && emotion.longing >= 40) {
             return "teasing";
         }
-        if (emotion.vulnerability >= 40 && evaluation.behaviorTags.contains("鐪熻瘹鍒嗕韩")) {
+        if (emotion.vulnerability >= 40 && evaluation.behaviorTags.contains("真诚分享")) {
             return "protective";
         }
         return "calm";
     }
 
-    private int clamp(int value, int min, int max) {
+    int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
 }
@@ -1719,7 +1812,7 @@ class PlotDirectorAgentService {
         }
     }
 
-    private PlotDirectorAgentDecision guardDecision(String text, String replySource, int gap, boolean explicitTransition) {
+    PlotDirectorAgentDecision guardDecision(String text, String replySource, int gap, boolean explicitTransition) {
         if (explicitTransition) {
             return new PlotDirectorAgentDecision(
                     "transition_only",
@@ -1745,7 +1838,7 @@ class PlotDirectorAgentService {
         return null;
     }
 
-    private PlotDirectorAgentDecision localDecision(
+    PlotDirectorAgentDecision localDecision(
             String text,
             String replySource,
             int currentTurn,
@@ -1780,7 +1873,7 @@ class PlotDirectorAgentService {
         return new PlotDirectorAgentDecision("hold_plot", "director_prefers_current_conversation", "", false);
     }
 
-    private PlotDirectorAgentDecision callRemoteDirector(
+    PlotDirectorAgentDecision callRemoteDirector(
             String userMessage,
             String replySource,
             int currentTurn,
@@ -1984,7 +2077,7 @@ class PlotDirectorAgentService {
         return new PlotDirectorAgentDecision(action, "remote:" + reason, whyNow, sceneCue, shouldAdvance, confidence, riskIfAdvance, requiredUserSignal);
     }
 
-    private PlotDirectorAgentDecision sanitizeRemoteDecision(
+    PlotDirectorAgentDecision sanitizeRemoteDecision(
             PlotDirectorAgentDecision remote,
             PlotDirectorAgentDecision local,
             String replySource,
@@ -2343,8 +2436,6 @@ class PlotDirectorService {
         if (text.length() >= 8) signal++;
         if (containsAny(text, List.of("上次", "之前", "还记得", "后来"))) signal++;
         if (containsAny(text, List.of("一起", "下次", "以后", "认真", "靠近", "喜欢"))) signal++;
-        if (containsAny(text, List.of("涓婃", "涔嬪墠", "杩樿寰?", "鍚庢潵"))) signal++;
-        if (containsAny(text, List.of("涓€璧?", "涓嬫", "浠ュ悗"))) signal++;
         if (memorySummary != null && memorySummary.openLoops != null && !memorySummary.openLoops.isEmpty()) signal++;
         if (emotionState != null && emotionState.longing >= 32) signal++;
         if (weatherContext != null && weatherContext.summary != null && !weatherContext.summary.isBlank()
@@ -2598,23 +2689,28 @@ class SceneDirectorService {
     }
 
     SceneState evolve(SceneState sceneState, String userMessage, TimeContext timeContext, WeatherContext weatherContext, int currentTurn, String nowIso) {
+        return evolve(sceneState, userMessage, timeContext, weatherContext, currentTurn, nowIso, null);
+    }
+
+    SceneState evolve(SceneState sceneState, String userMessage, TimeContext timeContext, WeatherContext weatherContext, int currentTurn, String nowIso, SemanticRuntimeDecision semanticDecision) {
         SceneState next = cloneState(normalize(sceneState, nowIso));
         next.timeOfScene = timeContext == null ? "" : timeContext.dayPart;
         next.weatherMood = weatherContext == null ? "" : weatherContext.summary;
         String text = userMessage == null ? "" : userMessage;
-        String nextLocation = detectLocation(text, next.location);
+        String semanticLocation = semanticDecision == null ? "" : safe(semanticDecision.sceneLocation);
+        String nextLocation = semanticLocation.isBlank() ? SceneLexicon.detectLocation(text, next.location) : semanticLocation;
         boolean changed = !nextLocation.equals(next.location);
         if (changed) {
             next.location = nextLocation;
-            next.subLocation = detectSubLocation(text);
-            next.transitionPending = true;
+            next.subLocation = firstNonBlank(semanticDecision == null ? "" : semanticDecision.sceneSubLocation, SceneLexicon.detectSubLocation(text));
+            next.transitionPending = semanticDecision == null || semanticDecision.sceneTransition;
             next.transitionLockUntilTurn = currentTurn + 2;
             next.lastConfirmedSceneTurn = currentTurn;
         } else if (currentTurn >= next.transitionLockUntilTurn) {
             next.transitionPending = false;
         }
-        next.interactionMode = detectInteractionMode(text, next.interactionMode);
-        next.sceneSummary = buildSceneSummary(next, changed, text);
+        next.interactionMode = firstNonBlank(semanticDecision == null ? "" : semanticDecision.interactionMode, SceneLexicon.detectInteractionMode(text, next.interactionMode));
+        next.sceneSummary = firstNonBlank(semanticDecision == null ? "" : semanticDecision.sceneSummary, buildSceneSummary(next, changed, text));
         next.updatedAt = nowIso;
         return next;
     }
@@ -2630,43 +2726,6 @@ class SceneDirectorService {
             return next.sceneSummary;
         }
         return "";
-    }
-    private String detectLocation(String text, String fallback) {
-        if (text.contains("操场")) return "操场";
-        if (text.contains("宿舍")) return "宿舍";
-        if (text.contains("食堂")) return "食堂";
-        if (text.contains("图书馆")) return "图书馆";
-        if (text.contains("市区")) return "市区";
-        if (text.contains("路上") || text.contains("送你回") || text.contains("送她回") || text.contains("一起走")) return "回去的路上";
-        if (text.contains("手机") || text.contains("发消息") || text.contains("回消息")) return "线上聊天";
-        if (text.contains("操场")) return "操场";
-        if (text.contains("宿舍")) return "宿舍";
-        if (text.contains("食堂")) return "食堂";
-        if (text.contains("图书馆")) return "图书馆";
-        if (text.contains("路上") || text.contains("送你回") || text.contains("一起走")) return "回去的路上";
-        if (text.contains("手机") || text.contains("发消息")) return "线上聊天";
-        return fallback == null || fallback.isBlank() ? "聊天现场" : fallback;
-    }
-
-    private String detectSubLocation(String text) {
-        if (text.contains("窗边")) return "窗边";
-        if (text.contains("门口")) return "门口";
-        if (text.contains("走廊")) return "走廊";
-        if (text.contains("看台")) return "看台";
-        if (text.contains("窗边")) return "窗边";
-        if (text.contains("门口")) return "门口";
-        if (text.contains("走廊")) return "走廊";
-        return "";
-    }
-
-    private String detectInteractionMode(String text, String fallback) {
-        if (text.contains("打电话") || text.contains("电话")) return "phone_call";
-        if (text.contains("发消息") || text.contains("回消息") || text.contains("聊天框") || text.contains("手机")) return "online_chat";
-        if (text.contains("送你回") || text.contains("送她回") || text.contains("一起走") || text.contains("路上")) return "mixed_transition";
-        if (text.contains("打电话") || text.contains("电话")) return "phone_call";
-        if (text.contains("发消息") || text.contains("回消息") || text.contains("聊天框") || text.contains("手机")) return "online_chat";
-        if (text.contains("送你回") || text.contains("一起走") || text.contains("路上")) return "mixed_transition";
-        return fallback == null || fallback.isBlank() ? "face_to_face" : fallback;
     }
 
     private String buildSceneSummary(SceneState state, boolean changed, String userMessage) {
@@ -2700,12 +2759,37 @@ class SceneDirectorService {
     private String safe(String value) {
         return value == null ? "" : value;
     }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? fallback : preferred;
+    }
 }
 
 class SearchDecisionService {
     SearchDecision decide(String userMessage, String replySource, SceneState sceneState, IntentState intentState) {
+        return decide(userMessage, replySource, sceneState, intentState, null);
+    }
+
+    SearchDecision decide(String userMessage, String replySource, SceneState sceneState, IntentState intentState, SemanticRuntimeDecision semanticDecision) {
         if (userMessage == null || userMessage.isBlank()) {
             return new SearchDecision(false, "", "empty", "skip", false);
+        }
+        if (semanticDecision != null && semanticDecision.searchMode != null && !semanticDecision.searchMode.isBlank()) {
+            String mode = semanticDecision.searchMode;
+            if ("must_search".equals(mode) || "should_search".equals(mode) || "must_not_guess".equals(mode)) {
+                boolean enabled = !"must_not_guess".equals(mode);
+                boolean mustNotGuess = semanticDecision.mustNotGuess || "must_search".equals(mode) || "must_not_guess".equals(mode);
+                return new SearchDecision(
+                        enabled,
+                        firstNonBlank(semanticDecision.searchQuery, userMessage.trim()),
+                        firstNonBlank(semanticDecision.searchReason, "semantic_runtime"),
+                        mode,
+                        mustNotGuess
+                );
+            }
+            if ("skip".equals(mode)) {
+                return new SearchDecision(false, "", firstNonBlank(semanticDecision.searchReason, "semantic_skip"), "skip", false);
+            }
         }
         String text = userMessage.trim();
         boolean lyrics = containsAny(text, List.of("歌词", "台词", "原句", "完整句子"));
@@ -2737,6 +2821,445 @@ class SearchDecisionService {
             }
         }
         return false;
+    }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? fallback : preferred;
+    }
+}
+
+class SemanticRuntimeAgentService {
+    private static final String DEFAULT_MODEL = "qwen-plus";
+    private final String baseUrl;
+    private final String apiKey;
+    private final String model;
+    private final Duration timeout;
+
+    SemanticRuntimeAgentService() {
+        this.baseUrl = "";
+        this.apiKey = "";
+        this.model = DEFAULT_MODEL;
+        this.timeout = Duration.ofMillis(12000);
+    }
+
+    SemanticRuntimeAgentService(AppConfig config) {
+        this.baseUrl = config == null ? "" : safe(config.plotLlmBaseUrl);
+        this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
+        this.model = config == null || safe(config.plotLlmModel).isBlank() ? DEFAULT_MODEL : safe(config.plotLlmModel);
+        this.timeout = config == null || config.plotLlmTimeout == null ? Duration.ofMillis(12000) : config.plotLlmTimeout;
+    }
+
+    SemanticRuntimeDecision analyze(
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            SceneState sceneState,
+            RelationshipState relationshipState,
+            RelationalTensionState tensionState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso
+    ) {
+        SemanticRuntimeDecision fallback = localAnalyze(
+                userMessage,
+                sceneState,
+                tensionState,
+                timeContext,
+                weatherContext,
+                replySource,
+                nowIso
+        );
+        if (!remoteEnabled() || userMessage == null || userMessage.isBlank()) {
+            return fallback;
+        }
+        try {
+            SemanticRuntimeDecision remote = callRemote(
+                    userMessage,
+                    recentContext,
+                    sceneState,
+                    relationshipState,
+                    tensionState,
+                    memorySummary,
+                    timeContext,
+                    weatherContext,
+                    replySource,
+                    nowIso
+            );
+            return mergeWithFallback(remote, fallback, nowIso);
+        } catch (Exception ex) {
+            fallback.reason = "local_fallback:" + ex.getClass().getSimpleName();
+            return fallback;
+        }
+    }
+
+    SemanticRuntimeDecision callRemote(
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            SceneState sceneState,
+            RelationshipState relationshipState,
+            RelationalTensionState tensionState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso
+    ) throws IOException {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", model);
+        payload.put("temperature", 0.1);
+        payload.put("messages", List.of(
+                Map.of(
+                        "role", "system",
+                        "content",
+                        "You are a hidden semantic runtime agent for a campus romance chat game. "
+                                + "Return ONLY strict JSON. Do not write dialogue. "
+                                + "Infer meaning from the current turn and recent context, not from keyword matching. "
+                                + "You decide intent, scene movement, interaction mode, search need, direct-answer policy, and a short atmosphere cue."
+                ),
+                Map.of("role", "user", "content", Json.stringify(buildInput(
+                        userMessage,
+                        recentContext,
+                        sceneState,
+                        relationshipState,
+                        tensionState,
+                        memorySummary,
+                        timeContext,
+                        weatherContext,
+                        replySource
+                )))
+        ));
+
+        HttpClient client = HttpClient.newBuilder().connectTimeout(timeout).build();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(baseUrl) + "/chat/completions"))
+                .timeout(timeout)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Authorization", "Bearer " + apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(Json.stringify(payload), StandardCharsets.UTF_8))
+                .build();
+        HttpResponse<String> response;
+        try {
+            response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IOException("semantic_runtime_interrupted", ex);
+        }
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("semantic_runtime_http_" + response.statusCode());
+        }
+        Map<String, Object> parsed = Json.asObject(Json.parse(response.body()));
+        List<Object> choices = Json.asArray(parsed.get("choices"));
+        if (choices.isEmpty()) {
+            throw new IOException("semantic_runtime_empty_choices");
+        }
+        Map<String, Object> choice = Json.asObject(choices.get(0));
+        Map<String, Object> message = Json.asObject(choice.get("message"));
+        return parse(Json.asString(message.get("content")), nowIso);
+    }
+
+    private Map<String, Object> buildInput(
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            SceneState sceneState,
+            RelationshipState relationshipState,
+            RelationalTensionState tensionState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource
+    ) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("output_schema", Map.ofEntries(
+                Map.entry("primaryIntent", "light_chat|romantic_probe|emotion_share|question_check|scene_push|advice_seek|meta_repair|small_talk|presence_followup"),
+                Map.entry("secondaryIntent", "memory_callback|transition_hold|pace_guard|none"),
+                Map.entry("emotion", "neutral|warm|sad|angry|fragile|curious"),
+                Map.entry("clarity", "low|medium|high"),
+                Map.entry("needsEmpathy", "boolean"),
+                Map.entry("needsStructure", "boolean"),
+                Map.entry("needsFollowup", "boolean"),
+                Map.entry("isBoundarySensitive", "boolean"),
+                Map.entry("sceneLocation", "current/semantic place, empty if unchanged"),
+                Map.entry("sceneSubLocation", "semantic sub-place, optional"),
+                Map.entry("interactionMode", "face_to_face|phone_call|online_chat|mixed_transition"),
+                Map.entry("sceneTransition", "boolean"),
+                Map.entry("sceneSummary", "short Chinese scene continuity summary"),
+                Map.entry("searchMode", "skip|should_search|must_search|must_not_guess"),
+                Map.entry("searchReason", "lyrics|quote|realtime|factual|contextual|skip"),
+                Map.entry("searchQuery", "search query or empty"),
+                Map.entry("mustNotGuess", "boolean"),
+                Map.entry("directAnswerPolicy", "none|decline_ungrounded_quote|answer_relationship_feeling|clarify_unconfirmed_detail|repair_misattribution|answer_agent_future_plan"),
+                Map.entry("directAnswerHint", "short Chinese instruction for the chat agent"),
+                Map.entry("sceneAtmosphere", "one short Chinese atmosphere cue grounded in current scene/time/weather"),
+                Map.entry("reason", "short snake_case reason")
+        ));
+        input.put("userMessage", userMessage);
+        input.put("replySource", replySource);
+        input.put("recentContext", recentContext == null ? List.of() : recentContext.stream()
+                .limit(8)
+                .map(item -> Map.of("role", safe(item.role), "text", safe(item.text)))
+                .toList());
+        input.put("scene", Map.of(
+                "location", sceneState == null ? "" : safe(sceneState.location),
+                "subLocation", sceneState == null ? "" : safe(sceneState.subLocation),
+                "interactionMode", sceneState == null ? "" : safe(sceneState.interactionMode),
+                "summary", sceneState == null ? "" : safe(sceneState.sceneSummary)
+        ));
+        input.put("time", Map.of(
+                "dayPart", timeContext == null ? "" : safe(timeContext.dayPart),
+                "localTime", timeContext == null ? "" : safe(timeContext.localTime)
+        ));
+        input.put("weather", Map.of(
+                "city", weatherContext == null ? "" : safe(weatherContext.city),
+                "summary", weatherContext == null ? "" : safe(weatherContext.summary),
+                "live", weatherContext != null && weatherContext.live
+        ));
+        input.put("relationship", Map.of(
+                "stage", relationshipState == null ? "" : safe(relationshipState.relationshipStage),
+                "score", relationshipState == null ? 0 : relationshipState.affectionScore
+        ));
+        input.put("tension", Map.of(
+                "guarded", tensionState != null && tensionState.guarded,
+                "annoyance", tensionState == null ? 0 : tensionState.annoyance,
+                "hurt", tensionState == null ? 0 : tensionState.hurt
+        ));
+        input.put("memory", Map.of(
+                "facts", memorySummary == null || memorySummary.factMemories == null ? List.of() : memorySummary.factMemories.stream().limit(4).map(item -> safe(item.value)).toList(),
+                "openLoops", memorySummary == null || memorySummary.openLoops == null ? List.of() : memorySummary.openLoops.stream().limit(4).toList()
+        ));
+        input.put("rules", List.of(
+                "Prefer current scene truth over old memory.",
+                "If the user asks for exact lyrics/quotes/realtime facts, mark must_search or must_not_guess.",
+                "If the user moves scene, set sceneTransition true and keep plot from hijacking the user's meaning.",
+                "If face-to-face, do not allow online-chat wording.",
+                "Do not output dialogue, only classification JSON."
+        ));
+        return input;
+    }
+
+    private SemanticRuntimeDecision parse(String content, String nowIso) throws IOException {
+        Map<String, Object> object = Json.asObject(Json.parse(extractJson(content)));
+        SemanticRuntimeDecision decision = new SemanticRuntimeDecision();
+        decision.remoteUsed = true;
+        decision.source = "semantic_agent";
+        decision.reason = firstNonBlank(Json.asString(object.get("reason")), "remote_semantic");
+        decision.primaryIntent = normalizeIntent(Json.asString(object.get("primaryIntent")));
+        decision.secondaryIntent = normalizeSecondary(Json.asString(object.get("secondaryIntent")));
+        decision.emotion = normalizeEmotion(Json.asString(object.get("emotion")));
+        decision.clarity = normalizeClarity(Json.asString(object.get("clarity")));
+        decision.needsEmpathy = Json.asBoolean(object.get("needsEmpathy"));
+        decision.needsStructure = Json.asBoolean(object.get("needsStructure"));
+        decision.needsFollowup = Json.asBoolean(object.get("needsFollowup"));
+        decision.isBoundarySensitive = Json.asBoolean(object.get("isBoundarySensitive"));
+        decision.sceneLocation = truncate(Json.asString(object.get("sceneLocation")), 40);
+        decision.sceneSubLocation = truncate(Json.asString(object.get("sceneSubLocation")), 40);
+        decision.interactionMode = normalizeInteractionMode(Json.asString(object.get("interactionMode")));
+        decision.sceneTransition = Json.asBoolean(object.get("sceneTransition"));
+        decision.sceneSummary = truncate(Json.asString(object.get("sceneSummary")), 120);
+        decision.searchMode = normalizeSearchMode(Json.asString(object.get("searchMode")));
+        decision.searchReason = truncate(Json.asString(object.get("searchReason")), 40);
+        decision.searchQuery = truncate(Json.asString(object.get("searchQuery")), 120);
+        decision.mustNotGuess = Json.asBoolean(object.get("mustNotGuess"));
+        decision.directAnswerPolicy = normalizeDirectPolicy(Json.asString(object.get("directAnswerPolicy")));
+        decision.directAnswerHint = truncate(Json.asString(object.get("directAnswerHint")), 120);
+        decision.sceneAtmosphere = truncate(Json.asString(object.get("sceneAtmosphere")), 120);
+        decision.updatedAt = nowIso;
+        return decision;
+    }
+
+    SemanticRuntimeDecision localAnalyze(
+            String userMessage,
+            SceneState sceneState,
+            RelationalTensionState tensionState,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso
+    ) {
+        String text = safe(userMessage);
+        SemanticRuntimeDecision decision = new SemanticRuntimeDecision();
+        decision.remoteUsed = false;
+        decision.source = "local_semantic_fallback";
+        decision.reason = "remote_disabled";
+        decision.primaryIntent = localPrimaryIntent(text);
+        decision.secondaryIntent = text.contains("上次") || text.contains("之前") || text.contains("还记得") ? "memory_callback" : "none";
+        decision.emotion = localEmotion(text, tensionState);
+        decision.clarity = text.isBlank() || text.length() <= 4 ? "low" : (text.length() <= 10 ? "medium" : "high");
+        decision.needsEmpathy = "emotion_share".equals(decision.primaryIntent) || "romantic_probe".equals(decision.primaryIntent);
+        decision.needsStructure = "advice_seek".equals(decision.primaryIntent);
+        decision.needsFollowup = "low".equals(decision.clarity) || "scene_push".equals(decision.primaryIntent);
+        decision.isBoundarySensitive = tensionState != null && tensionState.guarded || SceneLexicon.containsAny(text, List.of("别碰", "别问", "不要逼我", "烦", "滚", "讨厌"));
+        String currentLocation = sceneState == null ? "" : safe(sceneState.location);
+        decision.sceneLocation = SceneLexicon.detectLocation(text, currentLocation);
+        decision.sceneSubLocation = SceneLexicon.detectSubLocation(text);
+        decision.interactionMode = SceneLexicon.detectInteractionMode(text, sceneState == null ? "" : sceneState.interactionMode);
+        decision.sceneTransition = !decision.sceneLocation.isBlank() && !decision.sceneLocation.equals(currentLocation);
+        decision.sceneSummary = decision.sceneTransition ? SceneLexicon.sceneSummary(decision.sceneLocation) : "";
+        fillLocalSearchAndDirectAnswer(decision, text);
+        decision.sceneAtmosphere = "sad".equals(decision.emotion)
+                ? "这句话落下来时，语气明显放慢了一点。"
+                : localAtmosphere(sceneState, timeContext, weatherContext);
+        decision.updatedAt = nowIso;
+        return decision;
+    }
+
+    private void fillLocalSearchAndDirectAnswer(SemanticRuntimeDecision decision, String text) {
+        boolean exactQuote = SceneLexicon.containsAny(text, List.of("歌词", "台词", "原句", "完整句子"));
+        boolean realtime = SceneLexicon.containsAny(text, List.of("天气", "今天", "现在", "新闻", "热搜", "最近"));
+        boolean factual = SceneLexicon.containsAny(text, List.of("是什么", "资料", "介绍", "百科", "历史", "含义"));
+        if (exactQuote) {
+            decision.searchMode = "must_search";
+            decision.searchReason = "quote";
+            decision.searchQuery = text;
+            decision.mustNotGuess = true;
+            decision.directAnswerPolicy = "decline_ungrounded_quote";
+            decision.directAnswerHint = "逐字内容必须有可靠依据，缺少依据时不要编。";
+        } else if (realtime) {
+            decision.searchMode = "must_search";
+            decision.searchReason = "realtime";
+            decision.searchQuery = text;
+            decision.mustNotGuess = true;
+            decision.directAnswerPolicy = "none";
+        } else if (factual && text.length() >= 6) {
+            decision.searchMode = "should_search";
+            decision.searchReason = "factual";
+            decision.searchQuery = text;
+            decision.mustNotGuess = false;
+            decision.directAnswerPolicy = "none";
+        } else {
+            decision.searchMode = "skip";
+            decision.searchReason = "skip";
+            decision.searchQuery = "";
+            decision.mustNotGuess = false;
+            decision.directAnswerPolicy = "none";
+        }
+    }
+
+    private String localPrimaryIntent(String text) {
+        if (text.isBlank()) return "presence_followup";
+        if (SceneLexicon.containsAny(text, List.of("不是", "怎么变成", "我说的是", "明明", "你刚刚", "我们不是", "别误会"))) return "meta_repair";
+        if (SceneLexicon.containsAny(text, List.of("喜欢你", "喜欢我", "对我有好感", "是不是喜欢我", "心动", "在意我"))) return "romantic_probe";
+        if (SceneLexicon.isScenePush(text)) return "scene_push";
+        if (SceneLexicon.containsAny(text, List.of("怎么办", "建议", "怎么选", "该不该", "要不要"))) return "advice_seek";
+        if (SceneLexicon.containsAny(text, List.of("难受", "压力", "委屈", "低落", "有点累", "崩溃", "烦"))) return "emotion_share";
+        if (text.contains("?") || text.contains("？") || SceneLexicon.containsAny(text, List.of("吗", "呢", "是不是", "为什么", "怎么", "要不要"))) return "question_check";
+        if (text.length() <= 4) return "small_talk";
+        return "light_chat";
+    }
+
+    private String localEmotion(String text, RelationalTensionState tensionState) {
+        if (SceneLexicon.containsAny(text, List.of("烦", "滚", "讨厌", "闭嘴", "离谱", "别烦"))) return "angry";
+        if (SceneLexicon.containsAny(text, List.of("难受", "委屈", "低落", "哭", "压力", "累", "崩溃"))) return "sad";
+        if (SceneLexicon.containsAny(text, List.of("喜欢", "开心", "想你", "高兴", "安心", "好感"))) return "warm";
+        if (tensionState != null && tensionState.guarded) return "fragile";
+        return "neutral";
+    }
+
+    private String localAtmosphere(SceneState sceneState, TimeContext timeContext, WeatherContext weatherContext) {
+        String scene = sceneState == null ? "" : safe(sceneState.sceneSummary);
+        if (!scene.isBlank()) {
+            return scene;
+        }
+        String time = timeContext == null ? "" : safe(timeContext.frame);
+        if (!time.isBlank()) {
+            return time;
+        }
+        String weather = weatherContext == null ? "" : safe(weatherContext.summary);
+        return weather.isBlank() ? "" : "当前天气只作为氛围参考：" + weather;
+    }
+
+    SemanticRuntimeDecision mergeWithFallback(SemanticRuntimeDecision remote, SemanticRuntimeDecision fallback, String nowIso) {
+        if (remote == null) {
+            return fallback;
+        }
+        remote.primaryIntent = firstNonBlank(remote.primaryIntent, fallback.primaryIntent);
+        remote.secondaryIntent = firstNonBlank(remote.secondaryIntent, fallback.secondaryIntent);
+        remote.emotion = firstNonBlank(remote.emotion, fallback.emotion);
+        remote.clarity = firstNonBlank(remote.clarity, fallback.clarity);
+        remote.sceneLocation = firstNonBlank(remote.sceneLocation, fallback.sceneLocation);
+        remote.interactionMode = firstNonBlank(remote.interactionMode, fallback.interactionMode);
+        remote.searchMode = firstNonBlank(remote.searchMode, fallback.searchMode);
+        remote.searchReason = firstNonBlank(remote.searchReason, fallback.searchReason);
+        remote.searchQuery = firstNonBlank(remote.searchQuery, fallback.searchQuery);
+        remote.directAnswerPolicy = firstNonBlank(remote.directAnswerPolicy, fallback.directAnswerPolicy);
+        remote.sceneAtmosphere = firstNonBlank(remote.sceneAtmosphere, fallback.sceneAtmosphere);
+        remote.updatedAt = nowIso;
+        return remote;
+    }
+
+    private String normalizeIntent(String value) {
+        String text = safe(value);
+        return List.of("light_chat", "romantic_probe", "emotion_share", "question_check", "scene_push", "advice_seek", "meta_repair", "small_talk", "presence_followup").contains(text)
+                ? text : "";
+    }
+
+    private String normalizeSecondary(String value) {
+        String text = safe(value);
+        return List.of("memory_callback", "transition_hold", "pace_guard", "none").contains(text) ? text : "";
+    }
+
+    private String normalizeEmotion(String value) {
+        String text = safe(value);
+        return List.of("neutral", "warm", "sad", "angry", "fragile", "curious").contains(text) ? text : "";
+    }
+
+    private String normalizeClarity(String value) {
+        String text = safe(value);
+        return List.of("low", "medium", "high").contains(text) ? text : "";
+    }
+
+    private String normalizeInteractionMode(String value) {
+        String text = safe(value);
+        return List.of("face_to_face", "phone_call", "online_chat", "mixed_transition").contains(text) ? text : "";
+    }
+
+    private String normalizeSearchMode(String value) {
+        String text = safe(value);
+        return List.of("skip", "should_search", "must_search", "must_not_guess").contains(text) ? text : "";
+    }
+
+    private String normalizeDirectPolicy(String value) {
+        String text = safe(value);
+        return List.of("none", "decline_ungrounded_quote", "answer_relationship_feeling", "clarify_unconfirmed_detail", "repair_misattribution", "answer_agent_future_plan").contains(text)
+                ? text : "";
+    }
+
+    private boolean remoteEnabled() {
+        return !baseUrl.isBlank() && !apiKey.isBlank() && !model.isBlank();
+    }
+
+    private String extractJson(String content) throws IOException {
+        String text = safe(content);
+        if (text.startsWith("```")) {
+            text = text.replaceFirst("^```[a-zA-Z]*", "").replaceFirst("```$", "").trim();
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            throw new IOException("semantic_runtime_non_json");
+        }
+        return text.substring(start, end + 1);
+    }
+
+    private String trimTrailingSlash(String value) {
+        String text = safe(value);
+        while (text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? fallback : preferred;
+    }
+
+    private String truncate(String value, int maxLength) {
+        String text = safe(value);
+        return text.length() <= maxLength ? text : text.substring(0, maxLength);
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
     }
 }
 

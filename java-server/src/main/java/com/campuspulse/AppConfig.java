@@ -18,6 +18,7 @@ class AppConfig {
     final String plotLlmApiKey;
     final String plotLlmModel;
     final Duration plotLlmTimeout;
+    final String runMode;
 
     AppConfig(
             int port,
@@ -62,6 +63,40 @@ class AppConfig {
             String plotLlmModel,
             Duration plotLlmTimeout
     ) {
+        this(
+                port,
+                rootDir,
+                publicDir,
+                stateFile,
+                memoryRetentionMs,
+                llmBaseUrl,
+                llmApiKey,
+                llmModel,
+                llmTimeout,
+                plotLlmBaseUrl,
+                plotLlmApiKey,
+                plotLlmModel,
+                plotLlmTimeout,
+                "auto"
+        );
+    }
+
+    AppConfig(
+            int port,
+            Path rootDir,
+            Path publicDir,
+            Path stateFile,
+            long memoryRetentionMs,
+            String llmBaseUrl,
+            String llmApiKey,
+            String llmModel,
+            Duration llmTimeout,
+            String plotLlmBaseUrl,
+            String plotLlmApiKey,
+            String plotLlmModel,
+            Duration plotLlmTimeout,
+            String runMode
+    ) {
         this.port = port;
         this.rootDir = rootDir;
         this.publicDir = publicDir;
@@ -75,6 +110,7 @@ class AppConfig {
         this.plotLlmApiKey = plotLlmApiKey;
         this.plotLlmModel = plotLlmModel;
         this.plotLlmTimeout = plotLlmTimeout;
+        this.runMode = normalizeRunMode(runMode);
     }
 
     static AppConfig load() {
@@ -143,7 +179,8 @@ class AppConfig {
                         System.getenv("OPENAI_MODEL"),
                         "qwen-plus"
                 ),
-                Duration.ofMillis(Long.parseLong(plotTimeoutValue))
+                Duration.ofMillis(Long.parseLong(plotTimeoutValue)),
+                firstNonBlank(System.getenv("CAMPUS_PULSE_RUN_MODE"), "auto")
         );
     }
 
@@ -174,5 +211,13 @@ class AppConfig {
             }
         }
         return trimmed;
+    }
+
+    private static String normalizeRunMode(String value) {
+        String text = normalize(value).toLowerCase();
+        if ("local".equals(text) || "remote".equals(text) || "auto".equals(text)) {
+            return text;
+        }
+        return "auto";
     }
 }

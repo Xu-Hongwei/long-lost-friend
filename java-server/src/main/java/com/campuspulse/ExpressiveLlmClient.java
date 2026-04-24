@@ -30,21 +30,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private final AppConfig config;
-    private final Map<String, List<String>> openings = Map.of(
-            "healing", List.of("我在，慢慢说。", "嗯，我有认真在听。", "先把这一句交给我。"),
-            "lively", List.of("来，我接住你这句。", "你一开口，我就想认真往下听。", "好，今晚这段话我陪你聊开。"),
-            "cool", List.of("我听到了。", "可以，继续。", "这句我会认真接。"),
-            "artsy", List.of("这句话一落下来，气氛就安静了一点。", "好，你继续，我在听细节。", "先别急，让这句话慢慢展开。"),
-            "sunny", List.of("来，先把节奏稳住。", "收到，这句我跟你一起扛。", "行，先从你最想说的地方开始。")
-    );
-    private final Map<String, List<String>> closers = Map.of(
-            "healing", List.of("你不用一下子整理得很完整。", "剩下那一点，我也愿意继续陪你。", "你不用一个人把这段情绪扛完。"),
-            "lively", List.of("下一句也丢给我，我接得住。", "你再往下说一点，气氛会更亮。", "别停在这儿，我想把你后半句也听完。"),
-            "cool", List.of("你可以继续，我不会敷衍带过去。", "这件事我会记住。", "你肯把这句说出来，我就不会轻轻放过。"),
-            "artsy", List.of("别让这段话太快结束。", "我想把这会儿的空气再留久一点。", "如果你愿意，我们把这段心情再写长一点。"),
-            "sunny", List.of("我们把这段往前走完。", "别慌，我还在这儿。", "你继续说，我帮你把节奏带顺。")
-    );
-
     ExpressiveLlmClient(AppConfig config) {
         super(config);
         this.config = config;
@@ -53,12 +38,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     @Override
     public LlmResponse generateReply(LlmRequest request) throws Exception {
         if (config.llmApiKey == null || config.llmApiKey.isBlank()) {
-            return generateMockReply(request);
+            return generateLocalReply(request);
         }
         try {
             return generateRemoteReply(request);
         } catch (Exception error) {
-            LlmResponse fallback = generateMockReply(request);
+            LlmResponse fallback = generateLocalReply(request);
             return new LlmResponse(
                     fallback.replyText,
                     fallback.emotionTag,
@@ -73,6 +58,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     @Override
     String buildFallbackReply(AgentProfile agent, String reason) {
+        if (agent == null) {
+            return "刚才有一点小问题（" + reason + "），不过现在已经可以继续了。";
+        }
         Map<String, String> fallbackMap = Map.of(
                 "healing", "刚才像卡了一下，不过没关系。你把最想说的那一句继续交给我，我们从那里接回来。",
                 "lively", "刚才信号像打了个结，不过现在顺回来了。来，把后半句也给我。",
@@ -83,7 +71,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return fallbackMap.getOrDefault(agent.id, "刚才有一点小问题（" + reason + "），不过现在已经可以继续了。");
     }
 
-    private LlmResponse generateMockReply(LlmRequest request) {
+    LlmResponse generateLocalReply(LlmRequest request) {
         String rawReply = isHeartbeatProactive(request.replySource) ? buildProactiveReply(request) : buildReactiveReply(request);
         ReplyParts reply = shapeStructuredReply(rawReply);
         return new LlmResponse(
@@ -100,7 +88,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         );
     }
 
-    private LlmResponse generateRemoteReply(LlmRequest request) throws Exception {
+    LlmResponse generateRemoteReply(LlmRequest request) throws Exception {
         String systemPrompt = buildSystemPrompt(request);
         if (request.searchContext != null && !request.searchContext.isBlank()) {
             return generateRemoteReplyWithSearch(request, systemPrompt);
@@ -156,7 +144,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         );
     }
 
-    private LlmResponse generateRemoteReplyWithSearch(LlmRequest request, String systemPrompt) throws Exception {
+    LlmResponse generateRemoteReplyWithSearch(LlmRequest request, String systemPrompt) throws Exception {
         List<Object> input = new ArrayList<>();
         input.add(Map.of(
                 "role", "system",
@@ -234,7 +222,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (answeredDirectly) {
             speechParts.add(directAnswer);
         } else {
-            speechParts.add(choose(openings.get(request.agent.id), request.agent.id + ":" + blankTo(request.userMessage, "")));
+            speechParts.add(buildOpeningLine(request));
         }
 
         String acknowledgment = buildAcknowledgment(request, answeredDirectly);
@@ -255,7 +243,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
 
         if (!isShortInput(request.userMessage) && !answeredDirectly && !hasQuestion) {
-            speechParts.add(choose(closers.get(request.agent.id), blankTo(request.relationshipState.relationshipStage, "") + ":" + blankTo(request.userMessage, "")));
+            speechParts.add(buildClosingLine(request));
         }
 
         List<String> parts = new ArrayList<>();
@@ -328,6 +316,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
         String continuityText = buildContinuityText(request.dialogueContinuityState);
         String backstoryText = buildBackstoryText(request.agent);
+        String semanticText = buildSemanticRuntimeText(request.semanticDecision);
 
         return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
                 + "说话风格：" + request.agent.speechStyle + "\n"
@@ -348,6 +337,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "高相关记忆：" + recallText + "\n"
                 + "记忆使用计划：" + memoryPlanText + "\n"
                 + "上下文智能层：" + continuityText + "\n"
+                + "语义运行时判断：" + semanticText + "\n"
                 + "当前事件：" + eventText + "\n"
                 + "本轮回应策略：" + blankTo(request.responseDirective, "保持角色一致，顺着当前聊天自然展开。") + "\n"
                 + "边界：" + String.join("；", request.agent.boundaries) + "\n"
@@ -362,9 +352,26 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "8. 如果 reply_source 是 silence_heartbeat 或 long_chat_heartbeat，才说明这是角色主动发出的轻消息；要像顺手接话，不像系统提醒。\n"
                 + "9. 如果用户输入很短，不要把压力丢回给用户，由你主动给一个容易接的话头。\n"
                 + "10. 如果上下文智能层给出当前共同目标、已确认计划、下一句必须承接或禁止违背事实，必须优先遵守；不要重新问已经确认的计划，不要把具体行动泛化成无关闲逛。\n"
-                + "10. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
-                + "11. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
-                + "10. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
+                + "11. 必须区分事实归属：用户用“我/我打算/我想/我的计划”表达的内容，默认只属于用户；角色只能回应、追问或记住，不能吸收成自己的设定。\n"
+                + "12. 回答角色自己的未来、专业、经历、兴趣时，以角色具体背景和未来规划为准；剧情推进也不能覆盖角色背景事实。\n"
+                + "13. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
+                + "14. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
+                + "15. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
+    }
+
+    private String buildSemanticRuntimeText(SemanticRuntimeDecision decision) {
+        if (decision == null) {
+            return "暂无语义运行时判断。";
+        }
+        return "来源=" + blankTo(decision.source, "unknown")
+                + "；意图=" + blankTo(decision.primaryIntent, "unknown")
+                + "；情绪=" + blankTo(decision.emotion, "neutral")
+                + "；场景=" + blankTo(decision.sceneLocation, "")
+                + "；互动模式=" + blankTo(decision.interactionMode, "")
+                + "；搜索=" + blankTo(decision.searchMode, "skip")
+                + "；直答策略=" + blankTo(decision.directAnswerPolicy, "none")
+                + "；氛围=" + blankTo(decision.sceneAtmosphere, "")
+                + "；原因=" + blankTo(decision.reason, "");
     }
 
     private String buildBackstoryText(AgentProfile agent) {
@@ -383,6 +390,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         parts.add("生活节奏=" + blankTo(backstory.lifestyle, "未设定"));
         parts.add("边界细节=" + blankTo(backstory.boundaryDetails, "未设定"));
         parts.add("情绪模式=" + blankTo(backstory.emotionPattern, "未设定"));
+        parts.add("未来规划=" + blankTo(backstory.futurePlan, "未设定"));
         parts.add("隐藏经历=" + joinOrEmpty(backstory.hiddenFacts));
         parts.add("剧情钩子=" + joinOrEmpty(backstory.plotHooks));
         return String.join("；", parts);
@@ -424,23 +432,16 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (!containsQuestion(text)) {
             return "";
         }
-        if ((text.contains("歌词") || text.contains("台词"))
-                && request.realityEnvelope != null
-                && request.realityEnvelope.searchGrounding != null
-                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing) {
-            return "这类需要逐字准确的内容，我现在不能确认准确版本，所以不想乱编。";
+        String semanticAnswer = buildSemanticDirectAnswer(request, text);
+        if (!semanticAnswer.isBlank()) {
+            return semanticAnswer;
         }
-        if (text.contains("有好感") || text.contains("喜欢我") || text.contains("对我也") || text.contains("会不会也喜欢")) {
-            return "如果你要我现在认真回答，那答案是有，而且我没有把它当成一句随口的话。";
+        String ownershipCorrection = correctUserPlanMisattribution(request, text);
+        if (!ownershipCorrection.isBlank()) {
+            return ownershipCorrection;
         }
-        if (text.contains("热可可") && (text.contains("啥味") || text.contains("什么味") || text.contains("口味") || text.contains("哪种") || text.contains("几种"))) {
-            return "有原味、榛果和薄荷这几种，我平时最常带的是原味。";
-        }
-        if (text.contains("热可可") && (text.contains("这么多") || text.contains("这么多杯") || text.contains("哪来这么多"))) {
-            return "没有真的摆三杯在你面前，我只是顺口把自己会想到的几种味道都说出来了。";
-        }
-        if (text.contains("图书馆") && text.contains("窗边") && (text.contains("上次") || text.contains("也是") || text.contains("还记得"))) {
-            return "我不想擅自替你把上次的画面补全，所以这个细节得等你亲口告诉我。";
+        if (!hasRemoteSemanticDecision(request) && isAskingAgentFuturePlan(text)) {
+            return futurePlanAnswer(request);
         }
         if (text.startsWith("为什么")) {
             return "如果要直说，是因为你刚才那句话本身就让我想认真接住。";
@@ -451,6 +452,121 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return "";
     }
 
+    private String buildSemanticDirectAnswer(LlmRequest request, String text) {
+        SemanticRuntimeDecision decision = request == null ? null : request.semanticDecision;
+        String policy = decision == null ? "" : blankTo(decision.directAnswerPolicy, "");
+        String hint = decision == null ? "" : blankTo(decision.directAnswerHint, "");
+        if ("decline_ungrounded_quote".equals(policy) || mustDeclineUngroundedQuote(request, text)) {
+            return hint.isBlank() ? "这类需要逐字准确的内容，我现在不能确认准确版本，所以不想乱编。" : hint;
+        }
+        if ("answer_relationship_feeling".equals(policy)) {
+            return hint.isBlank() ? "如果你要我认真回答，那我会说：我确实在意这段靠近。" : hint;
+        }
+        if ("clarify_unconfirmed_detail".equals(policy)) {
+            return hint.isBlank() ? "这个细节我不想替你乱补，还是想等你亲口确认。" : hint;
+        }
+        if ("repair_misattribution".equals(policy)) {
+            return hint.isBlank() ? "我刚才把你自己的计划和我的想法混在一起了，这里先收回来。" : hint;
+        }
+        if ("answer_agent_future_plan".equals(policy) || hasRemoteSemanticDecision(request) && isAskingAgentFuturePlan(text)) {
+            return hint.isBlank() ? futurePlanAnswer(request) : hint;
+        }
+        if (!hasRemoteSemanticDecision(request)) {
+            if (isRelationshipConfirmationQuestion(text)) {
+                return "如果你要我现在认真回答，那答案是有，而且我没有把它当成一句随口的话。";
+            }
+            if (isHotDrinkFlavorQuestion(text)) {
+                return "有原味、榛果和薄荷这几种，我平时最常带的是原味。";
+            }
+            if (isHotDrinkQuantityQuestion(text)) {
+                return "没有真的摆三杯在你面前，我只是顺口把自己会想到的几种味道都说出来了。";
+            }
+            if (isUnconfirmedLibraryWindowQuestion(text)) {
+                return "我不想擅自替你把上次的画面补全，所以这个细节得等你亲口告诉我。";
+            }
+        }
+        return "";
+    }
+
+    private String buildOpeningLine(LlmRequest request) {
+        String mood = blankTo(request.currentUserMood, "neutral");
+        if ("stressed".equals(mood)) {
+            return "我在，先把节奏放慢一点。";
+        }
+        if ("curious".equals(mood)) {
+            return "你这个问题我会认真接。";
+        }
+        if ("warm".equals(mood)) {
+            return "你这样说的时候，气氛像是靠近了一点。";
+        }
+        if (request.agent != null && request.agent.openingLine != null && !request.agent.openingLine.isBlank()) {
+            return firstSentence(request.agent.openingLine);
+        }
+        return "我在，慢慢说。";
+    }
+
+    private String buildClosingLine(LlmRequest request) {
+        String stage = request.relationshipState == null ? "" : blankTo(request.relationshipState.relationshipStage, "");
+        if (stage.contains("靠近") || stage.contains("心动")) {
+            return "如果你愿意，我们可以把这句话再往里聊一点。";
+        }
+        if ("stressed".equals(blankTo(request.currentUserMood, ""))) {
+            return "你不用一次说完，我会先陪你把最重的那段接住。";
+        }
+        return "你可以继续往下说，我会顺着这一句接住。";
+    }
+
+    private boolean mustDeclineUngroundedQuote(LlmRequest request, String text) {
+        return (text.contains("歌词") || text.contains("台词"))
+                && request.realityEnvelope != null
+                && request.realityEnvelope.searchGrounding != null
+                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing;
+    }
+
+    private boolean hasRemoteSemanticDecision(LlmRequest request) {
+        return request != null
+                && request.semanticDecision != null
+                && request.semanticDecision.remoteUsed;
+    }
+
+    private boolean isRelationshipConfirmationQuestion(String text) {
+        return text.contains("有好感")
+                || text.contains("喜欢我")
+                || text.contains("对我也")
+                || text.contains("会不会也喜欢");
+    }
+
+    private boolean isHotDrinkFlavorQuestion(String text) {
+        return text.contains("热可可")
+                && containsAny(text, List.of("啥味", "什么味", "口味", "哪种", "几种"));
+    }
+
+    private boolean isHotDrinkQuantityQuestion(String text) {
+        return text.contains("热可可")
+                && containsAny(text, List.of("这么多", "这么多杯", "哪来这么多"));
+    }
+
+    private boolean isLibraryWindowTopic(String text) {
+        return text.contains("图书馆") && text.contains("窗边");
+    }
+
+    private boolean isUnconfirmedLibraryWindowQuestion(String text) {
+        return isLibraryWindowTopic(text)
+                && containsAny(text, List.of("上次", "也是", "还记得"));
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String buildAcknowledgment(LlmRequest request, boolean answeredDirectly) {
         String topic = briefTopic(request.userMessage);
         String text = compact(request.userMessage);
@@ -459,6 +575,13 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
         if (!answeredDirectly && (text.contains("吸引我") || text.contains("喜欢你") || text.contains("好感"))) {
             return "你把这句话认真说出来的时候，我其实也跟着安静了一下。";
+        }
+        if (!answeredDirectly
+                && request.semanticDecision != null
+                && request.semanticDecision.sceneLocation != null
+                && !request.semanticDecision.sceneLocation.isBlank()
+                && !"聊天现场".equals(request.semanticDecision.sceneLocation)) {
+            return "你把" + request.semanticDecision.sceneLocation + "带回这句话里，我会顺着这里慢慢接。";
         }
         if (answeredDirectly) {
             return switch (blankTo(request.currentUserMood, "neutral")) {
@@ -522,6 +645,15 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request.recalledMemoryText != null && !request.recalledMemoryText.isBlank()) {
             return "我还记得" + softenMemoryText(request.recalledMemoryText) + "。";
         }
+        if (request.memoryUsePlan != null && request.memoryUsePlan.callbackCandidates != null && !request.memoryUsePlan.callbackCandidates.isEmpty()) {
+            return "我还记得" + softenMemoryText(request.memoryUsePlan.callbackCandidates.get(0)) + "。";
+        }
+        if (request.longTermSummary != null && !request.longTermSummary.isBlank()) {
+            String memoryLine = softenMemoryText(request.longTermSummary);
+            if (!memoryLine.isBlank()) {
+                return "我还记得" + memoryLine + "。";
+            }
+        }
         if ("stressed".equals(request.currentUserMood)) {
             return "如果你愿意，我们就先抓住今天最让你累的那一刻。";
         }
@@ -531,13 +663,13 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     private String buildFollowupAfterAnswer(LlmRequest request) {
         String text = compact(request.userMessage);
         boolean askBack = shouldAskBack(request);
-        if (text.contains("热可可") && (text.contains("什么味") || text.contains("啥味") || text.contains("口味") || text.contains("哪种") || text.contains("几种"))) {
+        if (isHotDrinkFlavorQuestion(text)) {
             return askBack ? "你会偏原味一点，还是更想要甜一点的？" : "真要我替你先留一杯，我大概会把原味那杯先放到你手边。";
         }
-        if (text.contains("热可可") && (text.contains("这么多") || text.contains("这么多杯") || text.contains("哪来这么多"))) {
+        if (isHotDrinkQuantityQuestion(text)) {
             return askBack ? "真要让你现在选一杯，你会先拿哪种？" : "真要让你现在挑，我总觉得你不会先拿最甜的那杯。";
         }
-        if (text.contains("图书馆") && text.contains("窗边")) {
+        if (isLibraryWindowTopic(text)) {
             return askBack ? "如果你愿意告诉我，我会把这个细节好好记住。" : "等你哪天想说了，我会把这个细节好好收住。";
         }
         if ("stressed".equals(request.currentUserMood)) {
@@ -644,21 +776,11 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request == null) {
             return "";
         }
-        String userText = compact(request.userMessage);
-        if ("stressed".equals(request.currentUserMood) || userText.contains("累") || userText.contains("烦") || userText.contains("压力")) {
-            return "你这句落下来时，语气明显比刚才更沉一点，我也跟着把节奏放慢了。";
+        if (request.semanticDecision != null && request.semanticDecision.sceneAtmosphere != null && !request.semanticDecision.sceneAtmosphere.isBlank()) {
+            return trimTrailingPunctuation(request.semanticDecision.sceneAtmosphere) + "。";
         }
-        if (userText.contains("图书馆") || userText.contains("复习") || userText.contains("自习")) {
-            return "靠窗那排位置安安静静的，连翻书声都像放轻了一点。";
-        }
-        if (userText.contains("热可可") || userText.contains("奶茶") || userText.contains("咖啡")) {
-            return "杯沿还带着一点热气，连语气都像被暖得更慢了些。";
-        }
-        if (userText.contains("下雨") || userText.contains("雨") || userText.contains("伞")) {
-            return "窗外的雨线把世界压低了一点，话也跟着变轻了。";
-        }
-        if (userText.contains("散步") || userText.contains("操场") || userText.contains("走") || userText.contains("一起")) {
-            return "风从走廊尽头掠过去，步子和语气都像慢下来一点。";
+        if (request.sceneState != null && request.sceneState.sceneSummary != null && !request.sceneState.sceneSummary.isBlank()) {
+            return trimTrailingPunctuation(request.sceneState.sceneSummary) + "。";
         }
         if (request.timeContext != null && request.timeContext.frame != null && !request.timeContext.frame.isBlank()) {
             return trimTrailingPunctuation(request.timeContext.frame) + "。";
@@ -742,14 +864,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return trimmed;
     }
 
-    private String choose(List<String> values, String seedSource) {
-        int sum = 0;
-        for (int index = 0; index < seedSource.length(); index++) {
-            sum += seedSource.charAt(index);
-        }
-        return values.get(Math.floorMod(sum, values.size()));
-    }
-
     private boolean isShortInput(String text) {
         return compact(text).length() <= 8;
     }
@@ -788,6 +902,15 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private String trimTrailingPunctuation(String text) {
         return text.replaceAll("[。！？；，,;、]+$", "");
+    }
+
+    private String firstSentence(String text) {
+        String normalized = trimTrailingPunctuation(blankTo(text, ""));
+        if (normalized.isBlank()) {
+            return "";
+        }
+        String[] parts = normalized.split("[。！？!?]");
+        return parts.length == 0 || parts[0].isBlank() ? normalized + "。" : parts[0].trim() + "。";
     }
 
     private String joinNonBlank(List<String> parts) {
@@ -898,10 +1021,11 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (isLaughter(text) && lastAssistantMentionedSong(request)) {
             return "你笑成这样，我就先当作刚才那句歌没有跑调太严重。别急着换新话题，我还挺想知道，你是觉得歌词好笑，还是我唱出来这件事本身比较好笑？";
         }
-        if ((text.contains("歌词") || text.contains("台词"))
+        if (("decline_ungrounded_quote".equals(request.semanticDecision == null ? "" : request.semanticDecision.directAnswerPolicy)
+                || (text.contains("歌词") || text.contains("台词"))
                 && request.realityEnvelope != null
                 && request.realityEnvelope.searchGrounding != null
-                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing) {
+                && request.realityEnvelope.searchGrounding.mustDeclineIfMissing)) {
             return "这类需要逐字准确的内容，我现在不能确认准确版本，所以不想乱编。你要是愿意，我可以只聊它给人的感觉，或者等有可靠依据时再回答。";
         }
         if (request.tensionState != null && request.tensionState.guarded) {
@@ -918,6 +1042,122 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
         return "";
     }
+
+    private boolean isAskingAgentFuturePlan(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return (text.contains("以后") || text.contains("未来") || text.contains("毕业") || text.contains("打算") || text.contains("规划"))
+                && (text.contains("你") || text.contains("你呢") || text.contains("那你"));
+    }
+
+    private String futurePlanAnswer(LlmRequest request) {
+        String plan = request.agent == null || request.agent.backstory == null ? "" : request.agent.backstory.futurePlan;
+        if (plan.isBlank()) {
+            return "我还在慢慢想，但应该会顺着自己真正长期在意的方向走，不想只被眼前的热闹推着跑。";
+        }
+        return "我自己的方向是：" + trimTrailingPunctuation(plan) + "。";
+    }
+
+    private String correctUserPlanMisattribution(LlmRequest request, String text) {
+        String userPlan = latestUserOwnedPlan(request);
+        if (userPlan.isBlank() || request.agent == null || request.agent.backstory == null) {
+            return "";
+        }
+        String agentPlan = request.agent.backstory.futurePlan;
+        if (!containsUserOwnedPlanSignal(text, userPlan, agentPlan)) {
+            return "";
+        }
+        return "不是把你的计划搬到我身上啦。你刚才说的那条路，我会认真记着；我自己的方向是："
+                + trimTrailingPunctuation(agentPlan) + "。";
+    }
+
+    private String latestUserOwnedPlan(LlmRequest request) {
+        if (request == null || request.shortTermContext == null) {
+            return "";
+        }
+        for (int index = request.shortTermContext.size() - 1; index >= 0; index--) {
+            ConversationSnippet snippet = request.shortTermContext.get(index);
+            if (snippet == null || !"user".equals(snippet.role)) {
+                continue;
+            }
+            String text = compact(snippet.text);
+            if (text.isBlank()) {
+                continue;
+            }
+            boolean firstPersonPlan = (text.contains("我打算") || text.contains("我想") || text.contains("我的计划")
+                    || text.contains("我准备") || text.contains("我以后") || text.contains("我未来"))
+                    && (text.contains("以后") || text.contains("未来") || text.contains("打算") || text.contains("计划")
+                    || text.contains("想要") || text.contains("想做") || text.contains("准备"));
+            if (firstPersonPlan) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    private boolean containsUserOwnedPlanSignal(String questionText, String userPlan, String agentPlan) {
+        String compactQuestion = compact(questionText);
+        String compactUserPlan = compact(userPlan);
+        String compactAgentPlan = compact(agentPlan);
+        if (compactQuestion.isBlank() || compactUserPlan.isBlank()) {
+            return false;
+        }
+        int hits = 0;
+        for (String token : planSignalTokens(compactUserPlan)) {
+            if (compactQuestion.contains(token) && !compactAgentPlan.contains(token)) {
+                hits++;
+            }
+        }
+        boolean asksAboutAgent = compactQuestion.contains("你")
+                || compactQuestion.contains("当")
+                || compactQuestion.contains("做")
+                || compactQuestion.contains("以后")
+                || compactQuestion.contains("未来")
+                || compactQuestion.contains("打算");
+        return asksAboutAgent && hits > 0;
+    }
+
+    private List<String> planSignalTokens(String text) {
+        List<String> tokens = new ArrayList<>();
+        String cleaned = compact(text)
+                .replace("我打算", "")
+                .replace("我想要", "")
+                .replace("我想", "")
+                .replace("我的计划", "")
+                .replace("我准备", "")
+                .replace("然后", "，")
+                .replace("以后", "，")
+                .replace("未来", "，");
+        for (String part : cleaned.split("[，。！？、,.!?\\s]+")) {
+            String segment = part.trim();
+            if (segment.length() >= 2 && segment.length() <= 12 && !isLowValuePlanToken(segment)) {
+                tokens.add(segment);
+            }
+            if (segment.length() > 4) {
+                for (int index = 0; index + 2 <= segment.length(); index++) {
+                    for (int length = 2; length <= 3 && index + length <= segment.length(); length++) {
+                        String token = segment.substring(index, index + length);
+                        if (!isLowValuePlanToken(token)) {
+                            tokens.add(token);
+                        }
+                    }
+                }
+            }
+        }
+        return tokens;
+    }
+
+    private boolean isLowValuePlanToken(String token) {
+        return token == null || token.isBlank()
+                || token.contains("几年")
+                || token.contains("一些")
+                || token.contains("自己")
+                || token.contains("事情")
+                || token.contains("完成")
+                || token.contains("梦想");
+    }
+
     private boolean isLaughter(String text) {
         String compact = text == null ? "" : text.replaceAll("\\s+", "");
         return compact.contains("哈哈")
