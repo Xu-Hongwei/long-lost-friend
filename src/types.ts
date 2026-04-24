@@ -299,6 +299,10 @@ export interface WeatherContext {
   updatedAt?: string;
 }
 
+export interface StageTimings {
+  [stageName: string]: number;
+}
+
 export interface VisitorContext {
   timezone?: string;
   preferredCity?: string;
@@ -396,4 +400,14 @@ export interface PresenceResponse {
   run_status?: string;
   checkpoint_ready?: boolean;
   arc_summary_preview?: ArcSummary;
+  stage_timings_ms?: StageTimings;
+}
+
+export interface ChatSendResponse {
+  reply_text?: string;
+  scene_text?: string;
+  action_text?: string;
+  speech_text?: string;
+  fallback_used?: boolean;
+  stage_timings_ms?: StageTimings;
 }

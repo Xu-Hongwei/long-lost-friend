@@ -1746,14 +1746,12 @@ class PlotDirectorAgentService {
     private final String apiKey;
     private final String model;
     private final Duration timeout;
-    private final Path nodeBridgeScript;
 
     PlotDirectorAgentService() {
         this.baseUrl = "";
         this.apiKey = "";
         this.model = DEFAULT_PLOT_MODEL;
         this.timeout = Duration.ofMillis(12000);
-        this.nodeBridgeScript = null;
     }
 
     PlotDirectorAgentService(AppConfig config) {
@@ -1761,7 +1759,6 @@ class PlotDirectorAgentService {
         this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
         this.model = config == null || safe(config.plotLlmModel).isBlank() ? DEFAULT_PLOT_MODEL : safe(config.plotLlmModel);
         this.timeout = config == null || config.plotLlmTimeout == null ? Duration.ofMillis(12000) : config.plotLlmTimeout;
-        this.nodeBridgeScript = config == null ? null : config.rootDir.resolve("scripts").resolve("plot-director-agent.mjs");
     }
 
     PlotDirectorAgentDecision decide(
@@ -1910,42 +1907,7 @@ class PlotDirectorAgentService {
                 )
         ));
 
-        if (nodeBridgeScript != null && Files.exists(nodeBridgeScript)) {
-            return callNodeDirector(payload);
-        }
         return callHttpDirector(payload);
-    }
-
-    private PlotDirectorAgentDecision callNodeDirector(Map<String, Object> payload) throws IOException {
-        ProcessBuilder builder = new ProcessBuilder("node", nodeBridgeScript.toString());
-        Map<String, String> environment = builder.environment();
-        environment.put("PLOT_LLM_BASE_URL", baseUrl);
-        environment.put("PLOT_LLM_API_KEY", apiKey);
-        environment.put("PLOT_LLM_MODEL", model);
-
-        Process process = builder.start();
-        try (OutputStream stdin = process.getOutputStream()) {
-            stdin.write(Json.stringify(payload).getBytes(StandardCharsets.UTF_8));
-        }
-
-        boolean finished;
-        try {
-            finished = process.waitFor(Math.max(1000, timeout.toMillis()), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IOException("plot_node_interrupted", ex);
-        }
-        if (!finished) {
-            process.destroyForcibly();
-            throw new IOException("plot_node_timeout");
-        }
-
-        String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        if (process.exitValue() != 0) {
-            throw new IOException("plot_node_exit_" + process.exitValue() + ":" + truncate(stderr, 180));
-        }
-        return parseDirectorJson(stdout);
     }
 
     private PlotDirectorAgentDecision callHttpDirector(Map<String, Object> payload) throws IOException {
@@ -2075,6 +2037,10 @@ class PlotDirectorAgentService {
             reason = "remote_director";
         }
         return new PlotDirectorAgentDecision(action, "remote:" + reason, whyNow, sceneCue, shouldAdvance, confidence, riskIfAdvance, requiredUserSignal);
+    }
+
+    PlotDirectorAgentDecision parseResponseContent(String content) throws IOException {
+        return parseDirectorJson(content);
     }
 
     PlotDirectorAgentDecision sanitizeRemoteDecision(
@@ -2300,6 +2266,22 @@ class PlotDirectorService {
             String nowIso,
             TurnContext turnContext
     ) {
+        return decide(session, userMessage, emotionState, relationshipState, memorySummary, timeContext, weatherContext, replySource, nowIso, turnContext, null);
+    }
+
+    PlotDecision decide(
+            SessionRecord session,
+            String userMessage,
+            EmotionState emotionState,
+            RelationshipState relationshipState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso,
+            TurnContext turnContext,
+            PlotDirectorAgentDecision precomputedRemoteDecision
+    ) {
         PlotState current = normalizePlot(session.plotState, nowIso);
         PlotState next = clonePlot(current);
         int currentTurn = "user_turn".equals(replySource) ? session.userTurnCount + 1 : session.userTurnCount;
@@ -2308,19 +2290,37 @@ class PlotDirectorService {
         int signal = explicitTransition ? 0 : sceneSignal(userMessage, memorySummary, emotionState, weatherContext, timeContext, replySource);
         signal = adjustSignalWithTurnContext(signal, turnContext, currentTurn, current.forcePlotAtTurn);
         enrichTurnContext(turnContext, gap, signal, replySource, nowIso);
-        PlotDirectorAgentDecision directorDecision = plotDirectorAgentService.decide(
-                userMessage,
-                replySource,
-                currentTurn,
-                gap,
-                current.forcePlotAtTurn,
-                explicitTransition,
-                signal,
-                emotionState,
-                relationshipState,
-                memorySummary,
-                turnContext
-        );
+        PlotDirectorAgentDecision directorDecision;
+        if (precomputedRemoteDecision == null) {
+            directorDecision = plotDirectorAgentService.decide(
+                    userMessage,
+                    replySource,
+                    currentTurn,
+                    gap,
+                    current.forcePlotAtTurn,
+                    explicitTransition,
+                    signal,
+                    emotionState,
+                    relationshipState,
+                    memorySummary,
+                    turnContext
+            );
+        } else {
+            PlotDirectorAgentDecision guard = plotDirectorAgentService.guardDecision(userMessage == null ? "" : userMessage.trim(), replySource, gap, explicitTransition);
+            if (guard != null) {
+                directorDecision = guard;
+            } else {
+                PlotDirectorAgentDecision local = plotDirectorAgentService.localDecision(
+                        userMessage == null ? "" : userMessage.trim(),
+                        replySource,
+                        currentTurn,
+                        gap,
+                        current.forcePlotAtTurn,
+                        signal
+                );
+                directorDecision = plotDirectorAgentService.sanitizeRemoteDecision(precomputedRemoteDecision, local, replySource, gap, signal);
+            }
+        }
         enrichTurnContext(turnContext, directorDecision);
         boolean advanced = directorDecision.shouldAdvance;
         String detail = directorDetail(directorDecision);
@@ -2364,6 +2364,22 @@ class PlotDirectorService {
         turnContext.plotDirectorConfidence = directorDecision.confidence;
         turnContext.plotRiskIfAdvance = directorDecision.riskIfAdvance;
         turnContext.requiredUserSignal = directorDecision.requiredUserSignal;
+    }
+
+    int estimateSignal(
+            String userMessage,
+            MemorySummary memorySummary,
+            EmotionState emotionState,
+            WeatherContext weatherContext,
+            TimeContext timeContext,
+            String replySource,
+            TurnContext turnContext,
+            int currentTurn,
+            int forcePlotAtTurn
+    ) {
+        boolean explicitTransition = isExplicitSceneTransition(userMessage);
+        int signal = explicitTransition ? 0 : sceneSignal(userMessage, memorySummary, emotionState, weatherContext, timeContext, replySource);
+        return adjustSignalWithTurnContext(signal, turnContext, currentTurn, forcePlotAtTurn);
     }
 
     private int adjustSignalWithTurnContext(int signal, TurnContext turnContext, int currentTurn, int forcePlotAtTurn) {
@@ -3067,6 +3083,10 @@ class SemanticRuntimeAgentService {
         return decision;
     }
 
+    SemanticRuntimeDecision parseResponseContent(String content, String nowIso) throws IOException {
+        return parse(content, nowIso);
+    }
+
     SemanticRuntimeDecision localAnalyze(
             String userMessage,
             SceneState sceneState,
@@ -3301,7 +3321,23 @@ class EnhancedPlotDirectorService extends PlotDirectorService {
             String nowIso,
             TurnContext turnContext
     ) {
-        PlotDecision base = super.decide(session, userMessage, emotionState, relationshipState, memorySummary, timeContext, weatherContext, replySource, nowIso, turnContext);
+        return decide(session, userMessage, emotionState, relationshipState, memorySummary, timeContext, weatherContext, replySource, nowIso, turnContext, null);
+    }
+
+    PlotDecision decide(
+            SessionRecord session,
+            String userMessage,
+            EmotionState emotionState,
+            RelationshipState relationshipState,
+            MemorySummary memorySummary,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String replySource,
+            String nowIso,
+            TurnContext turnContext,
+            PlotDirectorAgentDecision precomputedRemoteDecision
+    ) {
+        PlotDecision base = super.decide(session, userMessage, emotionState, relationshipState, memorySummary, timeContext, weatherContext, replySource, nowIso, turnContext, precomputedRemoteDecision);
         PlotArcState arc = normalizeArc(session.plotArcState, nowIso);
         SceneState previousScene = sceneDirectorService.normalize(session.sceneState, nowIso);
         int currentTurn = "user_turn".equals(replySource) ? session.userTurnCount + 1 : session.userTurnCount;

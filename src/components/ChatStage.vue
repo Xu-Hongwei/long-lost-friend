@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentProfile, AnalyticsOverview, SessionRecord } from "../types";
+import type { AgentProfile, AnalyticsOverview, SessionRecord, StageTimings } from "../types";
 import MessageStack from "./MessageStack.vue";
 import ComposerBar from "./ComposerBar.vue";
 import RelationshipMiniPanel from "./RelationshipMiniPanel.vue";
@@ -13,6 +13,9 @@ defineProps<{
   uiMode: "immersive" | "inspector";
   draft: string;
   sending: boolean;
+  sendingElapsedMs: number;
+  lastRoundTripMs: number;
+  lastStageTimings: StageTimings;
   disabled: boolean;
 }>();
 
@@ -137,6 +140,9 @@ const emits = defineEmits<{
           :model-value="draft"
           :disabled="disabled"
           :loading="sending"
+          :loading-elapsed-ms="sendingElapsedMs"
+          :last-round-trip-ms="lastRoundTripMs"
+          :stage-timings="lastStageTimings"
           :city="session?.visitorContext?.preferredCity"
           :scene-summary="session?.sceneState?.sceneSummary || session?.plotState?.sceneFrame"
           :agent-name="agent?.name"

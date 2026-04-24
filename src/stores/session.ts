@@ -4,8 +4,10 @@ import { api } from "../lib/api";
 import type {
   AgentProfile,
   AnalyticsOverview,
+  ChatSendResponse,
   PresenceResponse,
   SessionRecord,
+  StageTimings,
   VisitorContextUpdateResult,
   VisitorInitResult
 } from "../types";
@@ -25,6 +27,8 @@ export const useSessionStore = defineStore("session", () => {
   const currentSession = ref<SessionRecord | null>(null);
   const analytics = ref<AnalyticsOverview | null>(null);
   const errorMessage = ref("");
+  const lastChatRoundTripMs = ref(0);
+  const lastChatStageTimings = ref<StageTimings>({});
 
   const selectedAgent = computed(() => {
     if (currentSession.value?.agent) {
@@ -165,7 +169,8 @@ export const useSessionStore = defineStore("session", () => {
     }
     busy.value = true;
     try {
-      await api("/api/chat/send", {
+      const startedAt = performance.now();
+      const result = await api<ChatSendResponse>("/api/chat/send", {
         method: "POST",
         body: JSON.stringify({
           visitor_id: visitorId.value,
@@ -174,6 +179,8 @@ export const useSessionStore = defineStore("session", () => {
           user_message: message
         })
       });
+      lastChatRoundTripMs.value = Math.round(performance.now() - startedAt);
+      lastChatStageTimings.value = { ...(result.stage_timings_ms || {}) };
       await hydrateSession(currentSession.value.sessionId);
       await loadAnalytics();
     } finally {
@@ -329,6 +336,8 @@ export const useSessionStore = defineStore("session", () => {
     currentSession,
     analytics,
     errorMessage,
+    lastChatRoundTripMs,
+    lastChatStageTimings,
     selectedAgent,
     preferredCity,
     pendingChoices,

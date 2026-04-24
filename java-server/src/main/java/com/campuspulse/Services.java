@@ -14,7 +14,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 final class Services {
     private Services() {
@@ -23,6 +29,21 @@ final class Services {
 
 interface StateMutation<T> {
     T apply(AppState state) throws Exception;
+}
+
+@FunctionalInterface
+interface CheckedSupplier<T> {
+    T get() throws Exception;
+}
+
+final class TimedValue<T> {
+    final T value;
+    final long elapsedMs;
+
+    TimedValue(T value, long elapsedMs) {
+        this.value = value;
+        this.elapsedMs = elapsedMs;
+    }
 }
 
 class StateRepository {
@@ -1183,6 +1204,7 @@ abstract class CompositeLlmClient implements LlmClient {
 }
 
 class ChatOrchestrator {
+    private static final ExecutorService asyncStageExecutor = Executors.newCachedThreadPool();
     private final StateRepository repository;
     private final AgentConfigService agentConfigService;
     private final MemoryService memoryService;
@@ -1206,6 +1228,7 @@ class ChatOrchestrator {
     private final HumanizationEvaluationService humanizationEvaluationService = new HumanizationEvaluationService();
     private final DialogueContinuityService dialogueContinuityService = new DialogueContinuityService();
     private final SemanticRuntimeAgentService semanticRuntimeAgentService;
+    private final RemoteTurnAnalysisService remoteTurnAnalysisService;
 
     static MemoryService createMemoryService(long retentionMs) {
         return new EnhancedSocialMemoryService(retentionMs);
@@ -1256,7 +1279,8 @@ class ChatOrchestrator {
                 analyticsService,
                 AgentRuntimeFactory.plotDirector(config),
                 AgentRuntimeFactory.semanticRuntime(config),
-                AgentRuntimeFactory.affectionJudge(config)
+                AgentRuntimeFactory.affectionJudge(config),
+                config
         );
     }
 
@@ -1309,7 +1333,8 @@ class ChatOrchestrator {
                 analyticsService,
                 plotDirectorAgentService,
                 semanticRuntimeAgentService,
-                new LocalAffectionJudgeService()
+                new LocalAffectionJudgeService(),
+                null
         );
     }
 
@@ -1326,6 +1351,36 @@ class ChatOrchestrator {
             SemanticRuntimeAgentService semanticRuntimeAgentService,
             AffectionJudgeService affectionJudgeService
     ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                plotDirectorAgentService,
+                semanticRuntimeAgentService,
+                affectionJudgeService,
+                null
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            PlotDirectorAgentService plotDirectorAgentService,
+            SemanticRuntimeAgentService semanticRuntimeAgentService,
+            AffectionJudgeService affectionJudgeService,
+            AppConfig config
+    ) {
         this.repository = repository;
         this.agentConfigService = agentConfigService;
         this.memoryService = memoryService;
@@ -1337,6 +1392,66 @@ class ChatOrchestrator {
         this.plotDirectorService = new EnhancedPlotDirectorService(plotDirectorAgentService);
         this.semanticRuntimeAgentService = semanticRuntimeAgentService == null ? new SemanticRuntimeAgentService() : semanticRuntimeAgentService;
         this.affectionJudgeService = affectionJudgeService == null ? new LocalAffectionJudgeService() : affectionJudgeService;
+        this.remoteTurnAnalysisService = config == null ? null : new RemoteTurnAnalysisService(config);
+    }
+
+    private <T> CompletableFuture<T> runAsyncStage(CheckedSupplier<T> supplier) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return supplier.get();
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncStageExecutor);
+    }
+
+    private <T> T awaitStage(CompletableFuture<T> future) throws Exception {
+        try {
+            return future.join();
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof Exception checked) {
+                throw checked;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw ex;
+        }
+    }
+
+    private long elapsedMillis(long startNanos) {
+        return Math.max(0L, (System.nanoTime() - startNanos) / 1_000_000L);
+    }
+
+    private void recordStageTiming(String scope, Map<String, Long> timings, String stageName, long elapsedMs) {
+        timings.put(stageName, elapsedMs);
+        System.out.println("[timing][" + scope + "] " + stageName + "=" + elapsedMs + "ms");
+    }
+
+    private <T> TimedValue<T> runTimedStage(String scope, Map<String, Long> timings, String stageName, CheckedSupplier<T> supplier) throws Exception {
+        long startedAt = System.nanoTime();
+        try {
+            T value = supplier.get();
+            long elapsedMs = elapsedMillis(startedAt);
+            recordStageTiming(scope, timings, stageName, elapsedMs);
+            return new TimedValue<>(value, elapsedMs);
+        } catch (Exception ex) {
+            long elapsedMs = elapsedMillis(startedAt);
+            recordStageTiming(scope, timings, stageName + "_error", elapsedMs);
+            throw ex;
+        }
+    }
+
+    private <T> CompletableFuture<TimedValue<T>> runTimedAsyncStage(String scope, Map<String, Long> timings, String stageName, CheckedSupplier<T> supplier) {
+        return runAsyncStage(() -> runTimedStage(scope, timings, stageName, supplier));
+    }
+
+    private boolean shouldUseCombinedRemoteTurnAnalysis() {
+        return remoteTurnAnalysisService != null
+                && remoteTurnAnalysisService.remoteEnabled()
+                && semanticRuntimeAgentService instanceof RemoteSemanticRuntimeAgentService
+                && affectionJudgeService instanceof RemoteAffectionJudgeService;
     }
 
     Map<String, Object> initVisitor(String visitorId) throws Exception {
@@ -1594,31 +1709,12 @@ class ChatOrchestrator {
             userEntry.replySource = "user_turn";
             state.messages.add(userEntry);
 
+            Map<String, Long> stageTimings = new ConcurrentHashMap<>();
+            long sendStartedAt = System.nanoTime();
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
             TimeContext timeContext = realityContextService.buildTimeContext(visitor, messageCreatedAt);
             WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, messageCreatedAt);
-            SemanticRuntimeDecision semanticDecision = semanticRuntimeAgentService.analyze(
-                    userMessage,
-                    shortTerm,
-                    session.sceneState,
-                    session.relationshipState,
-                    session.tensionState,
-                    session.memorySummary,
-                    timeContext,
-                    weatherContext,
-                    "user_turn",
-                    messageCreatedAt
-            );
-            IntentState intentState = intentInferenceService.infer(
-                    userMessage,
-                    shortTerm,
-                    session.relationshipState,
-                    session.sceneState,
-                    session.tensionState,
-                    session.memorySummary,
-                    messageCreatedAt,
-                    semanticDecision
-            );
+            long dialogueStartedAt = System.nanoTime();
             DialogueContinuityState dialogueContinuity = dialogueContinuityService.update(
                     session.dialogueContinuityState,
                     userMessage,
@@ -1626,19 +1722,51 @@ class ChatOrchestrator {
                     session.sceneState,
                     messageCreatedAt
             );
+            recordStageTiming("chat_send", stageTimings, "dialogue_continuity", elapsedMillis(dialogueStartedAt));
+            long bootstrapIntentStartedAt = System.nanoTime();
+            IntentState bootstrapIntentState = intentInferenceService.infer(
+                    userMessage,
+                    shortTerm,
+                    session.relationshipState,
+                    session.sceneState,
+                    session.tensionState,
+                    session.memorySummary,
+                    messageCreatedAt,
+                    null
+            );
+            recordStageTiming("chat_send", stageTimings, "intent_bootstrap", elapsedMillis(bootstrapIntentStartedAt));
+            boolean useCombinedRemoteTurnAnalysis = !inspection.blocked && shouldUseCombinedRemoteTurnAnalysis();
+            CompletableFuture<TimedValue<SemanticRuntimeDecision>> semanticFuture = inspection.blocked || useCombinedRemoteTurnAnalysis
+                    ? null
+                    : runTimedAsyncStage("chat_send", stageTimings, "semantic_runtime", () -> semanticRuntimeAgentService.analyze(
+                            userMessage,
+                            shortTerm,
+                            session.sceneState,
+                            session.relationshipState,
+                            session.tensionState,
+                            session.memorySummary,
+                            timeContext,
+                            weatherContext,
+                            "user_turn",
+                            messageCreatedAt
+                    ));
+            SemanticRuntimeDecision semanticDecision = null;
+            IntentState intentState = bootstrapIntentState;
             StoryEvent triggeredEvent = null;
             PlotGateDecision plotGateDecision = emptyPlotGate(messageCreatedAt);
             TurnEvaluation relationship = new TurnEvaluation(session.relationshipState, new Delta());
             EmotionState nextEmotion = affectionJudgeService.normalizeEmotion(session.emotionState, messageCreatedAt);
             RelationalTensionState nextTension = boundaryResponseService.normalize(session.tensionState, messageCreatedAt);
-            TurnContext turnContext = buildTurnContext(
+            long bootstrapTurnContextStartedAt = System.nanoTime();
+            TurnContext turnContext = buildSharedTurnContext(
                     intentState,
                     relationship,
                     session.sceneState,
                     "user_turn",
-                    messageCreatedAt
+                    messageCreatedAt,
+                    dialogueContinuity
             );
-            applyContinuityToTurnContext(turnContext, dialogueContinuity);
+            recordStageTiming("chat_send", stageTimings, "turn_context_bootstrap", elapsedMillis(bootstrapTurnContextStartedAt));
             PlotDecision plotDecision = new PlotDecision(
                     plotDirectorService.normalizePlot(session.plotState, messageCreatedAt),
                     plotDirectorService.normalizeArc(session.plotArcState, messageCreatedAt),
@@ -1678,6 +1806,7 @@ class ChatOrchestrator {
 
             if (inspection.blocked) {
                 nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, messageCreatedAt);
+                recordStageTiming("chat_send", stageTimings, "input_safety_block", 0L);
                 llmReply = new LlmResponse(
                         inspection.safeMessage,
                         "guarded",
@@ -1690,49 +1819,197 @@ class ChatOrchestrator {
             } else {
                 StoryEvent candidateEvent = eventEngine.findTriggeredEvent(agent, session, userMessage);
                 StoryEvent scoringEvent = candidateEvent != null && candidateEvent.keyChoiceEvent ? null : candidateEvent;
-                AffectionScoreResult affectionScoreResult = affectionJudgeService.evaluateTurn(
-                        userMessage,
-                        session.relationshipState,
-                        session.emotionState,
-                        scoringEvent,
-                        session.memorySummary,
-                        relationshipService,
-                        messageCreatedAt,
-                        intentState,
-                        session.sceneState,
-                        session.tensionState,
-                        dialogueContinuity,
-                        "user_turn"
-                );
-                relationship = affectionScoreResult.turnEvaluation;
-                nextEmotion = affectionScoreResult.nextEmotion;
-                nextTension = boundaryResponseService.evaluate(
-                        userMessage,
-                        session.tensionState,
-                        relationship,
-                        temperamentProfileFor(agent),
-                        messageCreatedAt
-                );
-                turnContext = buildTurnContext(
-                        intentState,
-                        relationship,
-                        session.sceneState,
-                        "user_turn",
-                        messageCreatedAt
-                );
-                applyContinuityToTurnContext(turnContext, dialogueContinuity);
-                plotDecision = plotDirectorService.decide(
-                        session,
-                        userMessage,
-                        nextEmotion,
-                        relationship.nextState,
-                        session.memorySummary,
-                        timeContext,
-                        weatherContext,
-                        "user_turn",
-                        messageCreatedAt,
-                        turnContext
-                );
+                RemoteTurnAnalysisResult combinedTurnAnalysis = null;
+                if (useCombinedRemoteTurnAnalysis) {
+                    try {
+                        TurnContext analysisTurnContext = turnContext;
+                        PlotState analysisPlotState = plotDirectorService.normalizePlot(session.plotState, messageCreatedAt);
+                        int analysisCurrentTurn = session.userTurnCount + 1;
+                        int analysisPlotGap = Math.max(0, analysisCurrentTurn - analysisPlotState.lastPlotTurn);
+                        int analysisPlotSignal = plotDirectorService.estimateSignal(
+                                userMessage,
+                                session.memorySummary,
+                                nextEmotion,
+                                weatherContext,
+                                timeContext,
+                                "user_turn",
+                                turnContext,
+                                analysisCurrentTurn,
+                                analysisPlotState.forcePlotAtTurn
+                        );
+                        combinedTurnAnalysis = runTimedStage("chat_send", stageTimings, "combined_remote_analysis", () -> remoteTurnAnalysisService.analyzeUserTurn(
+                                userMessage,
+                                shortTerm,
+                                session.sceneState,
+                                session.relationshipState,
+                                session.emotionState,
+                                session.tensionState,
+                                session.memorySummary,
+                                timeContext,
+                                weatherContext,
+                                dialogueContinuity,
+                                bootstrapIntentState,
+                                analysisTurnContext,
+                                scoringEvent,
+                                relationshipService,
+                                "user_turn",
+                                messageCreatedAt,
+                                analysisCurrentTurn,
+                                analysisPlotGap,
+                                analysisPlotState.forcePlotAtTurn,
+                                analysisPlotSignal
+                        )).value;
+                    } catch (Exception ex) {
+                        combinedTurnAnalysis = null;
+                        if (semanticFuture == null) {
+                            semanticFuture = runTimedAsyncStage("chat_send", stageTimings, "semantic_runtime", () -> semanticRuntimeAgentService.analyze(
+                                    userMessage,
+                                    shortTerm,
+                                    session.sceneState,
+                                    session.relationshipState,
+                                    session.tensionState,
+                                    session.memorySummary,
+                                    timeContext,
+                                    weatherContext,
+                                    "user_turn",
+                                    messageCreatedAt
+                            ));
+                        }
+                    }
+                }
+
+                AffectionScoreResult affectionScoreResult;
+                if (combinedTurnAnalysis != null) {
+                    semanticDecision = combinedTurnAnalysis.semanticDecision;
+                    long intentStartedAt = System.nanoTime();
+                    intentState = intentInferenceService.infer(
+                            userMessage,
+                            shortTerm,
+                            session.relationshipState,
+                            session.sceneState,
+                            session.tensionState,
+                            session.memorySummary,
+                            messageCreatedAt,
+                            semanticDecision
+                    );
+                    recordStageTiming("chat_send", stageTimings, "intent_inference", elapsedMillis(intentStartedAt));
+                    affectionScoreResult = combinedTurnAnalysis.affectionScoreResult;
+                    relationship = affectionScoreResult.turnEvaluation;
+                    nextEmotion = affectionScoreResult.nextEmotion;
+                    long boundaryStartedAt = System.nanoTime();
+                    nextTension = boundaryResponseService.evaluate(
+                            userMessage,
+                            session.tensionState,
+                            relationship,
+                            temperamentProfileFor(agent),
+                            messageCreatedAt
+                    );
+                    recordStageTiming("chat_send", stageTimings, "boundary_response", elapsedMillis(boundaryStartedAt));
+                    long finalTurnContextStartedAt = System.nanoTime();
+                    turnContext = buildSharedTurnContext(
+                            intentState,
+                            relationship,
+                            session.sceneState,
+                            "user_turn",
+                            messageCreatedAt,
+                            dialogueContinuity
+                    );
+                    recordStageTiming("chat_send", stageTimings, "turn_context_final", elapsedMillis(finalTurnContextStartedAt));
+                    EmotionState plotEmotion = nextEmotion;
+                    RelationshipState plotRelationshipState = relationship.nextState;
+                    TurnContext plotTurnContext = turnContext;
+                    long plotDecisionStartedAt = System.nanoTime();
+                    plotDecision = plotDirectorService.decide(
+                            session,
+                            userMessage,
+                            plotEmotion,
+                            plotRelationshipState,
+                            session.memorySummary,
+                            timeContext,
+                            weatherContext,
+                            "user_turn",
+                            messageCreatedAt,
+                            plotTurnContext,
+                            combinedTurnAnalysis.plotDirectorDecision
+                    );
+                    recordStageTiming("chat_send", stageTimings, "plot_director", elapsedMillis(plotDecisionStartedAt));
+                } else {
+                    CompletableFuture<TimedValue<AffectionScoreResult>> affectionFuture = runTimedAsyncStage("chat_send", stageTimings, "affection_judge", () -> affectionJudgeService.evaluateTurn(
+                            userMessage,
+                            session.relationshipState,
+                            session.emotionState,
+                            scoringEvent,
+                            session.memorySummary,
+                            relationshipService,
+                            messageCreatedAt,
+                            bootstrapIntentState,
+                            session.sceneState,
+                            session.tensionState,
+                            dialogueContinuity,
+                            "user_turn"
+                    ));
+                    semanticDecision = awaitStage(semanticFuture).value;
+                    long intentStartedAt = System.nanoTime();
+                    intentState = intentInferenceService.infer(
+                            userMessage,
+                            shortTerm,
+                            session.relationshipState,
+                            session.sceneState,
+                            session.tensionState,
+                            session.memorySummary,
+                            messageCreatedAt,
+                            semanticDecision
+                    );
+                    recordStageTiming("chat_send", stageTimings, "intent_inference", elapsedMillis(intentStartedAt));
+                    affectionScoreResult = awaitStage(affectionFuture).value;
+                    relationship = affectionScoreResult.turnEvaluation;
+                    nextEmotion = affectionScoreResult.nextEmotion;
+                    long boundaryStartedAt = System.nanoTime();
+                    nextTension = boundaryResponseService.evaluate(
+                            userMessage,
+                            session.tensionState,
+                            relationship,
+                            temperamentProfileFor(agent),
+                            messageCreatedAt
+                    );
+                    recordStageTiming("chat_send", stageTimings, "boundary_response", elapsedMillis(boundaryStartedAt));
+                    long finalTurnContextStartedAt = System.nanoTime();
+                    turnContext = buildSharedTurnContext(
+                            intentState,
+                            relationship,
+                            session.sceneState,
+                            "user_turn",
+                            messageCreatedAt,
+                            dialogueContinuity
+                    );
+                    recordStageTiming("chat_send", stageTimings, "turn_context_final", elapsedMillis(finalTurnContextStartedAt));
+                    EmotionState plotEmotion = nextEmotion;
+                    RelationshipState plotRelationshipState = relationship.nextState;
+                    TurnContext plotTurnContext = turnContext;
+                    CompletableFuture<TimedValue<PlotDecision>> plotDecisionFuture = runTimedAsyncStage("chat_send", stageTimings, "plot_director", () -> plotDirectorService.decide(
+                            session,
+                            userMessage,
+                            plotEmotion,
+                            plotRelationshipState,
+                            session.memorySummary,
+                            timeContext,
+                            weatherContext,
+                            "user_turn",
+                            messageCreatedAt,
+                            plotTurnContext
+                    ));
+                    plotDecision = awaitStage(plotDecisionFuture).value;
+                }
+                long longTermSummaryStartedAt = System.nanoTime();
+                String longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
+                recordStageTiming("chat_send", stageTimings, "long_term_summary", elapsedMillis(longTermSummaryStartedAt));
+                long recallStartedAt = System.nanoTime();
+                MemoryRecall recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
+                recordStageTiming("chat_send", stageTimings, "memory_recall", elapsedMillis(recallStartedAt));
+                long userMoodStartedAt = System.nanoTime();
+                String currentUserMood = memoryService.detectMood(userMessage);
+                recordStageTiming("chat_send", stageTimings, "user_mood", elapsedMillis(userMoodStartedAt));
+                long semanticSceneStartedAt = System.nanoTime();
                 plotDecision = applySemanticSceneDecision(
                         session.sceneState,
                         plotDecision,
@@ -1743,6 +2020,8 @@ class ChatOrchestrator {
                         session.userTurnCount,
                         messageCreatedAt
                 );
+                recordStageTiming("chat_send", stageTimings, "semantic_scene_merge", elapsedMillis(semanticSceneStartedAt));
+                long plotMacroStartedAt = System.nanoTime();
                 relationship = applyPlotMacroScore(
                         relationship,
                         plotDecision,
@@ -1750,6 +2029,8 @@ class ChatOrchestrator {
                         nextTension,
                         messageCreatedAt
                 );
+                recordStageTiming("chat_send", stageTimings, "plot_macro_score", elapsedMillis(plotMacroStartedAt));
+                long plotGateStartedAt = System.nanoTime();
                 plotGateDecision = plotGateService.decide(
                         candidateEvent,
                         session,
@@ -1758,16 +2039,25 @@ class ChatOrchestrator {
                         nextTension,
                         messageCreatedAt
                 );
+                recordStageTiming("chat_send", stageTimings, "plot_gate", elapsedMillis(plotGateStartedAt));
                 triggeredEvent = plotGateDecision.allowed ? candidateEvent : null;
+                long memoryUsePlanStartedAt = System.nanoTime();
                 memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, plotDecision.replySource, plotDecision.sceneFrame);
-                String longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
-                MemoryRecall recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
+                recordStageTiming("chat_send", stageTimings, "memory_use_plan", elapsedMillis(memoryUsePlanStartedAt));
                 memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, recall);
-                String currentUserMood = memoryService.detectMood(userMessage);
+                long searchDecisionStartedAt = System.nanoTime();
                 searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState, semanticDecision);
+                recordStageTiming("chat_send", stageTimings, "search_decision", elapsedMillis(searchDecisionStartedAt));
+                long searchGroundingStartedAt = System.nanoTime();
                 searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+                recordStageTiming("chat_send", stageTimings, "search_grounding", elapsedMillis(searchGroundingStartedAt));
+                long realityEnvelopeStartedAt = System.nanoTime();
                 realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary, semanticDecision);
+                recordStageTiming("chat_send", stageTimings, "reality_envelope", elapsedMillis(realityEnvelopeStartedAt));
+                long uncertaintyStartedAt = System.nanoTime();
                 uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
+                recordStageTiming("chat_send", stageTimings, "uncertainty_state", elapsedMillis(uncertaintyStartedAt));
+                long responsePlanStartedAt = System.nanoTime();
                 responsePlan = responsePlanningService.plan(
                         intentState,
                         relationship.nextState,
@@ -1777,6 +2067,8 @@ class ChatOrchestrator {
                         plotDecision.replySource,
                         messageCreatedAt
                 );
+                recordStageTiming("chat_send", stageTimings, "response_plan", elapsedMillis(responsePlanStartedAt));
+                long initiativeStartedAt = System.nanoTime();
                 initiativeDecision = initiativePolicyService.decide(
                         intentState,
                         responsePlan,
@@ -1786,11 +2078,15 @@ class ChatOrchestrator {
                         plotDecision.replySource,
                         messageCreatedAt
                 );
+                recordStageTiming("chat_send", stageTimings, "initiative_policy", elapsedMillis(initiativeStartedAt));
+                long responseCadenceStartedAt = System.nanoTime();
                 String responseCadence = memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
+                recordStageTiming("chat_send", stageTimings, "response_cadence", elapsedMillis(responseCadenceStartedAt));
                 String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent)
                         + " 当前记忆使用模式：" + memoryUsePlan.useMode
                         + "。原因：" + memoryUsePlan.relevanceReason).trim();
 
+                long llmReplyStartedAt = System.nanoTime();
                 llmReply = llmClient.generateReply(new LlmRequest(
                         agent,
                         relationship.nextState,
@@ -1823,15 +2119,19 @@ class ChatOrchestrator {
                         dialogueContinuity,
                         semanticDecision
                 ));
+                recordStageTiming("chat_send", stageTimings, "llm_reply", elapsedMillis(llmReplyStartedAt));
 
+                long realityGuardStartedAt = System.nanoTime();
                 RealityGuardResult guardResult = realityGuardService.auditAndRepair(
                         llmReply,
                         realityEnvelope,
                         userMessage,
                         plotDecision.nextSceneState
                 );
+                recordStageTiming("chat_send", stageTimings, "reality_guard", elapsedMillis(realityGuardStartedAt));
                 llmReply = guardResult.reply;
                 realityAudit = guardResult.realityAudit;
+                long humanizationStartedAt = System.nanoTime();
                 humanizationAudit = humanizationEvaluationService.evaluate(
                         userMessage,
                         llmReply,
@@ -1840,8 +2140,11 @@ class ChatOrchestrator {
                         memoryUsePlan,
                         realityAudit
                 );
+                recordStageTiming("chat_send", stageTimings, "humanization_audit", elapsedMillis(humanizationStartedAt));
 
+                long outputSafetyStartedAt = System.nanoTime();
                 InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
+                recordStageTiming("chat_send", stageTimings, "assistant_output_safety", elapsedMillis(outputSafetyStartedAt));
                 if (outputInspection.blocked) {
                     llmReply = new LlmResponse(
                             llmClient.buildFallbackReply(agent, outputInspection.reason),
@@ -1854,6 +2157,7 @@ class ChatOrchestrator {
                     );
                 }
             }
+            recordStageTiming("chat_send", stageTimings, "total", elapsedMillis(sendStartedAt));
 
             String replyCreatedAt = IsoTimes.now();
             ConversationMessage assistantEntry = new ConversationMessage();
@@ -1980,6 +2284,7 @@ class ChatOrchestrator {
             response.put("can_settle_score", session.plotArcState != null && session.plotArcState.canSettleScore);
             response.put("can_continue", session.plotArcState != null && session.plotArcState.canContinue);
             response.put("arc_summary_preview", arcSummaryMap(session.plotArcState == null ? null : session.plotArcState.latestArcSummary));
+            response.put("stage_timings_ms", new TreeMap<>(stageTimings));
             return response;
         });
     }
@@ -2045,11 +2350,17 @@ class ChatOrchestrator {
             }
 
             AgentProfile agent = requireAgent(session.agentId);
+            Map<String, Long> stageTimings = new ConcurrentHashMap<>();
+            long presenceStartedAt = System.nanoTime();
             TimeContext timeContext = realityContextService.buildTimeContext(visitor, nowIso);
             WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, nowIso);
             EmotionState nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, nowIso);
             RelationalTensionState nextTension = boundaryResponseService.normalize(session.tensionState, nowIso);
-            PlotDecision plotDecision = plotDirectorService.decide(
+            List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            long presenceDialogueStartedAt = System.nanoTime();
+            DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
+            recordStageTiming("presence", stageTimings, "dialogue_continuity", elapsedMillis(presenceDialogueStartedAt));
+            CompletableFuture<TimedValue<PlotDecision>> plotDecisionFuture = runTimedAsyncStage("presence", stageTimings, "plot_director", () -> plotDirectorService.decide(
                     session,
                     "",
                     nextEmotion,
@@ -2059,9 +2370,12 @@ class ChatOrchestrator {
                     weatherContext,
                     presenceResult.replySource,
                     nowIso
-            );
+            ));
+            PlotDecision plotDecision = awaitStage(plotDecisionFuture).value;
+            long presenceMemoryUseStartedAt = System.nanoTime();
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
-            List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            recordStageTiming("presence", stageTimings, "memory_use_plan", elapsedMillis(presenceMemoryUseStartedAt));
+            long presenceSemanticStartedAt = System.nanoTime();
             SemanticRuntimeDecision semanticDecision = semanticRuntimeAgentService.analyze(
                     "",
                     shortTerm,
@@ -2074,7 +2388,8 @@ class ChatOrchestrator {
                     presenceResult.replySource,
                     nowIso
             );
-            DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
+            recordStageTiming("presence", stageTimings, "semantic_runtime", elapsedMillis(presenceSemanticStartedAt));
+            long presenceIntentStartedAt = System.nanoTime();
             IntentState intentState = intentInferenceService.infer(
                     "",
                     shortTerm,
@@ -2085,7 +2400,9 @@ class ChatOrchestrator {
                     nowIso,
                     semanticDecision
             );
+            recordStageTiming("presence", stageTimings, "intent_inference", elapsedMillis(presenceIntentStartedAt));
             PlotGateDecision plotGateDecision = emptyPlotGate(nowIso);
+            long presenceResponsePlanStartedAt = System.nanoTime();
             ResponsePlan responsePlan = responsePlanningService.plan(
                     intentState,
                     session.relationshipState,
@@ -2095,6 +2412,8 @@ class ChatOrchestrator {
                     presenceResult.replySource,
                     nowIso
             );
+            recordStageTiming("presence", stageTimings, "response_plan", elapsedMillis(presenceResponsePlanStartedAt));
+            long presenceInitiativeStartedAt = System.nanoTime();
             InitiativeDecision initiativeDecision = initiativePolicyService.decide(
                     intentState,
                     responsePlan,
@@ -2104,20 +2423,31 @@ class ChatOrchestrator {
                     presenceResult.replySource,
                     nowIso
             );
+            recordStageTiming("presence", stageTimings, "initiative_policy", elapsedMillis(presenceInitiativeStartedAt));
             SearchDecision searchDecision = new SearchDecision(false, "", "skip", "skip", false);
+            long presenceGroundingStartedAt = System.nanoTime();
             SearchGroundingSummary searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+            recordStageTiming("presence", stageTimings, "search_grounding", elapsedMillis(presenceGroundingStartedAt));
+            long presenceEnvelopeStartedAt = System.nanoTime();
             RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary, semanticDecision);
+            recordStageTiming("presence", stageTimings, "reality_envelope", elapsedMillis(presenceEnvelopeStartedAt));
+            long presenceUncertaintyStartedAt = System.nanoTime();
             UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, nowIso);
+            recordStageTiming("presence", stageTimings, "uncertainty_state", elapsedMillis(presenceUncertaintyStartedAt));
             List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
             String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, "", session.relationshipState, null)
                     + " 当前这是角色主动发出的消息。reply_source=" + presenceResult.replySource
                     + "。记忆使用原因：" + memoryUsePlan.relevanceReason).trim();
 
+            long presenceSummaryStartedAt = System.nanoTime();
+            String longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
+            recordStageTiming("presence", stageTimings, "long_term_summary", elapsedMillis(presenceSummaryStartedAt));
+            long presenceLlmStartedAt = System.nanoTime();
             LlmResponse llmReply = llmClient.generateReply(new LlmRequest(
                     agent,
                     session.relationshipState,
                     shortTerm,
-                    memoryService.getTieredSummaryText(session.memorySummary),
+                    longTermSummary,
                     "none",
                     "",
                     session.memorySummary.lastUserMood,
@@ -2145,15 +2475,19 @@ class ChatOrchestrator {
                     dialogueContinuity,
                     semanticDecision
             ));
+            recordStageTiming("presence", stageTimings, "llm_reply", elapsedMillis(presenceLlmStartedAt));
 
+            long presenceGuardStartedAt = System.nanoTime();
             RealityGuardResult guardResult = realityGuardService.auditAndRepair(
                     llmReply,
                     realityEnvelope,
                     "",
                     plotDecision.nextSceneState
             );
+            recordStageTiming("presence", stageTimings, "reality_guard", elapsedMillis(presenceGuardStartedAt));
             llmReply = guardResult.reply;
             RealityAudit realityAudit = guardResult.realityAudit;
+            long presenceHumanizationStartedAt = System.nanoTime();
             HumanizationAudit humanizationAudit = humanizationEvaluationService.evaluate(
                     "",
                     llmReply,
@@ -2162,8 +2496,11 @@ class ChatOrchestrator {
                     memoryUsePlan,
                     realityAudit
             );
+            recordStageTiming("presence", stageTimings, "humanization_audit", elapsedMillis(presenceHumanizationStartedAt));
 
+            long presenceOutputSafetyStartedAt = System.nanoTime();
             InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
+            recordStageTiming("presence", stageTimings, "assistant_output_safety", elapsedMillis(presenceOutputSafetyStartedAt));
             if (outputInspection.blocked) {
                 llmReply = new LlmResponse(
                         llmClient.buildFallbackReply(agent, outputInspection.reason),
@@ -2175,6 +2512,7 @@ class ChatOrchestrator {
                         "fallback"
                 );
             }
+            recordStageTiming("presence", stageTimings, "total", elapsedMillis(presenceStartedAt));
 
             ConversationMessage proactiveEntry = new ConversationMessage();
             proactiveEntry.id = ids("msg");
@@ -2237,6 +2575,7 @@ class ChatOrchestrator {
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
             response.put("arc_summary_preview", arcSummaryMap(session.plotArcState == null ? null : session.plotArcState.latestArcSummary));
+            response.put("stage_timings_ms", new TreeMap<>(stageTimings));
             return response;
         });
     }
@@ -2664,6 +3003,19 @@ class ChatOrchestrator {
         context.sceneLocation = sceneState == null ? "" : blankTo(sceneState.location, "");
         context.interactionMode = sceneState == null ? "" : blankTo(sceneState.interactionMode, "");
         context.updatedAt = nowIso;
+        return context;
+    }
+
+    private TurnContext buildSharedTurnContext(
+            IntentState intentState,
+            TurnEvaluation relationship,
+            SceneState sceneState,
+            String replySource,
+            String nowIso,
+            DialogueContinuityState continuity
+    ) {
+        TurnContext context = buildTurnContext(intentState, relationship, sceneState, replySource, nowIso);
+        applyContinuityToTurnContext(context, continuity);
         return context;
     }
 

@@ -368,6 +368,30 @@ class RemoteAffectionJudgeService extends AffectionJudgeService {
         return new AffectionScoreResult(evaluation, nextEmotion);
     }
 
+    AffectionScoreResult parseResponseContent(
+            String content,
+            RelationshipState previousState,
+            EmotionState previousEmotion,
+            AffectionScoreResult localReference,
+            String nowIso,
+            StoryEvent event,
+            IntentState intentState,
+            RelationalTensionState tensionState,
+            String replySource
+    ) throws IOException {
+        return parseRemoteScore(
+                content,
+                previousState,
+                previousEmotion,
+                localReference,
+                nowIso,
+                event,
+                intentState,
+                tensionState,
+                replySource
+        );
+    }
+
     private Delta calibrateDelta(
             Delta remote,
             Delta local,

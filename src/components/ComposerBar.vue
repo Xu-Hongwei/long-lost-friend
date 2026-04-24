@@ -1,8 +1,14 @@
 <script setup lang="ts">
-defineProps<{
+import { computed } from "vue";
+import type { StageTimings } from "../types";
+
+const props = defineProps<{
   modelValue: string;
   disabled?: boolean;
   loading?: boolean;
+  loadingElapsedMs?: number;
+  lastRoundTripMs?: number;
+  stageTimings?: StageTimings;
   city?: string;
   sceneSummary?: string;
   agentName?: string;
@@ -12,6 +18,37 @@ const emits = defineEmits<{
   "update:modelValue": [value: string];
   send: [];
 }>();
+
+function formatMs(ms?: number) {
+  const safe = Math.max(0, ms || 0);
+  if (safe >= 1000) {
+    return `${(safe / 1000).toFixed(1)}s`;
+  }
+  return `${safe}ms`;
+}
+
+const requestStatusLabel = computed(() => {
+  if (props.loading) {
+    return `本次请求 ${formatMs(props.loadingElapsedMs)}`;
+  }
+  if ((props.lastRoundTripMs || 0) > 0) {
+    return `上次响应 ${formatMs(props.lastRoundTripMs)}`;
+  }
+  return "等待发送";
+});
+
+const orderedTimings = computed(() => {
+  const source = props.stageTimings || {};
+  const entries = Object.entries(source).filter(([, value]) => typeof value === "number");
+  entries.sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+    if (leftKey === "total") return -1;
+    if (rightKey === "total") return 1;
+    return rightValue - leftValue;
+  });
+  return entries.slice(0, 8);
+});
+
+const hasTimings = computed(() => orderedTimings.value.length > 0);
 </script>
 
 <template>
@@ -28,6 +65,22 @@ const emits = defineEmits<{
       </span>
       <span v-if="city" class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/62">
         {{ city }}
+      </span>
+      <span
+        class="rounded-full border px-3 py-1 text-xs"
+        :class="loading ? 'border-amber-200/25 bg-amber-100/10 text-amber-100/88' : 'border-white/10 bg-black/16 text-white/62'"
+      >
+        {{ requestStatusLabel }}
+      </span>
+    </div>
+
+    <div v-if="hasTimings" class="mb-3 flex flex-wrap gap-2 px-2">
+      <span
+        v-for="[stageName, elapsedMs] in orderedTimings"
+        :key="stageName"
+        class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-[11px] text-white/55"
+      >
+        {{ stageName }} {{ formatMs(elapsedMs) }}
       </span>
     </div>
 
