@@ -18,13 +18,13 @@ const emits = defineEmits<{
   <section class="space-y-4">
     <div class="flex items-end justify-between gap-4">
       <div>
-        <p class="tracking-[0.28em] text-[0.72rem] uppercase text-white/45">Character Rail</p>
+        <p class="tracking-[0.28em] text-[0.72rem] uppercase text-white/45">Tonight's Cast</p>
         <h2 class="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white sm:text-[2rem]">
-          先挑一个你会想多看两眼的人
+          选一个今晚想遇见的人
         </h2>
       </div>
       <p class="hidden max-w-md text-sm leading-6 text-white/58 xl:block">
-        角色卡先用图像、色温和标签建立第一眼吸引力，再把你带进今晚的聊天。
+        每个角色都有自己的节奏、边界和靠近方式。先看一眼，再决定今晚从谁开始。
       </p>
     </div>
 
@@ -87,7 +87,7 @@ const emits = defineEmits<{
               class="mt-auto inline-flex items-center self-start rounded-full border border-white/12 px-4 py-2 text-sm text-white/78 transition hover:border-white/24 hover:bg-white/6"
               @click.stop="emits('start', agent.id)"
             >
-              {{ activeSessionAgentId === agent.id ? "回到聊天" : "选她开场" }}
+              {{ activeSessionAgentId === agent.id ? "回到聊天" : `选${agent.objectPronoun || "TA"}开场` }}
             </button>
           </div>
         </div>

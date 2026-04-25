@@ -140,7 +140,11 @@ public class CampusPulseServer {
                     "visitorId", Json.asString(body.get("visitor_id")),
                     "sessionId", Json.asString(body.get("session_id")),
                     "agentId", Json.asString(body.get("agent_id")),
-                    "userMessage", Json.asString(body.get("user_message"))
+                    "userMessage", Json.asString(body.get("user_message")),
+                    "quickJudgeMode", Json.asString(body.get("quick_judge_mode")),
+                    "quickJudgeEnabled", body.containsKey("quick_judge_enabled") ? Json.asBoolean(body.get("quick_judge_enabled")) : true,
+                    "quickJudgeForceAll", body.containsKey("quick_judge_force_all") && Json.asBoolean(body.get("quick_judge_force_all")),
+                    "quickJudgeWaitSeconds", body.containsKey("quick_judge_wait_seconds") ? body.get("quick_judge_wait_seconds") : ""
             ))));
         }
 

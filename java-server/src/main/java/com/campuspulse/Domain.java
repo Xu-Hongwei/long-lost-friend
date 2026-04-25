@@ -389,9 +389,45 @@ class EventEffect implements Serializable {
     }
 }
 
+final class AgentPronouns {
+    private AgentPronouns() {
+    }
+
+    static String gender(String agentId) {
+        return switch (agentId == null ? "" : agentId) {
+            case "healing", "lively" -> "female";
+            case "cool", "artsy", "sunny" -> "male";
+            default -> "unknown";
+        };
+    }
+
+    static String subject(String agentId) {
+        String gender = gender(agentId);
+        if ("female".equals(gender)) {
+            return "她";
+        }
+        if ("male".equals(gender)) {
+            return "他";
+        }
+        return "TA";
+    }
+
+    static String object(String agentId) {
+        return subject(agentId);
+    }
+
+    static String possessive(String agentId) {
+        return subject(agentId) + "的";
+    }
+}
+
 class AgentProfile implements Serializable {
     final String id;
     final String name;
+    final String gender;
+    final String subjectPronoun;
+    final String objectPronoun;
+    final String possessivePronoun;
     final String archetype;
     final String tagline;
     final List<String> palette;
@@ -503,6 +539,10 @@ class AgentProfile implements Serializable {
     ) {
         this.id = id;
         this.name = name;
+        this.gender = AgentPronouns.gender(id);
+        this.subjectPronoun = AgentPronouns.subject(id);
+        this.objectPronoun = AgentPronouns.object(id);
+        this.possessivePronoun = AgentPronouns.possessive(id);
         this.archetype = archetype;
         this.tagline = tagline;
         this.palette = palette;
@@ -676,32 +716,32 @@ class AgentVisualProfile implements Serializable {
     static AgentVisualProfile forAgent(String agentId) {
         return switch (agentId) {
             case "healing" -> new AgentVisualProfile(
-                    "/characters/healing/portrait.svg",
-                    "/characters/healing/cover.svg",
+                    "/characters/healing/portrait.png",
+                    "/characters/healing/portrait.png",
                     List.of("治愈系", "图书馆窗边", "慢热安慰"),
                     List.of("暖杏", "奶霜粉", "旧书褐")
             );
             case "lively" -> new AgentVisualProfile(
-                    "/characters/lively/portrait.svg",
-                    "/characters/lively/cover.svg",
+                    "/characters/lively/portrait.png",
+                    "/characters/lively/portrait.png",
                     List.of("元气感", "社团灯牌", "夜市热闹"),
                     List.of("橘金", "蜂蜜黄", "琥珀棕")
             );
             case "cool" -> new AgentVisualProfile(
-                    "/characters/cool/portrait.svg",
-                    "/characters/cool/cover.svg",
+                    "/characters/cool/portrait.png",
+                    "/characters/cool/portrait.png",
                     List.of("高冷慢热", "夜色楼道", "克制注视"),
                     List.of("雾蓝", "冷银紫", "深海灰")
             );
             case "artsy" -> new AgentVisualProfile(
-                    "/characters/artsy/portrait.svg",
-                    "/characters/artsy/cover.svg",
+                    "/characters/artsy/portrait.png",
+                    "/characters/artsy/portrait.png",
                     List.of("文艺感", "黄昏桥边", "镜头叙事"),
                     List.of("奶灰紫", "落日晚霞", "雾粉")
             );
             case "sunny" -> new AgentVisualProfile(
-                    "/characters/sunny/portrait.svg",
-                    "/characters/sunny/cover.svg",
+                    "/characters/sunny/portrait.png",
+                    "/characters/sunny/portrait.png",
                     List.of("行动派", "操场清风", "明亮直球"),
                     List.of("清透蓝", "晨雾白", "运动场绿")
             );

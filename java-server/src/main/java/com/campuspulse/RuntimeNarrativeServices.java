@@ -336,8 +336,8 @@ class SceneMoveIntentService {
         if (containsAny(compact, List.of("去操场", "到操场", "操场走走", "操场散步"))) return "操场";
         if (containsAny(compact, List.of("去食堂", "到食堂", "去吃饭", "去打饭"))) return "食堂";
         if (containsAny(compact, List.of("去图书馆", "到图书馆", "去自习", "去复习"))) return "图书馆";
-        if (containsAny(compact, List.of("回宿舍", "去宿舍", "送你回宿舍", "送她回宿舍", "宿舍楼下"))) return "宿舍";
-        if (containsAny(compact, List.of("一起走", "边走边说", "路上说", "路上聊", "送你回", "送她回"))) return "回去的路上";
+        if (containsAny(compact, List.of("回宿舍", "去宿舍", "送你回宿舍", "送她回宿舍", "送他回宿舍", "宿舍楼下"))) return "宿舍";
+        if (containsAny(compact, List.of("一起走", "边走边说", "路上说", "路上聊", "送你回", "送她回", "送他回"))) return "回去的路上";
         if (containsAny(compact, List.of("去外面", "出去走", "换个地方", "出去看看", "去看看小雨", "看看小雨"))) return "外面";
         if (containsAny(compact, List.of("去市区", "出校", "校外"))) return "市区";
         return "";
@@ -376,7 +376,7 @@ class SceneMoveIntentService {
     private String interactionFor(String targetLocation, String compact) {
         if (containsAny(compact, List.of("发消息", "回消息", "聊天框", "手机", "屏幕那头"))) return "online_chat";
         if (containsAny(compact, List.of("打电话", "通话", "电话里"))) return "phone_call";
-        if ("回去的路上".equals(targetLocation) || containsAny(compact, List.of("一起走", "边走边说", "路上", "送你回", "送她回"))) return "mixed_transition";
+        if ("回去的路上".equals(targetLocation) || containsAny(compact, List.of("一起走", "边走边说", "路上", "送你回", "送她回", "送他回"))) return "mixed_transition";
         return "face_to_face";
     }
 
@@ -998,18 +998,18 @@ class DialogueContinuityService {
         if (all.contains("操场")) return "一起去操场。";
         if (all.contains("食堂")) return "一起去食堂。";
         if (all.contains("图书馆")) return "一起去图书馆。";
-        if (all.contains("宿舍")) return "送她回宿舍。";
+        if (all.contains("宿舍")) return "送对方回宿舍。";
         if (containsAny(all, List.of("散步", "一起走", "路上"))) return "一起往前走。";
         return "承接上一轮已经确认的共同计划。";
     }
 
     private String inferSceneObjective(String compact) {
-        boolean movingIntent = containsAny(compact, List.of("去", "走吧", "一起走", "一起去", "送你", "送她", "带你", "陪你", "回", "出发", "路上"));
+        boolean movingIntent = containsAny(compact, List.of("去", "走吧", "一起走", "一起去", "送你", "送她", "送他", "带你", "陪你", "回", "出发", "路上"));
         if (containsAny(compact, List.of("热饮", "热可可", "奶茶", "咖啡")) && containsAny(compact, List.of("买", "去", "带", "拿"))) return "一起去买热饮。";
         if (movingIntent && compact.contains("操场")) return "一起去操场。";
         if (movingIntent && compact.contains("食堂")) return "一起去食堂。";
         if (movingIntent && compact.contains("图书馆")) return "一起去图书馆。";
-        if (movingIntent && compact.contains("宿舍")) return "送她回宿舍。";
+        if (movingIntent && compact.contains("宿舍")) return "送对方回宿舍。";
         if (movingIntent && compact.contains("市区")) return "一起去市区。";
         if (compact.contains("走吧") || compact.contains("一起走") || compact.contains("一起去")) return "一起往前走。";
         return "";
@@ -1025,8 +1025,8 @@ class DialogueContinuityService {
                 return objective;
             }
         }
-        if (containsAny(compact, List.of("送你回", "送她回"))) {
-            return "送她回宿舍。";
+        if (containsAny(compact, List.of("送你回", "送她回", "送他回"))) {
+            return "送对方回宿舍。";
         }
         return "";
     }
@@ -1065,7 +1065,7 @@ class DialogueContinuityService {
     }
 
     private boolean requiresTransition(String objective) {
-        return objective != null && containsAny(objective, List.of("一起去", "送她回", "往前走", "路上", "市区"));
+        return objective != null && containsAny(objective, List.of("一起去", "送她回", "送他回", "送对方回", "往前走", "路上", "市区"));
     }
 
     DialogueContinuityState settleSceneTransitionIfArrived(DialogueContinuityState state, SceneState sceneState, String nowIso) {
@@ -2392,6 +2392,9 @@ class AffectionJudgeService {
 
 class QuickJudgeService {
     private static final String DEFAULT_MODEL = "qwen-plus";
+    private static final long DEFAULT_RESOLVE_BUDGET_MS = 120L;
+    private static final long MIN_RESOLVE_BUDGET_MS = 60L;
+    private static final long MAX_RESOLVE_BUDGET_MS = 5000L;
     private static final List<String> ALLOWED_PRIMARY_INTENTS = List.of(
             "meta_repair",
             "romantic_probe",
@@ -2438,7 +2441,7 @@ class QuickJudgeService {
         this.apiKey = "";
         this.model = DEFAULT_MODEL;
         this.forceAll = envFlag("QUICK_JUDGE_FORCE_ALL");
-        this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", 120L, 60L, 1000L);
+        this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", DEFAULT_RESOLVE_BUDGET_MS, MIN_RESOLVE_BUDGET_MS, MAX_RESOLVE_BUDGET_MS);
         this.timeout = Duration.ofMillis(deriveTimeoutMs(2000L, resolveBudgetMs));
     }
 
@@ -2447,7 +2450,7 @@ class QuickJudgeService {
         this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
         this.model = config == null || safe(config.plotLlmModel).isBlank() ? DEFAULT_MODEL : safe(config.plotLlmModel);
         this.forceAll = envFlag("QUICK_JUDGE_FORCE_ALL");
-        this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", 120L, 60L, 1000L);
+        this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", DEFAULT_RESOLVE_BUDGET_MS, MIN_RESOLVE_BUDGET_MS, MAX_RESOLVE_BUDGET_MS);
         long configuredTimeout = config == null || config.plotLlmTimeout == null ? 2000L : config.plotLlmTimeout.toMillis();
         this.timeout = Duration.ofMillis(deriveTimeoutMs(configuredTimeout, resolveBudgetMs));
     }
@@ -2460,10 +2463,12 @@ class QuickJudgeService {
             RelationalTensionState tensionState,
             MemorySummary memorySummary,
             IntentState localIntent,
-            DialogueContinuityState localContinuity
+            DialogueContinuityState localContinuity,
+            boolean runtimeEnabled,
+            boolean runtimeForceAll
     ) {
         long startedAtNanos = System.nanoTime();
-        if (!remoteEnabled() || !(forceAll || shouldJudge(userMessage, localIntent, localContinuity))) {
+        if (!runtimeEnabled || !remoteEnabled() || !(forceAll || runtimeForceAll || shouldJudge(userMessage, localIntent, localContinuity))) {
             QuickJudgeTask task = new QuickJudgeTask(CompletableFuture.completedFuture(QuickJudgeDecision.none("skip")), startedAtNanos);
             task.completedAtNanos.set(startedAtNanos);
             return task;
@@ -2503,8 +2508,11 @@ class QuickJudgeService {
         }
     }
 
-    long resolveBudgetMs() {
-        return resolveBudgetMs;
+    long resolveBudgetMs(Long requestedBudgetMs) {
+        if (requestedBudgetMs == null || requestedBudgetMs <= 0L) {
+            return resolveBudgetMs;
+        }
+        return Math.max(MIN_RESOLVE_BUDGET_MS, Math.min(MAX_RESOLVE_BUDGET_MS, requestedBudgetMs));
     }
 
     private long deriveTimeoutMs(long configuredTimeoutMs, long waitBudgetMs) {
@@ -4060,7 +4068,7 @@ class SceneDirectorService {
         String compact = compact(text);
         if (containsAny(compact, List.of("打电话", "通话", "电话里"))) return "phone_call";
         if (containsAny(compact, List.of("发消息", "回消息", "聊天框", "手机", "屏幕那头"))) return "online_chat";
-        if (containsAny(compact, List.of("送你回", "送她回", "一起走", "路上", "并肩走"))) return "mixed_transition";
+        if (containsAny(compact, List.of("送你回", "送她回", "送他回", "一起走", "路上", "并肩走"))) return "mixed_transition";
         return fallback == null || fallback.isBlank() ? "face_to_face" : fallback;
     }
 

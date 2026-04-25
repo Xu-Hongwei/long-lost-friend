@@ -14,6 +14,29 @@ const VISITOR_ID_KEY = "campus-agent-visitor-id";
 const SESSION_ID_KEY = "campus-agent-session-id";
 const AGENT_ID_KEY = "campus-agent-agent-id";
 const CITY_KEY = "campus-agent-preferred-city";
+const QUICK_JUDGE_ENABLED_KEY = "campus-agent-quick-judge-enabled";
+const QUICK_JUDGE_MODE_KEY = "campus-agent-quick-judge-mode";
+const QUICK_JUDGE_WAIT_SECONDS_KEY = "campus-agent-quick-judge-wait-seconds";
+const QUICK_JUDGE_MIN_SECONDS = 0.06;
+const QUICK_JUDGE_MAX_SECONDS = 5;
+const QUICK_JUDGE_DEFAULT_SECONDS = 0.3;
+export type QuickJudgeMode = "off" | "smart" | "always";
+
+function normalizeQuickJudgeWaitSeconds(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return QUICK_JUDGE_DEFAULT_SECONDS;
+  }
+  return Math.min(QUICK_JUDGE_MAX_SECONDS, Math.max(QUICK_JUDGE_MIN_SECONDS, numeric));
+}
+
+function initialQuickJudgeMode(): QuickJudgeMode {
+  const savedMode = localStorage.getItem(QUICK_JUDGE_MODE_KEY);
+  if (savedMode === "off" || savedMode === "smart" || savedMode === "always") {
+    return savedMode;
+  }
+  return localStorage.getItem(QUICK_JUDGE_ENABLED_KEY) === "false" ? "off" : "smart";
+}
 
 export const useSessionStore = defineStore("session", () => {
   const booting = ref(true);
@@ -25,6 +48,9 @@ export const useSessionStore = defineStore("session", () => {
   const currentSession = ref<SessionRecord | null>(null);
   const analytics = ref<AnalyticsOverview | null>(null);
   const errorMessage = ref("");
+  const quickJudgeMode = ref<QuickJudgeMode>(initialQuickJudgeMode());
+  const quickJudgeWaitSeconds = ref(normalizeQuickJudgeWaitSeconds(localStorage.getItem(QUICK_JUDGE_WAIT_SECONDS_KEY)));
+  const quickJudgeEnabled = computed(() => quickJudgeMode.value !== "off");
 
   const selectedAgent = computed(() => {
     if (currentSession.value?.agent) {
@@ -171,7 +197,9 @@ export const useSessionStore = defineStore("session", () => {
           visitor_id: visitorId.value,
           session_id: currentSession.value.sessionId,
           agent_id: currentSession.value.agent.id,
-          user_message: message
+          user_message: message,
+          quick_judge_mode: quickJudgeMode.value,
+          quick_judge_wait_seconds: quickJudgeWaitSeconds.value
         })
       });
       await hydrateSession(currentSession.value.sessionId);
@@ -179,6 +207,17 @@ export const useSessionStore = defineStore("session", () => {
     } finally {
       busy.value = false;
     }
+  }
+
+  function setQuickJudgeMode(mode: QuickJudgeMode) {
+    quickJudgeMode.value = mode;
+    localStorage.setItem(QUICK_JUDGE_MODE_KEY, mode);
+    localStorage.setItem(QUICK_JUDGE_ENABLED_KEY, String(mode !== "off"));
+  }
+
+  function setQuickJudgeWaitSeconds(value: number) {
+    quickJudgeWaitSeconds.value = normalizeQuickJudgeWaitSeconds(value);
+    localStorage.setItem(QUICK_JUDGE_WAIT_SECONDS_KEY, String(quickJudgeWaitSeconds.value));
   }
 
   async function submitChoice(choiceId: string) {
@@ -329,6 +368,9 @@ export const useSessionStore = defineStore("session", () => {
     currentSession,
     analytics,
     errorMessage,
+    quickJudgeMode,
+    quickJudgeEnabled,
+    quickJudgeWaitSeconds,
     selectedAgent,
     preferredCity,
     pendingChoices,
@@ -340,6 +382,8 @@ export const useSessionStore = defineStore("session", () => {
     selectAgent,
     saveVisitorContext,
     sendMessage,
+    setQuickJudgeMode,
+    setQuickJudgeWaitSeconds,
     submitChoice,
     continueCheckpoint,
     settleCheckpoint,

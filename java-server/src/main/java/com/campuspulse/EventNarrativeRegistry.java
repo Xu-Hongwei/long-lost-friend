@@ -98,7 +98,7 @@ final class EventNarrativeRegistry {
                 );
                 default -> List.of(
                         new ChoiceOption(eventId + "_warm", "正面接球", "把默契带进更长的以后", "success"),
-                        new ChoiceOption(eventId + "_soft", "先说你也在意他", "留一点慢慢靠近的空间", "neutral"),
+                        new ChoiceOption(eventId + "_soft", "先说你也在意对方", "留一点慢慢靠近的空间", "neutral"),
                         new ChoiceOption(eventId + "_miss", "把告白打成岔", "会让热度先降下来", "fail")
                 );
             };
@@ -126,7 +126,7 @@ final class EventNarrativeRegistry {
 
         if ("breakthrough".equals(category)) {
             return List.of(
-                    new ChoiceOption(eventId + "_warm", "认真回应他的在意", "让关系真正往前走", "success"),
+                    new ChoiceOption(eventId + "_warm", "认真回应这份在意", "让关系真正往前走", "success"),
                     new ChoiceOption(eventId + "_soft", "先承认你也在意", "把突破放慢半步", "neutral"),
                     new ChoiceOption(eventId + "_miss", "把重点轻轻盖过去", "会错过此刻的推进", "fail")
             );

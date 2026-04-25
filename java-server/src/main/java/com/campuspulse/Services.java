@@ -89,6 +89,10 @@ class AgentConfigService {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", agent.id);
             item.put("name", agent.name);
+            item.put("gender", agent.gender);
+            item.put("subjectPronoun", agent.subjectPronoun);
+            item.put("objectPronoun", agent.objectPronoun);
+            item.put("possessivePronoun", agent.possessivePronoun);
             item.put("archetype", agent.archetype);
             item.put("tagline", agent.tagline);
             item.put("palette", agent.palette);
@@ -1721,6 +1725,10 @@ class ChatOrchestrator {
             String visitorId = Json.asString(payload.get("visitorId"));
             String sessionId = Json.asString(payload.get("sessionId"));
             String userMessage = Json.asString(payload.get("userMessage")).trim();
+            String quickJudgeMode = quickJudgeMode(payload);
+            boolean quickJudgeEnabled = !"off".equals(quickJudgeMode);
+            boolean quickJudgeForceAll = "always".equals(quickJudgeMode);
+            Long quickJudgeWaitMs = quickJudgeWaitMsFromSeconds(payload.get("quickJudgeWaitSeconds"));
             String nowIso = IsoTimes.now();
             Instant now = Instant.parse(nowIso);
 
@@ -1795,7 +1803,9 @@ class ChatOrchestrator {
                     session.tensionState,
                     session.memorySummary,
                     intentState,
-                    dialogueContinuity
+                    dialogueContinuity,
+                    quickJudgeEnabled,
+                    quickJudgeForceAll
             );
             long plotDirectorStartedAtNanos = 0L;
             long plotDirectorFinishedAtNanos = 0L;
@@ -1976,7 +1986,7 @@ class ChatOrchestrator {
 
                 // Spend the extra quick-judge wait budget only when the main reply is
                 // about to be sent, instead of blocking earlier local planning steps.
-                quickJudgeDecision = quickJudgeService.resolve(quickJudgeTask, quickJudgeService.resolveBudgetMs());
+                quickJudgeDecision = quickJudgeService.resolve(quickJudgeTask, quickJudgeService.resolveBudgetMs(quickJudgeWaitMs));
                 if ("timeout".equals(blankTo(quickJudgeDecision.reason, ""))) {
                     registerLateQuickJudgeCorrection(session.id, quickJudgeTask);
                 }
@@ -2307,12 +2317,14 @@ class ChatOrchestrator {
                     presenceResult.replySource,
                     nowIso
             );
-            MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
+            String heartbeatAnchorMessage = lastMessageText(sessionMessages, "user");
+            MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, heartbeatAnchorMessage, presenceResult.replySource, plotDecision.sceneFrame);
             DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
+            QuickJudgeDecision pendingQuickJudgeCorrection = consumePendingQuickJudgeCorrection(session);
             PendingRepairCue pendingRepairCue = consumePendingRepairCue(session);
             IntentState intentState = intentInferenceService.infer(
-                    "",
+                    heartbeatAnchorMessage,
                     shortTerm,
                     session.relationshipState,
                     plotDecision.nextSceneState,
@@ -2320,6 +2332,20 @@ class ChatOrchestrator {
                     session.memorySummary,
                     nowIso
             );
+            if (pendingQuickJudgeCorrection.shouldApply()) {
+                intentState = quickJudgeService.refineIntentState(intentState, pendingQuickJudgeCorrection, nowIso);
+                dialogueContinuity = quickJudgeService.refineDialogueContinuity(dialogueContinuity, pendingQuickJudgeCorrection, nowIso);
+            }
+            QuickJudgeLocalCorrectionResult heartbeatCorrection = quickJudgeLocalCorrectionService.correct(
+                    intentState,
+                    dialogueContinuity,
+                    plotDecision.nextSceneState,
+                    shortTerm,
+                    heartbeatAnchorMessage,
+                    nowIso
+            );
+            intentState = heartbeatCorrection.intentState;
+            dialogueContinuity = heartbeatCorrection.dialogueContinuity;
             PlotGateDecision plotGateDecision = emptyPlotGate(nowIso);
             ResponsePlan responsePlan = responsePlanningService.plan(
                     intentState,
@@ -2344,8 +2370,12 @@ class ChatOrchestrator {
             RealityEnvelope realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
             UncertaintyState uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, nowIso);
             List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
-            String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, "", session.relationshipState, null)
+            String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, heartbeatAnchorMessage, session.relationshipState, null)
                     + " 当前这是角色主动发出的消息。reply_source=" + presenceResult.replySource
+                    + (heartbeatAnchorMessage.isBlank()
+                    ? "。没有明确上一轮用户问题时，保持轻量陪伴。"
+                    : "。先复盘上一轮用户意图；如果上一轮有未回答问题、质疑或修正需求，优先补答或承接，不要突然换成泛泛陪伴。上一轮用户消息：" + heartbeatAnchorMessage)
+                    + (pendingQuickJudgeCorrection.shouldApply() ? "。已有晚到意图修正已融合，优先按修正后的意图回复。" : "")
                     + "。记忆使用原因：" + memoryUsePlan.relevanceReason).trim();
 
             LlmResponse llmReply = llmClient.generateReply(new LlmRequest(
@@ -2355,11 +2385,11 @@ class ChatOrchestrator {
                     memoryService.getTieredSummaryText(session.memorySummary),
                     "none",
                     "",
-                    session.memorySummary.lastUserMood,
-                    "light_ping",
+                    heartbeatAnchorMessage.isBlank() ? session.memorySummary.lastUserMood : memoryService.detectMood(heartbeatAnchorMessage),
+                    heartbeatAnchorMessage.isBlank() ? "light_ping" : "continuity_ping",
                     responseDirective,
                     null,
-                    "",
+                    heartbeatAnchorMessage,
                     timeContext,
                     weatherContext,
                     plotDecision.sceneFrame,
@@ -2649,6 +2679,10 @@ class ChatOrchestrator {
         Map<String, Object> agentMap = new LinkedHashMap<>();
         agentMap.put("id", agent.id);
         agentMap.put("name", agent.name);
+        agentMap.put("gender", agent.gender);
+        agentMap.put("subjectPronoun", agent.subjectPronoun);
+        agentMap.put("objectPronoun", agent.objectPronoun);
+        agentMap.put("possessivePronoun", agent.possessivePronoun);
         agentMap.put("archetype", agent.archetype);
         agentMap.put("tagline", agent.tagline);
         agentMap.put("palette", agent.palette);
@@ -3929,6 +3963,56 @@ class ChatOrchestrator {
         return value == null || value.isBlank() ? fallback : value;
     }
 
+    private String lastMessageText(List<ConversationMessage> messages, String role) {
+        if (messages == null || role == null) {
+            return "";
+        }
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ConversationMessage message = messages.get(index);
+            if (message != null && role.equals(message.role)) {
+                return blankTo(message.speechText, blankTo(message.text, "")).trim();
+            }
+        }
+        return "";
+    }
+
+    private String quickJudgeMode(Map<String, Object> payload) {
+        String mode = Json.asString(payload.get("quickJudgeMode")).trim().toLowerCase();
+        if ("off".equals(mode) || "smart".equals(mode) || "always".equals(mode)) {
+            return mode;
+        }
+        boolean enabled = !payload.containsKey("quickJudgeEnabled") || Json.asBoolean(payload.get("quickJudgeEnabled"));
+        if (!enabled) {
+            return "off";
+        }
+        boolean forceAll = payload.containsKey("quickJudgeForceAll") && Json.asBoolean(payload.get("quickJudgeForceAll"));
+        return forceAll ? "always" : "smart";
+    }
+
+    private Long quickJudgeWaitMsFromSeconds(Object value) {
+        if (value == null) {
+            return null;
+        }
+        double seconds;
+        if (value instanceof Number number) {
+            seconds = number.doubleValue();
+        } else {
+            String text = Json.asString(value).trim();
+            if (text.isBlank()) {
+                return null;
+            }
+            try {
+                seconds = Double.parseDouble(text);
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+        if (seconds <= 0) {
+            return null;
+        }
+        return Math.round(seconds * 1000.0);
+    }
+
     private TemperamentProfile temperamentProfileFor(AgentProfile agent) {
         TemperamentProfile profile = new TemperamentProfile();
         switch (agent == null ? "" : agent.id) {
@@ -3962,12 +4046,13 @@ class ChatOrchestrator {
 
     private String buildChoiceReply(AgentProfile agent, StoryEvent event, ChoiceOption choice, RelationshipState state) {
         String agentId = agent == null ? "" : agent.id;
+        String subject = agent == null ? "对方" : agent.subjectPronoun;
         String prefix = switch (agentId) {
-            case "healing" -> "她抬眼看向你，语气更轻了一点。";
-            case "lively" -> "她先是一怔，随后笑意慢慢亮了起来。";
-            case "cool" -> "他沉默了半拍，但没有把视线移开。";
-            case "artsy" -> "她像是把这句回应轻轻收进了晚风里。";
-            default -> "他把你的回应稳稳接住了。";
+            case "healing" -> subject + "抬眼看向你，语气更轻了一点。";
+            case "lively" -> subject + "先是一怔，随后笑意慢慢亮了起来。";
+            case "cool" -> subject + "沉默了半拍，但没有把视线移开。";
+            case "artsy" -> subject + "像是把这句回应轻轻收进了晚风里。";
+            default -> subject + "把你的回应稳稳接住了。";
         };
         String resultLine = switch (choice.outcomeType) {
             case "success" -> "这次你给出的信号足够明确，关系明显往前走了一步。";

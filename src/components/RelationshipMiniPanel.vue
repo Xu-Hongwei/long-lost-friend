@@ -24,7 +24,7 @@ const metrics = computed(() => {
   <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="tracking-[0.28em] text-[0.68rem] uppercase text-white/45">Relationship</p>
+        <p class="tracking-[0.28em] text-[0.68rem] uppercase text-white/45">关系温度</p>
         <h3 class="mt-2 text-lg font-semibold text-white">{{ relationship?.relationshipStage || "尚未开始" }}</h3>
       </div>
       <div class="rounded-full border border-white/10 bg-black/14 px-3 py-1 text-xs text-white/66">
@@ -48,7 +48,7 @@ const metrics = computed(() => {
     </div>
 
     <p class="mt-4 text-sm leading-6 text-white/62">
-      {{ relationship?.relationshipFeedback || relationship?.stageProgressHint || "关系会随着聊天方式、剧情节点和情绪承接慢慢变化。" }}
+      {{ relationship?.relationshipFeedback || relationship?.stageProgressHint || "亲近感会随着回应方式、剧情节点和情绪承接慢慢变化。" }}
     </p>
   </section>
 </template>

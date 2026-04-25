@@ -48,8 +48,8 @@ npm test
 - `DASHSCOPE_TIMEOUT_MS`：主回复或百炼兼容链路超时，默认 `12000`
 - `ARK_API_KEY` / `ARK_MODEL` / `ARK_BASE_URL` / `ARK_TIMEOUT_MS`：兼容保留；当主回复未配置百炼时会继续用于主回复，同时默认也会被 `PlotDirector` / `QuickJudge` 这类 `plotLlm` 链路复用
 - `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_TIMEOUT_MS`：兼容保留；仅在未配置 `DASHSCOPE_*` 和 `ARK_*` 时用于主回复回退
-- `QUICK_JUDGE_FORCE_ALL`：诊断用开关，设为 `true` 后，每轮非空消息都尝试触发 `QuickJudgeService`；日常运行不建议开启
-- `QUICK_JUDGE_WAIT_MS`：可选，主程序准备发出主回复请求前，最多额外等待 quick judge 结果的毫秒数，默认 `120`，最小 `60`，最大 `1000`；日常运行建议保持默认，`1000` 更适合压测或排查
+- `QUICK_JUDGE_FORCE_ALL`：后端诊断用开关，设为 `true` 后，每轮非空消息都尝试触发 `QuickJudgeService`；日常建议优先使用前端 Quick Judge 面板控制
+- `QUICK_JUDGE_WAIT_MS`：后端兜底等待窗口，默认 `120` 毫秒，最小 `60`，最大 `5000`；前端 Quick Judge 面板会按秒传入本轮等待时间并覆盖该兜底值
 
 未配置远程模型时，系统会使用内置的角色化回复生成器，便于本地演示和联调。配置 `DASHSCOPE_API_KEY` 后，主回复会优先请求百炼兼容模型；若未配置百炼，则继续按 `ARK_*` / `OPENAI_*` 回退。请求失败时会自动降级到本地 mock 回复。
 
@@ -81,7 +81,7 @@ $env:QUICK_JUDGE_WAIT_MS="1000"
 npm start
 ```
 
-注意：上面这组配置会让 quick judge 尽量每轮启动，并允许主回复额外等到 1 秒。它适合观察命中率、超时和融合状态，不适合作为日常聊天默认配置。
+注意：上面这组配置会让 quick judge 尽量每轮启动，并允许主回复额外等到 1 秒。它适合观察命中率、超时和融合状态；正常使用时可以直接在非沉浸模式的 Quick Judge 面板里选择 `高价值轮`、`每轮` 或 `关闭`，并用秒为单位调整最多等待时间。
 
 ## 智能体协作流程
 

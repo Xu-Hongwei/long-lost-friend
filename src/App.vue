@@ -120,9 +120,14 @@ onMounted(async () => {
           :draft="chatStore.draft"
           :sending="chatStore.sending"
           :disabled="chatStore.disabled"
+          :quick-judge-mode="sessionStore.quickJudgeMode"
+          :quick-judge-enabled="sessionStore.quickJudgeEnabled"
+          :quick-judge-wait-seconds="sessionStore.quickJudgeWaitSeconds"
           @update:draft="chatStore.setDraft"
           @send="chatStore.send"
           @choose="sessionStore.submitChoice"
+          @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
+          @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
           @toggleDrawer="uiStore.toggleDrawer"
         />
       </div>
@@ -134,7 +139,7 @@ onMounted(async () => {
           :class="uiStore.uiMode === 'immersive' ? 'bg-white/8' : ''"
           @click="uiStore.setMode('immersive')"
         >
-          沉浸模式
+          沉浸聊天
         </button>
         <button
           type="button"
@@ -142,7 +147,7 @@ onMounted(async () => {
           :class="uiStore.uiMode === 'inspector' ? 'bg-white/8' : ''"
           @click="uiStore.setMode('inspector')"
         >
-          观察模式
+          调试观察
         </button>
         <form class="ml-auto flex items-center gap-2" @submit.prevent="saveCity">
           <input

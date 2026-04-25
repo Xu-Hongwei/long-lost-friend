@@ -16,6 +16,10 @@ export interface AgentBackstory {
 export interface AgentProfile {
   id: string;
   name: string;
+  gender?: "female" | "male" | "unknown" | string;
+  subjectPronoun?: string;
+  objectPronoun?: string;
+  possessivePronoun?: string;
   archetype: string;
   tagline: string;
   palette: string[];

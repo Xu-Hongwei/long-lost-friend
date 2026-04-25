@@ -6,6 +6,13 @@ import RelationshipMiniPanel from "./RelationshipMiniPanel.vue";
 import PlotMiniPanel from "./PlotMiniPanel.vue";
 import { formatDateTime, getEndingCandidateLabel, getOnlineLabel } from "../lib/labels";
 
+type QuickJudgeMode = "off" | "smart" | "always";
+const quickJudgeModes: Array<{ value: QuickJudgeMode; label: string }> = [
+  { value: "smart", label: "高价值轮" },
+  { value: "always", label: "每轮" },
+  { value: "off", label: "关闭" }
+];
+
 defineProps<{
   session: SessionRecord | null;
   agent: AgentProfile | null;
@@ -14,14 +21,24 @@ defineProps<{
   draft: string;
   sending: boolean;
   disabled: boolean;
+  quickJudgeMode: QuickJudgeMode;
+  quickJudgeEnabled: boolean;
+  quickJudgeWaitSeconds: number;
 }>();
 
 const emits = defineEmits<{
   "update:draft": [value: string];
   send: [];
   choose: [choiceId: string];
+  setQuickJudgeMode: [mode: QuickJudgeMode];
+  setQuickJudgeWaitSeconds: [value: number];
   toggleDrawer: [drawer: "relationship" | "memory" | "plot" | "analytics"];
 }>();
+
+function handleQuickJudgeWaitInput(event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  emits("setQuickJudgeWaitSeconds", Number(target?.value || 0));
+}
 
 function sceneStatusText(session: SessionRecord | null) {
   if (!session) {
@@ -72,12 +89,12 @@ function interactionModeLabel(mode?: string) {
     <div class="w-full rounded-[2rem] border border-white/10 bg-white/6 p-4 shadow-[0_20px_60px_rgba(5,6,18,0.28)] backdrop-blur sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-4">
         <div>
-          <p class="tracking-[0.28em] text-[0.68rem] text-white/44">聊天舞台</p>
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/44">当前对话</p>
           <h2 class="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
             {{ agent ? `${agent.name} · ${agent.archetype}` : "选择角色后开始聊天" }}
           </h2>
           <p class="mt-2 max-w-2xl text-sm leading-6 text-white/64">
-            {{ agent?.tagline || "选定角色后，聊天会从当前场景自然铺开。" }}
+            {{ agent?.tagline || "选定角色后，第一句话会从当前场景里自然落下。" }}
           </p>
         </div>
 
@@ -144,7 +161,7 @@ function interactionModeLabel(mode?: string) {
         <MessageStack
           :messages="session?.history || []"
           :agent="agent"
-          empty-message="从上面选一个角色，今晚的第一句开场白会自然落下来。"
+          empty-message="选一个角色，第一句话会在这里慢慢亮起来。"
         />
       </div>
 
@@ -213,7 +230,7 @@ function interactionModeLabel(mode?: string) {
       </section>
 
       <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
-        <p class="tracking-[0.28em] text-[0.68rem] text-white/45">本轮智能体闭环</p>
+        <p class="tracking-[0.28em] text-[0.68rem] text-white/45">本轮决策链路</p>
         <div class="mt-4 space-y-2 text-sm text-white/64">
           <div class="flex justify-between gap-4"><span class="text-white/42">主意图</span><span>{{ session?.lastIntentState?.primaryIntent || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">回复任务</span><span>{{ session?.lastResponsePlan?.coreTask || "暂无" }}</span></div>
@@ -226,7 +243,48 @@ function interactionModeLabel(mode?: string) {
       </section>
 
       <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
-        <p class="tracking-[0.28em] text-[0.68rem] text-white/45">Quick Judge 捕捉</p>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/45">轻判断修正</p>
+          <div class="flex rounded-full border border-white/10 bg-black/16 p-1 text-xs">
+            <button
+              v-for="mode in quickJudgeModes"
+              :key="mode.value"
+              type="button"
+              class="rounded-full px-3 py-1.5 transition"
+              :class="quickJudgeMode === mode.value
+                ? 'bg-emerald-300/18 text-emerald-50'
+                : 'text-white/48 hover:bg-white/8 hover:text-white/74'"
+              @click="emits('setQuickJudgeMode', mode.value)"
+            >
+              {{ mode.label }}
+            </button>
+          </div>
+        </div>
+        <p class="mt-3 text-xs leading-5 text-white/46">
+          {{ quickJudgeMode === "always" ? "每次回复都尝试远程修正，效果更稳，但可能增加等待；晚到结果会并入下一轮。"
+            : quickJudgeMode === "smart" ? "只在意图模糊、剧情关键或用户追问时启动远程修正；如果晚到，会并入下一轮。"
+              : "远程轻判断已关闭；系统仍会保留本地修正和事实承接。" }}
+        </p>
+        <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 p-3">
+          <label class="flex items-center justify-between gap-4 text-xs text-white/54">
+            <span>最多等待</span>
+            <span class="font-mono text-white/72">{{ quickJudgeWaitSeconds.toFixed(2) }}s</span>
+          </label>
+          <input
+            class="mt-3 w-full accent-emerald-200"
+            type="range"
+            min="0.06"
+            max="5"
+            step="0.01"
+            :value="quickJudgeWaitSeconds"
+            :disabled="!quickJudgeEnabled"
+            @input="handleQuickJudgeWaitInput"
+          />
+          <div class="mt-2 flex justify-between text-[0.65rem] text-white/36">
+            <span>0.06s</span>
+            <span>5.00s</span>
+          </div>
+        </div>
         <div class="mt-4 flex flex-wrap gap-2">
           <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/72">
             状态 {{ session?.lastQuickJudgeStatus?.status || "暂无" }}
@@ -245,7 +303,7 @@ function interactionModeLabel(mode?: string) {
           <div class="flex justify-between gap-4"><span class="text-white/42">共享目标</span><span>{{ session?.lastQuickJudgeStatus?.sharedObjective || "暂无" }}</span></div>
         </div>
         <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 px-4 py-3 text-sm leading-6 text-white/62">
-          {{ session?.lastQuickJudgeStatus?.nextBestMove || session?.lastQuickJudgeStatus?.reason || "当前这一轮没有额外的 quick judge 修正。" }}
+          {{ session?.lastQuickJudgeStatus?.nextBestMove || session?.lastQuickJudgeStatus?.reason || "当前这一轮没有额外的轻判断修正。" }}
         </div>
       </section>
 

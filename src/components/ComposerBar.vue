@@ -40,7 +40,7 @@ const emits = defineEmits<{
         maxlength="240"
         :disabled="disabled"
         class="min-h-[86px] flex-1 resize-none rounded-[1.35rem] border border-white/10 bg-white/7 px-4 py-3 text-sm leading-7 text-white outline-none placeholder:text-white/34 focus:border-white/20"
-        placeholder="比如：今天其实有点累，但还是想和你多聊一会。"
+        placeholder="比如：今天有点累，但还是想和你多待一会。"
         @input="emits('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
       ></textarea>
       <button

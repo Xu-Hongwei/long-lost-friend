@@ -85,7 +85,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private LlmResponse generateMockReply(LlmRequest request) {
-        String rawReply = isHeartbeatProactive(request.replySource) ? buildProactiveReply(request) : buildReactiveReply(request);
+        String rawReply = isHeartbeatProactive(request.replySource) && !shouldHeartbeatResumeThread(request)
+                ? buildProactiveReply(request)
+                : buildReactiveReply(request);
         ReplyParts reply = shapeStructuredReply(rawReply);
         return new LlmResponse(
                 reply.replyText,
@@ -392,6 +394,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         String repairCueText = buildRepairCueText(request.pendingRepairCue);
 
         return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
+                + "角色性别与代词：" + request.agent.gender + "，第三人称统一使用“" + request.agent.subjectPronoun + "”。\n"
                 + "说话风格：" + request.agent.speechStyle + "\n"
                 + "角色具体背景：" + backstoryText + "\n"
                 + "喜欢：" + String.join("、", request.agent.likes) + "\n"
@@ -509,6 +512,11 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private String buildUserCue(LlmRequest request) {
         if (isHeartbeatProactive(request.replySource)) {
+            if (shouldHeartbeatResumeThread(request)) {
+                return "这是定时心跳补发，但不要换话题。请优先承接上一轮用户消息："
+                        + blankTo(request.userMessage, "上一轮用户消息为空")
+                        + "。如果上一轮有未回答问题、质疑或修正需求，先补答或对齐；只有没有未完成内容时才轻轻问候。";
+            }
             return "请你主动发一条轻一点、像顺手发来的消息。结合当前场景、时间、天气、情绪状态和记忆使用计划，不要像系统提醒。";
         }
         return blankTo(request.userMessage, "继续顺着当前气氛自然回复。");
@@ -516,6 +524,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
     private String buildDirectAnswer(LlmRequest request) {
         String text = compact(request.userMessage);
+        String lowerText = text.toLowerCase();
         if (!containsQuestion(text)) {
             return "";
         }
@@ -536,6 +545,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
         if (text.contains("图书馆") && text.contains("窗边") && (text.contains("上次") || text.contains("也是") || text.contains("还记得"))) {
             return "我不想擅自替你把上次的画面补全，所以这个细节得等你亲口告诉我。";
+        }
+        if (text.contains("意图修正") || lowerText.contains("quickjudge") || lowerText.contains("quick_judge") || text.contains("轻判断")) {
+            return "你问的是刚才为什么没有把修正接上，而不是单纯想听安慰；我不该把它带成泛泛的陪伴话。更像是上一轮意图没有被当作需要补答的问题来承接，所以心跳才偏题了。";
         }
         if (text.startsWith("为什么")) {
             return "如果要直说，是因为你刚才那句话本身就让我想认真接住。";
@@ -719,21 +731,22 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             return "";
         }
         String userText = compact(request.userMessage);
+        String subject = request.agent == null ? "对方" : request.agent.subjectPronoun;
         if ("silence_heartbeat".equals(request.replySource) || "long_chat_heartbeat".equals(request.replySource)) {
             return request.emotionState != null && request.emotionState.longing >= 55
-                    ? "她把视线轻轻停在你这边，像是真的还挂念着你刚才那句话"
-                    : "她顺着刚才的安静停了一下，像是在确认你还在不在这一侧";
+                    ? subject + "把视线轻轻停在你这边，像是真的还挂念着你刚才那句话"
+                    : subject + "顺着刚才的安静停了一下，像是在确认你还在不在这一侧";
         }
         if ("plot_push".equals(request.replySource)) {
             return userText.contains("送") || userText.contains("一起走")
-                    ? "她和你并肩往前走了几步，语气也跟着更贴近了一点"
-                    : "她看着你，像是准备顺着这段气氛再往前靠半步";
+                    ? subject + "和你并肩往前走了几步，语气也跟着更贴近了一点"
+                    : subject + "看着你，像是准备顺着这段气氛再往前靠半步";
         }
         if (!hasQuestion && !isShortInput(request.userMessage)) {
-            return "她没有把目光移开，像是认真等你把后半句也放下来";
+            return subject + "没有把目光移开，像是认真等你把后半句也放下来";
         }
         if (!answeredDirectly && isShortInput(request.userMessage)) {
-            return "她先把注意力轻轻落回你身上，像是在给你一个更容易接的话头";
+            return subject + "先把注意力轻轻落回你身上，像是在给你一个更容易接的话头";
         }
         return "";
     }
@@ -932,6 +945,24 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     private boolean isHeartbeatProactive(String replySource) {
         return "silence_heartbeat".equals(replySource)
                 || "long_chat_heartbeat".equals(replySource);
+    }
+
+    private boolean shouldHeartbeatResumeThread(LlmRequest request) {
+        if (request == null || !isHeartbeatProactive(request.replySource)) {
+            return false;
+        }
+        if (request.pendingRepairCue != null) {
+            return true;
+        }
+        String userMessage = blankTo(request.userMessage, "");
+        if (containsQuestion(userMessage)) {
+            return true;
+        }
+        if (request.intentState != null && List.of("meta_repair", "question_check", "advice_seek").contains(blankTo(request.intentState.primaryIntent, ""))) {
+            return true;
+        }
+        return request.dialogueContinuityState != null
+                && !blankTo(request.dialogueContinuityState.currentObjective, "").isBlank();
     }
 
     private String compact(String text) {

@@ -30,8 +30,8 @@ const tags = computed(() => props.agent?.styleTags?.slice(0, 3) || props.agent?.
         <h1 class="mt-3 max-w-[11ch] text-4xl font-semibold leading-[0.92] tracking-[-0.05em] text-white sm:text-5xl xl:text-7xl">
           今晚先心动，再慢慢靠近。
         </h1>
-        <p class="mt-5 max-w-2xl text-sm leading-7 text-white/72 sm:text-base">
-          主页不再让一张大图占满视线，而是把角色吸引力、聊天入口和氛围感放在一个更轻、更顺眼的自适应布局里。你能先被角色打动，再自然进入今晚的聊天。
+        <p class="mt-6 max-w-[690px] text-sm leading-7 text-white/72 sm:text-base">
+          选一个想靠近的人，让聊天从此刻的时间、天气和场景里自然开始。有些关系不是一下子确定的，是在一句句被接住的话里慢慢变近。
         </p>
 
         <div class="mt-7 flex flex-wrap items-center gap-3">
@@ -43,7 +43,7 @@ const tags = computed(() => props.agent?.styleTags?.slice(0, 3) || props.agent?.
             {{ session ? `继续和 ${session.agent.name} 聊` : agent ? `和 ${agent.name} 开始今晚` : "开始聊天" }}
           </button>
           <span class="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-xs text-white/64">
-            轻甜电影感 · 自适应布局 · 沉浸式夜聊
+            校园夜聊 · 实时场景 · 慢慢靠近
           </span>
         </div>
       </motion.div>
@@ -64,12 +64,12 @@ const tags = computed(() => props.agent?.styleTags?.slice(0, 3) || props.agent?.
           <div class="absolute inset-0 bg-gradient-to-t from-[#0d0f1d] via-transparent to-transparent"></div>
 
           <div class="absolute inset-x-0 bottom-0 p-5 sm:p-6">
-            <p class="text-[0.7rem] uppercase tracking-[0.3em] text-white/52">Tonight's Highlight</p>
+            <p class="text-[0.7rem] uppercase tracking-[0.3em] text-white/52">Tonight's Meet</p>
             <h2 class="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white sm:text-[2rem]">
               {{ agent?.name || "选择一个角色" }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/74">
-              {{ agent?.tagline || "今晚的氛围还在等一个人先开口。" }}
+              {{ agent?.tagline || "今晚，总要有人先把第一句话递出去。" }}
             </p>
             <div class="mt-4 flex flex-wrap gap-2">
               <span
