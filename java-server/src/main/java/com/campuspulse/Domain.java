@@ -917,9 +917,14 @@ class TurnContext implements Serializable {
     int plotDirectorConfidence;
     String plotRiskIfAdvance;
     String requiredUserSignal;
+    String sceneMoveIntent;
+    String sceneMoveTarget;
+    String sceneMoveReason;
+    int sceneMoveConfidence;
     String continuityObjective;
     String continuityAcceptedPlan;
     String continuityNextBestMove;
+    boolean sceneTransitionNeeded;
     List<String> continuityGuards = new ArrayList<>();
     String updatedAt;
 }
@@ -935,6 +940,29 @@ class DialogueContinuityState implements Serializable {
     List<String> mustNotContradict = new ArrayList<>();
     int confidence;
     String updatedAt;
+}
+
+class QuickJudgeStatus implements Serializable {
+    boolean attempted;
+    boolean used;
+    boolean applied;
+    String status;
+    String reason;
+    int confidence;
+    String primaryIntent;
+    String secondaryIntent;
+    String emotion;
+    String sharedObjective;
+    String nextBestMove;
+    String replyPriority;
+    String updatedAt;
+}
+
+class PendingRepairCue implements Serializable {
+    String type;
+    String instruction;
+    int confidence;
+    String createdAt;
 }
 
 class SceneConsistencyAudit implements Serializable {
@@ -1060,6 +1088,10 @@ class SessionRecord implements Serializable {
     PlotGateDecision lastPlotGateDecision;
     TurnContext lastTurnContext;
     DialogueContinuityState dialogueContinuityState;
+    QuickJudgeStatus lastQuickJudgeStatus;
+    QuickJudgeDecision pendingQuickJudgeCorrection;
+    String pendingQuickJudgeCorrectionAt;
+    PendingRepairCue pendingRepairCue;
 }
 
 class UserFeedback implements Serializable {
@@ -1191,6 +1223,7 @@ class LlmRequest {
     final RelationalTensionState tensionState;
     final PlotGateDecision plotGateDecision;
     final DialogueContinuityState dialogueContinuityState;
+    final PendingRepairCue pendingRepairCue;
 
     LlmRequest(
             AgentProfile agent,
@@ -1223,6 +1256,72 @@ class LlmRequest {
             PlotGateDecision plotGateDecision,
             DialogueContinuityState dialogueContinuityState
     ) {
+        this(
+                agent,
+                relationshipState,
+                shortTermContext,
+                longTermSummary,
+                recalledMemoryTier,
+                recalledMemoryText,
+                currentUserMood,
+                responseCadence,
+                responseDirective,
+                event,
+                userMessage,
+                timeContext,
+                weatherContext,
+                sceneFrame,
+                sceneState,
+                memoryUsePlan,
+                emotionState,
+                replySource,
+                temperamentProfile,
+                searchContext,
+                intentState,
+                responsePlan,
+                uncertaintyState,
+                initiativeDecision,
+                memoryIntentBindings,
+                realityEnvelope,
+                tensionState,
+                plotGateDecision,
+                dialogueContinuityState,
+                null
+        );
+    }
+
+    LlmRequest(
+            AgentProfile agent,
+            RelationshipState relationshipState,
+            List<ConversationSnippet> shortTermContext,
+            String longTermSummary,
+            String recalledMemoryTier,
+            String recalledMemoryText,
+            String currentUserMood,
+            String responseCadence,
+            String responseDirective,
+            StoryEvent event,
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String sceneFrame,
+            SceneState sceneState,
+            MemoryUsePlan memoryUsePlan,
+            EmotionState emotionState,
+            String replySource,
+            TemperamentProfile temperamentProfile,
+            String searchContext,
+            IntentState intentState,
+            ResponsePlan responsePlan,
+            UncertaintyState uncertaintyState,
+            InitiativeDecision initiativeDecision,
+            List<MemoryIntentBinding> memoryIntentBindings,
+            RealityEnvelope realityEnvelope,
+            RelationalTensionState tensionState,
+            PlotGateDecision plotGateDecision,
+            DialogueContinuityState dialogueContinuityState,
+            PendingRepairCue pendingRepairCue
+    ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
         this.shortTermContext = shortTermContext;
@@ -1252,6 +1351,7 @@ class LlmRequest {
         this.tensionState = tensionState;
         this.plotGateDecision = plotGateDecision;
         this.dialogueContinuityState = dialogueContinuityState;
+        this.pendingRepairCue = pendingRepairCue;
     }
 }
 

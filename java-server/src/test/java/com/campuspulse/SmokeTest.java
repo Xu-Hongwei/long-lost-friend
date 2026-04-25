@@ -290,6 +290,7 @@ public class SmokeTest {
         assertTrue(String.valueOf(sceneState.get("location")).contains("操场"), "scene transition should move to playground");
         assertTrue(!"plot_push".equals(String.valueOf(result.get("reply_source"))), "explicit scene transition should not be treated as plot push");
         assertTrue(String.valueOf(result.get("plot_director_decision")).contains("transition_only"), "plot director should mark transition-only turns");
+        assertTrue(String.valueOf(result.getOrDefault("scene_text", "")).length() > 0, "explicit scene transition should expose a visible transition line");
     }
     private static void shouldKeepPlotPushInsideCurrentConversation(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");

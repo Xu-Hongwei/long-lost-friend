@@ -205,6 +205,10 @@ export interface TurnContext {
   plotDirectorConfidence?: number;
   plotRiskIfAdvance?: string;
   requiredUserSignal?: string;
+  sceneMoveIntent?: string;
+  sceneMoveTarget?: string;
+  sceneMoveReason?: string;
+  sceneMoveConfidence?: number;
   continuityObjective?: string;
   continuityAcceptedPlan?: string;
   continuityNextBestMove?: string;
@@ -222,6 +226,22 @@ export interface DialogueContinuityState {
   nextBestMove?: string;
   mustNotContradict?: string[];
   confidence?: number;
+  updatedAt?: string;
+}
+
+export interface QuickJudgeStatus {
+  attempted?: boolean;
+  used?: boolean;
+  applied?: boolean;
+  status?: string;
+  reason?: string;
+  confidence?: number;
+  primaryIntent?: string;
+  secondaryIntent?: string;
+  emotion?: string;
+  sharedObjective?: string;
+  nextBestMove?: string;
+  replyPriority?: string;
   updatedAt?: string;
 }
 
@@ -324,6 +344,7 @@ export interface SessionRecord {
   lastPlotGateDecision?: PlotGateDecision;
   lastTurnContext?: TurnContext;
   dialogueContinuityState?: DialogueContinuityState;
+  lastQuickJudgeStatus?: QuickJudgeStatus;
   visitorContext: VisitorContext;
   timeContext: TimeContext;
   weatherContext: WeatherContext;
@@ -387,6 +408,7 @@ export interface PresenceResponse {
   emotion_state?: EmotionState;
   turn_context?: TurnContext;
   dialogue_continuity?: DialogueContinuityState;
+  quick_judge_status?: QuickJudgeStatus;
   plot_progress?: PlotState;
   plot_arc_state?: PlotArcState;
   scene_state?: SceneState;

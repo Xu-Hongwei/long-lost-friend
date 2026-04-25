@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 final class Services {
     private Services() {
@@ -1422,6 +1423,8 @@ class ChatOrchestrator {
     private final RealityGuardService realityGuardService = new RealityGuardService();
     private final HumanizationEvaluationService humanizationEvaluationService = new HumanizationEvaluationService();
     private final DialogueContinuityService dialogueContinuityService = new DialogueContinuityService();
+    private final QuickJudgeLocalCorrectionService quickJudgeLocalCorrectionService = new QuickJudgeLocalCorrectionService();
+    private final QuickJudgeService quickJudgeService;
 
     ChatOrchestrator(
             StateRepository repository,
@@ -1442,6 +1445,7 @@ class ChatOrchestrator {
                 llmClient,
                 safetyService,
                 analyticsService,
+                new QuickJudgeService(),
                 new PlotDirectorAgentService()
         );
     }
@@ -1457,6 +1461,32 @@ class ChatOrchestrator {
             AnalyticsService analyticsService,
             PlotDirectorAgentService plotDirectorAgentService
     ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                new QuickJudgeService(),
+                plotDirectorAgentService
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            QuickJudgeService quickJudgeService,
+            PlotDirectorAgentService plotDirectorAgentService
+    ) {
         this.repository = repository;
         this.agentConfigService = agentConfigService;
         this.memoryService = memoryService;
@@ -1465,6 +1495,7 @@ class ChatOrchestrator {
         this.llmClient = llmClient;
         this.safetyService = safetyService;
         this.analyticsService = analyticsService;
+        this.quickJudgeService = quickJudgeService == null ? new QuickJudgeService() : quickJudgeService;
         this.plotDirectorService = new EnhancedPlotDirectorService(plotDirectorAgentService);
     }
 
@@ -1687,6 +1718,7 @@ class ChatOrchestrator {
 
     Map<String, Object> sendMessage(Map<String, Object> payload) throws Exception {
         return repository.transact(state -> {
+            long sendStartedAtNanos = System.nanoTime();
             String visitorId = Json.asString(payload.get("visitorId"));
             String sessionId = Json.asString(payload.get("sessionId"));
             String userMessage = Json.asString(payload.get("userMessage")).trim();
@@ -1740,6 +1772,37 @@ class ChatOrchestrator {
                     session.sceneState,
                     messageCreatedAt
             );
+            QuickJudgeDecision pendingQuickJudgeCorrection = consumePendingQuickJudgeCorrection(session);
+            PendingRepairCue pendingRepairCue = consumePendingRepairCue(session);
+            if (pendingQuickJudgeCorrection.shouldApply()) {
+                intentState = quickJudgeService.refineIntentState(intentState, pendingQuickJudgeCorrection, messageCreatedAt);
+                dialogueContinuity = quickJudgeService.refineDialogueContinuity(dialogueContinuity, pendingQuickJudgeCorrection, messageCreatedAt);
+            }
+            QuickJudgeLocalCorrectionResult firstCorrection = quickJudgeLocalCorrectionService.correct(
+                    intentState,
+                    dialogueContinuity,
+                    session.sceneState,
+                    shortTerm,
+                    userMessage,
+                    messageCreatedAt
+            );
+            intentState = firstCorrection.intentState;
+            dialogueContinuity = firstCorrection.dialogueContinuity;
+            QuickJudgeTask quickJudgeTask = quickJudgeService.start(
+                    userMessage,
+                    shortTerm,
+                    session.relationshipState,
+                    session.sceneState,
+                    session.tensionState,
+                    session.memorySummary,
+                    intentState,
+                    dialogueContinuity
+            );
+            long plotDirectorStartedAtNanos = 0L;
+            long plotDirectorFinishedAtNanos = 0L;
+            long mainReplyStartedAtNanos = 0L;
+            long mainReplyFinishedAtNanos = 0L;
+            QuickJudgeDecision quickJudgeDecision = QuickJudgeDecision.none("skipped");
             StoryEvent triggeredEvent = null;
             PlotGateDecision plotGateDecision = emptyPlotGate(messageCreatedAt);
             TurnEvaluation relationship = new TurnEvaluation(session.relationshipState, new Delta());
@@ -1793,6 +1856,7 @@ class ChatOrchestrator {
             List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
 
             if (inspection.blocked) {
+                quickJudgeDecision = QuickJudgeDecision.none("blocked_by_safety");
                 nextEmotion = affectionJudgeService.coolDownForSilence(session.emotionState, messageCreatedAt);
                 llmReply = new LlmResponse(
                         inspection.safeMessage,
@@ -1832,6 +1896,7 @@ class ChatOrchestrator {
                         messageCreatedAt
                 );
                 applyContinuityToTurnContext(turnContext, dialogueContinuity);
+                plotDirectorStartedAtNanos = System.nanoTime();
                 plotDecision = plotDirectorService.decide(
                         session,
                         userMessage,
@@ -1844,6 +1909,23 @@ class ChatOrchestrator {
                         messageCreatedAt,
                         turnContext
                 );
+                plotDirectorFinishedAtNanos = System.nanoTime();
+                dialogueContinuity = dialogueContinuityService.settleSceneTransitionIfArrived(
+                        dialogueContinuity,
+                        plotDecision.nextSceneState,
+                        messageCreatedAt
+                );
+                QuickJudgeLocalCorrectionResult secondCorrection = quickJudgeLocalCorrectionService.correct(
+                        intentState,
+                        dialogueContinuity,
+                        plotDecision.nextSceneState,
+                        shortTerm,
+                        userMessage,
+                        messageCreatedAt
+                );
+                intentState = secondCorrection.intentState;
+                dialogueContinuity = secondCorrection.dialogueContinuity;
+                applyContinuityToTurnContext(turnContext, dialogueContinuity);
                 relationship = applyPlotMacroScore(
                         relationship,
                         plotDecision,
@@ -1878,6 +1960,7 @@ class ChatOrchestrator {
                         plotDecision.replySource,
                         messageCreatedAt
                 );
+                responsePlan = quickJudgeService.refineResponsePlan(responsePlan, quickJudgeDecision, intentState, messageCreatedAt);
                 initiativeDecision = initiativePolicyService.decide(
                         intentState,
                         responsePlan,
@@ -1892,6 +1975,60 @@ class ChatOrchestrator {
                         + " 当前记忆使用模式：" + memoryUsePlan.useMode
                         + "。原因：" + memoryUsePlan.relevanceReason).trim();
 
+                // Spend the extra quick-judge wait budget only when the main reply is
+                // about to be sent, instead of blocking earlier local planning steps.
+                quickJudgeDecision = quickJudgeService.resolve(quickJudgeTask, quickJudgeService.resolveBudgetMs());
+                if ("timeout".equals(blankTo(quickJudgeDecision.reason, ""))) {
+                    registerLateQuickJudgeCorrection(session.id, quickJudgeTask);
+                }
+                intentState = quickJudgeService.refineIntentState(intentState, quickJudgeDecision, messageCreatedAt);
+                dialogueContinuity = quickJudgeService.refineDialogueContinuity(dialogueContinuity, quickJudgeDecision, messageCreatedAt);
+                dialogueContinuity = dialogueContinuityService.settleSceneTransitionIfArrived(
+                        dialogueContinuity,
+                        plotDecision.nextSceneState,
+                        messageCreatedAt
+                );
+                QuickJudgeLocalCorrectionResult thirdCorrection = quickJudgeLocalCorrectionService.correct(
+                        intentState,
+                        dialogueContinuity,
+                        plotDecision.nextSceneState,
+                        shortTerm,
+                        userMessage,
+                        messageCreatedAt
+                );
+                intentState = thirdCorrection.intentState;
+                dialogueContinuity = thirdCorrection.dialogueContinuity;
+                turnContext.primaryIntent = intentState == null ? "" : blankTo(intentState.primaryIntent, "");
+                turnContext.secondaryIntent = intentState == null ? "" : blankTo(intentState.secondaryIntent, "");
+                turnContext.clarity = intentState == null ? "" : blankTo(intentState.clarity, "");
+                turnContext.userEmotion = intentState == null ? "" : blankTo(intentState.emotion, "");
+                turnContext.updatedAt = messageCreatedAt;
+                applyContinuityToTurnContext(turnContext, dialogueContinuity);
+                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState);
+                searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
+                realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
+                uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
+                responsePlan = responsePlanningService.plan(
+                        intentState,
+                        relationship.nextState,
+                        nextEmotion,
+                        nextTension,
+                        plotGateDecision,
+                        plotDecision.replySource,
+                        messageCreatedAt
+                );
+                responsePlan = quickJudgeService.refineResponsePlan(responsePlan, quickJudgeDecision, intentState, messageCreatedAt);
+                initiativeDecision = initiativePolicyService.decide(
+                        intentState,
+                        responsePlan,
+                        nextEmotion,
+                        nextTension,
+                        plotGateDecision,
+                        plotDecision.replySource,
+                        messageCreatedAt
+                );
+
+                mainReplyStartedAtNanos = System.nanoTime();
                 llmReply = llmClient.generateReply(new LlmRequest(
                         agent,
                         relationship.nextState,
@@ -1921,8 +2058,10 @@ class ChatOrchestrator {
                         realityEnvelope,
                         nextTension,
                         plotGateDecision,
-                        dialogueContinuity
+                        dialogueContinuity,
+                        pendingRepairCue
                 ));
+                mainReplyFinishedAtNanos = System.nanoTime();
 
                 RealityGuardResult guardResult = realityGuardService.auditAndRepair(
                         llmReply,
@@ -1960,10 +2099,11 @@ class ChatOrchestrator {
             assistantEntry.id = ids("msg");
             assistantEntry.sessionId = session.id;
             assistantEntry.role = "assistant";
-            assistantEntry.text = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
-            assistantEntry.sceneText = llmReply.sceneText == null || llmReply.sceneText.isBlank() ? plotDecision.sceneText : llmReply.sceneText;
+            String rawSpeechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            assistantEntry.sceneText = selectSceneText(plotDecision.sceneText, llmReply.sceneText, rawSpeechText, plotDecision.replySource);
             assistantEntry.actionText = llmReply.actionText;
-            assistantEntry.speechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            assistantEntry.speechText = removeSceneTextFromSpeech(rawSpeechText, assistantEntry.sceneText);
+            assistantEntry.text = assistantEntry.speechText;
             assistantEntry.createdAt = replyCreatedAt;
             assistantEntry.emotionTag = llmReply.emotionTag;
             assistantEntry.confidenceStatus = llmReply.confidenceStatus;
@@ -1991,6 +2131,7 @@ class ChatOrchestrator {
             session.lastPlotGateDecision = plotGateDecision;
             session.lastTurnContext = turnContext;
             session.dialogueContinuityState = dialogueContinuity;
+            session.lastQuickJudgeStatus = quickJudgeStatusFrom(quickJudgeDecision, replyCreatedAt);
             if (!inspection.blocked) {
                 session.memorySummary = memoryService.updateTieredSummary(
                         session.memorySummary,
@@ -2063,6 +2204,7 @@ class ChatOrchestrator {
             response.put("plot_gate_reason", plotGateDecisionMap(session.lastPlotGateDecision));
             response.put("turn_context", turnContextMap(session.lastTurnContext));
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
+            response.put("quick_judge_status", quickJudgeStatusMap(session.lastQuickJudgeStatus));
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
             response.put("tension_state", tensionStateMap(session.tensionState));
             response.put("emotion_state", emotionStateMap(session.emotionState));
@@ -2071,6 +2213,14 @@ class ChatOrchestrator {
             response.put("plot_arc_state", plotArcStateMap(session.plotArcState));
             response.put("scene_frame", session.plotState == null ? "" : session.plotState.sceneFrame);
             response.put("reply_source", plotDecision.replySource);
+            response.put("agent_timing", agentTimingMap(
+                    sendStartedAtNanos,
+                    quickJudgeTask,
+                    plotDirectorStartedAtNanos,
+                    plotDirectorFinishedAtNanos,
+                    mainReplyStartedAtNanos,
+                    mainReplyFinishedAtNanos
+            ));
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
             response.put("current_arc_index", session.plotArcState == null ? 1 : session.plotArcState.arcIndex);
@@ -2161,6 +2311,7 @@ class ChatOrchestrator {
             MemoryUsePlan memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, "", presenceResult.replySource, plotDecision.sceneFrame);
             List<ConversationSnippet> shortTerm = memoryService.getShortTermContext(new ArrayList<>(sessionMessages), 18);
             DialogueContinuityState dialogueContinuity = dialogueContinuityService.normalize(session.dialogueContinuityState, nowIso);
+            PendingRepairCue pendingRepairCue = consumePendingRepairCue(session);
             IntentState intentState = intentInferenceService.infer(
                     "",
                     shortTerm,
@@ -2227,7 +2378,8 @@ class ChatOrchestrator {
                     realityEnvelope,
                     nextTension,
                     plotGateDecision,
-                    dialogueContinuity
+                    dialogueContinuity,
+                    pendingRepairCue
             ));
 
             RealityGuardResult guardResult = realityGuardService.auditAndRepair(
@@ -2264,10 +2416,11 @@ class ChatOrchestrator {
             proactiveEntry.id = ids("msg");
             proactiveEntry.sessionId = session.id;
             proactiveEntry.role = "assistant";
-            proactiveEntry.text = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
-            proactiveEntry.sceneText = llmReply.sceneText == null || llmReply.sceneText.isBlank() ? plotDecision.sceneText : llmReply.sceneText;
+            String rawSpeechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            proactiveEntry.sceneText = selectSceneText(plotDecision.sceneText, llmReply.sceneText, rawSpeechText, plotDecision.replySource);
             proactiveEntry.actionText = llmReply.actionText;
-            proactiveEntry.speechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
+            proactiveEntry.speechText = removeSceneTextFromSpeech(rawSpeechText, proactiveEntry.sceneText);
+            proactiveEntry.text = proactiveEntry.speechText;
             proactiveEntry.createdAt = nowIso;
             proactiveEntry.emotionTag = llmReply.emotionTag;
             proactiveEntry.confidenceStatus = llmReply.confidenceStatus;
@@ -2289,6 +2442,7 @@ class ChatOrchestrator {
             session.lastRealityAudit = realityAudit;
             session.lastPlotGateDecision = plotGateDecision;
             session.dialogueContinuityState = dialogueContinuity;
+            session.lastQuickJudgeStatus = quickJudgeStatusFrom(QuickJudgeDecision.none("not_applicable_presence"), nowIso);
             if (plotDecision.advanced) {
                 session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
                 session.storyEventProgress.lastTriggeredTheme = plotDecision.sceneFrame;
@@ -2316,6 +2470,7 @@ class ChatOrchestrator {
             response.put("reply_source", presenceResult.replySource);
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
+            response.put("quick_judge_status", quickJudgeStatusMap(session.lastQuickJudgeStatus));
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
             response.put("arc_summary_preview", arcSummaryMap(session.plotArcState == null ? null : session.plotArcState.latestArcSummary));
@@ -2574,6 +2729,10 @@ class ChatOrchestrator {
         payload.put("lastPlotGateDecision", plotGateDecisionMap(session.lastPlotGateDecision));
         payload.put("lastTurnContext", turnContextMap(session.lastTurnContext));
         payload.put("dialogueContinuityState", dialogueContinuityMap(session.dialogueContinuityState));
+        payload.put("lastQuickJudgeStatus", quickJudgeStatusMap(session.lastQuickJudgeStatus));
+        payload.put("pendingQuickJudgeCorrection", quickJudgeDecisionMap(session.pendingQuickJudgeCorrection));
+        payload.put("pendingQuickJudgeCorrectionAt", blankTo(session.pendingQuickJudgeCorrectionAt, ""));
+        payload.put("pendingRepairCue", pendingRepairCueMap(session.pendingRepairCue));
         payload.put("visitorContext", Map.of(
                 "timezone", visitor.timezone == null ? "" : visitor.timezone,
                 "preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity
@@ -2646,6 +2805,115 @@ class ChatOrchestrator {
         session.presenceState = presenceHeartbeatService.normalizePresence(session.presenceState, session.createdAt);
         session.tensionState = boundaryResponseService.normalize(session.tensionState, session.createdAt);
         session.dialogueContinuityState = dialogueContinuityService.normalize(session.dialogueContinuityState, session.createdAt);
+    }
+
+    private QuickJudgeDecision consumePendingQuickJudgeCorrection(SessionRecord session) {
+        if (session == null || session.pendingQuickJudgeCorrection == null) {
+            return QuickJudgeDecision.none("no_pending_correction");
+        }
+        QuickJudgeDecision decision = session.pendingQuickJudgeCorrection;
+        session.pendingQuickJudgeCorrection = null;
+        session.pendingQuickJudgeCorrectionAt = "";
+        return decision;
+    }
+
+    private PendingRepairCue consumePendingRepairCue(SessionRecord session) {
+        if (session == null || session.pendingRepairCue == null) {
+            return null;
+        }
+        PendingRepairCue cue = session.pendingRepairCue;
+        session.pendingRepairCue = null;
+        return cue;
+    }
+
+    private void registerLateQuickJudgeCorrection(String sessionId, QuickJudgeTask task) {
+        if (sessionId == null || sessionId.isBlank() || task == null || task.future == null) {
+            return;
+        }
+        if (task.future.isDone()) {
+            try {
+                storeLateQuickJudgeCorrection(sessionId, task.future.getNow(QuickJudgeDecision.none("late_missing")));
+            } catch (Exception ignored) {
+                // Late quick-judge corrections are opportunistic and must never fail chat.
+            }
+            return;
+        }
+        task.future.thenAccept(decision -> {
+            if (decision == null || !decision.shouldApply()) {
+                return;
+            }
+            try {
+                storeLateQuickJudgeCorrection(sessionId, decision);
+            } catch (Exception ignored) {
+                // Late quick-judge corrections are opportunistic and must never fail chat.
+            }
+        });
+    }
+
+    private void storeLateQuickJudgeCorrection(String sessionId, QuickJudgeDecision decision) throws Exception {
+        if (decision == null || !decision.shouldApply()) {
+            return;
+        }
+        repository.transact(state -> {
+            for (SessionRecord item : state.sessions) {
+                if (sessionId.equals(item.id)) {
+                    ensureSessionState(item);
+                    item.pendingQuickJudgeCorrection = decision;
+                    item.pendingQuickJudgeCorrectionAt = IsoTimes.now();
+                    item.pendingRepairCue = buildPendingRepairCue(decision, item.pendingQuickJudgeCorrectionAt);
+                    item.lastQuickJudgeStatus = quickJudgeStatusFrom(decision, item.pendingQuickJudgeCorrectionAt);
+                    break;
+                }
+            }
+            return null;
+        });
+    }
+
+    private PendingRepairCue buildPendingRepairCue(QuickJudgeDecision decision, String nowIso) {
+        if (decision == null || !decision.shouldApply() || decision.confidence < 75) {
+            return null;
+        }
+        String type = repairCueType(decision);
+        if (type.isBlank()) {
+            return null;
+        }
+        PendingRepairCue cue = new PendingRepairCue();
+        cue.type = type;
+        cue.instruction = repairCueInstruction(type, decision);
+        cue.confidence = decision.confidence;
+        cue.createdAt = blankTo(nowIso, "");
+        return cue;
+    }
+
+    private String repairCueType(QuickJudgeDecision decision) {
+        String priority = blankTo(decision.replyPriority, "");
+        String primary = blankTo(decision.primaryIntent, "");
+        String nextMove = blankTo(decision.nextBestMove, "").toLowerCase();
+        if ("repair_then_answer".equals(priority) || "meta_repair".equals(primary)) {
+            return "intent_repair";
+        }
+        if (!decision.sceneTransitionNeeded
+                && (nextMove.contains("transition") || nextMove.contains("scene") || nextMove.contains("do not repeat")
+                || nextMove.contains("\u4e0d\u8981\u91cd\u590d") || nextMove.contains("\u8f6c\u573a"))) {
+            return "scene_repair";
+        }
+        if (!blankTo(decision.sharedObjective, "").isBlank()
+                && ("answer_then_scene".equals(priority) || "hold_scene_then_answer".equals(priority))) {
+            return "objective_repair";
+        }
+        return "";
+    }
+
+    private String repairCueInstruction(String type, QuickJudgeDecision decision) {
+        String nextMove = blankTo(decision.nextBestMove, "");
+        String objective = blankTo(decision.sharedObjective, "");
+        if ("scene_repair".equals(type)) {
+            return "\u4e0a\u4e00\u8f6e\u53ef\u80fd\u628a\u91cd\u70b9\u5e26\u56de\u4e86\u573a\u666f\u6216\u91cd\u590d\u8f6c\u573a\uff1b\u672c\u8f6e\u5f00\u5934\u7528\u4e00\u53e5\u8f7b\u7684\u8bdd\u628a\u91cd\u70b9\u62c9\u56de\u7528\u6237\u771f\u6b63\u8981\u7684\u5185\u5bb9\u3002" + nextMove;
+        }
+        if ("objective_repair".equals(type)) {
+            return "\u4e0a\u4e00\u8f6e\u53ef\u80fd\u6ca1\u6709\u63a5\u51c6\u5171\u540c\u76ee\u6807\uff1b\u672c\u8f6e\u8f7b\u8f7b\u627f\u8ba4\u521a\u624d\u63a5\u504f\u4e86\uff0c\u7136\u540e\u7acb\u523b\u56de\u5230\uff1a" + objective;
+        }
+        return "\u4e0a\u4e00\u8f6e\u53ef\u80fd\u8f7b\u5fae\u7406\u89e3\u504f\u4e86\uff1b\u672c\u8f6e\u5f00\u5934\u7528\u4e00\u53e5\u81ea\u7136\u3001\u4f4e\u8d1f\u62c5\u7684\u8bdd\u4fee\u6b63\uff0c\u7136\u540e\u7acb\u523b\u56de\u5230\u7528\u6237\u5f53\u524d\u610f\u56fe\u3002" + nextMove;
     }
 
     private void markEventTriggered(SessionRecord session, StoryEvent event) {
@@ -2755,6 +3023,7 @@ class ChatOrchestrator {
         context.continuityObjective = blankTo(continuity.currentObjective, "");
         context.continuityAcceptedPlan = blankTo(continuity.acceptedPlan, "");
         context.continuityNextBestMove = blankTo(continuity.nextBestMove, "");
+        context.sceneTransitionNeeded = continuity.sceneTransitionNeeded;
         context.continuityGuards = continuity.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(continuity.mustNotContradict);
     }
 
@@ -2886,9 +3155,14 @@ class ChatOrchestrator {
         map.put("plotDirectorConfidence", context.plotDirectorConfidence);
         map.put("plotRiskIfAdvance", blankTo(context.plotRiskIfAdvance, ""));
         map.put("requiredUserSignal", blankTo(context.requiredUserSignal, ""));
+        map.put("sceneMoveIntent", blankTo(context.sceneMoveIntent, ""));
+        map.put("sceneMoveTarget", blankTo(context.sceneMoveTarget, ""));
+        map.put("sceneMoveReason", blankTo(context.sceneMoveReason, ""));
+        map.put("sceneMoveConfidence", context.sceneMoveConfidence);
         map.put("continuityObjective", blankTo(context.continuityObjective, ""));
         map.put("continuityAcceptedPlan", blankTo(context.continuityAcceptedPlan, ""));
         map.put("continuityNextBestMove", blankTo(context.continuityNextBestMove, ""));
+        map.put("sceneTransitionNeeded", context.sceneTransitionNeeded);
         map.put("continuityGuards", context.continuityGuards == null ? List.of() : context.continuityGuards);
         map.put("updatedAt", blankTo(context.updatedAt, ""));
         return map;
@@ -2912,6 +3186,115 @@ class ChatOrchestrator {
         return map;
     }
 
+    private QuickJudgeStatus quickJudgeStatusFrom(QuickJudgeDecision decision, String nowIso) {
+        QuickJudgeStatus status = new QuickJudgeStatus();
+        if (decision == null) {
+            status.attempted = false;
+            status.used = false;
+            status.applied = false;
+            status.status = "missing";
+            status.reason = "missing";
+            status.updatedAt = blankTo(nowIso, "");
+            return status;
+        }
+        String reason = blankTo(decision.reason, "");
+        status.attempted = decision.used || !(reason.startsWith("skip") || "blocked_by_safety".equals(reason) || "not_applicable_presence".equals(reason));
+        status.used = decision.used;
+        status.applied = decision.shouldApply();
+        status.status = quickJudgeStatusLabel(decision);
+        status.reason = reason;
+        status.confidence = decision.confidence;
+        status.primaryIntent = blankTo(decision.primaryIntent, "");
+        status.secondaryIntent = blankTo(decision.secondaryIntent, "");
+        status.emotion = blankTo(decision.emotion, "");
+        status.sharedObjective = blankTo(decision.sharedObjective, "");
+        status.nextBestMove = blankTo(decision.nextBestMove, "");
+        status.replyPriority = blankTo(decision.replyPriority, "");
+        status.updatedAt = blankTo(nowIso, "");
+        return status;
+    }
+
+    private String quickJudgeStatusLabel(QuickJudgeDecision decision) {
+        if (decision == null) {
+            return "missing";
+        }
+        String reason = blankTo(decision.reason, "");
+        if ("blocked_by_safety".equals(reason)) {
+            return "blocked";
+        }
+        if ("not_applicable_presence".equals(reason)) {
+            return "presence_skip";
+        }
+        if (reason.startsWith("skip")) {
+            return "skipped";
+        }
+        if ("timeout".equals(reason)) {
+            return "timeout";
+        }
+        if (decision.shouldApply()) {
+            return "applied";
+        }
+        if (decision.used) {
+            return "returned_not_used";
+        }
+        if (reason.startsWith("fallback") || reason.startsWith("resolve")) {
+            return "fallback";
+        }
+        return "idle";
+    }
+
+    private Map<String, Object> quickJudgeStatusMap(QuickJudgeStatus status) {
+        if (status == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("attempted", status.attempted);
+        map.put("used", status.used);
+        map.put("applied", status.applied);
+        map.put("status", blankTo(status.status, ""));
+        map.put("reason", blankTo(status.reason, ""));
+        map.put("confidence", status.confidence);
+        map.put("primaryIntent", blankTo(status.primaryIntent, ""));
+        map.put("secondaryIntent", blankTo(status.secondaryIntent, ""));
+        map.put("emotion", blankTo(status.emotion, ""));
+        map.put("sharedObjective", blankTo(status.sharedObjective, ""));
+        map.put("nextBestMove", blankTo(status.nextBestMove, ""));
+        map.put("replyPriority", blankTo(status.replyPriority, ""));
+        map.put("updatedAt", blankTo(status.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> quickJudgeDecisionMap(QuickJudgeDecision decision) {
+        if (decision == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("used", decision.used);
+        map.put("applied", decision.shouldApply());
+        map.put("reason", blankTo(decision.reason, ""));
+        map.put("confidence", decision.confidence);
+        map.put("primaryIntent", blankTo(decision.primaryIntent, ""));
+        map.put("secondaryIntent", blankTo(decision.secondaryIntent, ""));
+        map.put("emotion", blankTo(decision.emotion, ""));
+        map.put("sharedObjective", blankTo(decision.sharedObjective, ""));
+        map.put("sceneTransitionNeeded", decision.sceneTransitionNeeded);
+        map.put("nextBestMove", blankTo(decision.nextBestMove, ""));
+        map.put("replyPriority", blankTo(decision.replyPriority, ""));
+        return map;
+    }
+
+    private Map<String, Object> pendingRepairCueMap(PendingRepairCue cue) {
+        if (cue == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("type", blankTo(cue.type, ""));
+        map.put("instruction", blankTo(cue.instruction, ""));
+        map.put("confidence", cue.confidence);
+        map.put("createdAt", blankTo(cue.createdAt, ""));
+        return map;
+    }
+
     private Map<String, Object> responsePlanMap(ResponsePlan responsePlan) {
         if (responsePlan == null) {
             return Map.of();
@@ -2930,6 +3313,59 @@ class ChatOrchestrator {
         map.put("explanation", blankTo(responsePlan.explanation, ""));
         map.put("updatedAt", blankTo(responsePlan.updatedAt, ""));
         return map;
+    }
+
+    private Map<String, Object> agentTimingMap(
+            long sendStartedAtNanos,
+            QuickJudgeTask quickJudgeTask,
+            long plotDirectorStartedAtNanos,
+            long plotDirectorFinishedAtNanos,
+            long mainReplyStartedAtNanos,
+            long mainReplyFinishedAtNanos
+    ) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        long quickJudgeStartedAtNanos = quickJudgeTask == null ? 0L : quickJudgeTask.startedAtNanos;
+        long quickJudgeCompletedAtNanos = quickJudgeTask == null ? 0L : quickJudgeTask.completedAtNanos.get();
+        map.put("quickJudgeStartedMs", elapsedMs(sendStartedAtNanos, quickJudgeStartedAtNanos));
+        map.put("quickJudgeCompletedMs", elapsedMs(sendStartedAtNanos, quickJudgeCompletedAtNanos));
+        map.put("plotDirectorStartedMs", elapsedMs(sendStartedAtNanos, plotDirectorStartedAtNanos));
+        map.put("plotDirectorFinishedMs", elapsedMs(sendStartedAtNanos, plotDirectorFinishedAtNanos));
+        map.put("mainReplyStartedMs", elapsedMs(sendStartedAtNanos, mainReplyStartedAtNanos));
+        map.put("mainReplyFinishedMs", elapsedMs(sendStartedAtNanos, mainReplyFinishedAtNanos));
+        map.put(
+                "quickJudgeCompletedBeforePlotDirector",
+                quickJudgeCompletedAtNanos > 0L && plotDirectorFinishedAtNanos > 0L && quickJudgeCompletedAtNanos <= plotDirectorFinishedAtNanos
+        );
+        map.put(
+                "quickJudgeVsPlotDirectorMs",
+                quickJudgeCompletedAtNanos > 0L && plotDirectorFinishedAtNanos > 0L
+                        ? Math.round((quickJudgeCompletedAtNanos - plotDirectorFinishedAtNanos) / 1_000_000.0)
+                        : null
+        );
+        map.put(
+                "quickJudgeCompletedBeforeMainReply",
+                quickJudgeCompletedAtNanos > 0L && mainReplyStartedAtNanos > 0L && quickJudgeCompletedAtNanos <= mainReplyStartedAtNanos
+        );
+        map.put(
+                "quickJudgeVsMainReplyStartMs",
+                quickJudgeCompletedAtNanos > 0L && mainReplyStartedAtNanos > 0L
+                        ? Math.round((quickJudgeCompletedAtNanos - mainReplyStartedAtNanos) / 1_000_000.0)
+                        : null
+        );
+        map.put(
+                "quickJudgeVsMainReplyFinishMs",
+                quickJudgeCompletedAtNanos > 0L && mainReplyFinishedAtNanos > 0L
+                        ? Math.round((quickJudgeCompletedAtNanos - mainReplyFinishedAtNanos) / 1_000_000.0)
+                        : null
+        );
+        return map;
+    }
+
+    private Long elapsedMs(long startedAtNanos, long targetNanos) {
+        if (startedAtNanos <= 0L || targetNanos <= 0L || targetNanos < startedAtNanos) {
+            return null;
+        }
+        return Math.round((targetNanos - startedAtNanos) / 1_000_000.0);
     }
 
     private Map<String, Object> initiativeDecisionMap(InitiativeDecision initiativeDecision) {
@@ -3304,6 +3740,233 @@ class ChatOrchestrator {
                 || tail.contains("在吗")
                 || tail.contains("嗨")
                 || tail.contains("好啊");
+    }
+
+    private String mergeSceneText(String first, String second) {
+        String left = first == null ? "" : first.trim();
+        String right = second == null ? "" : second.trim();
+        if (left.isBlank()) {
+            return right;
+        }
+        if (right.isBlank() || left.contains(right)) {
+            return left;
+        }
+        if (right.contains(left)) {
+            return right;
+        }
+        return left + " " + right;
+    }
+
+    private String selectSceneText(String plotSceneText, String llmSceneText, String speechText, String replySource) {
+        String modelScene = llmSceneText == null ? "" : llmSceneText.trim();
+        String directorScene = plotSceneText == null ? "" : plotSceneText.trim();
+        if (!modelScene.isBlank()) {
+            return modelScene;
+        }
+        return directorScene;
+    }
+
+    private boolean speechAlreadyCarriesScene(String speechText, String sceneText, String replySource) {
+        if (speechText == null || speechText.isBlank() || sceneText == null || sceneText.isBlank()) {
+            return false;
+        }
+        String speech = normalizeSceneComparableText(speechText);
+        String scene = normalizeSceneComparableText(sceneText);
+        if (speech.contains(scene) || scene.contains(speech)) {
+            return true;
+        }
+        if (sceneSimilarity(speech, scene) >= 0.82) {
+            return true;
+        }
+        int overlap = 0;
+        List<String> cues = List.of(
+                "顺着", "往", "走", "过去", "路上", "外面", "门口", "操场", "宿舍", "图书馆",
+                "食堂", "热饮", "奶茶", "咖啡", "小道", "夕阳", "身影", "影子", "风", "场景", "气氛", "话题", "挪", "转"
+        );
+        for (String cue : cues) {
+            if (speech.contains(cue) && scene.contains(cue)) {
+                overlap++;
+            }
+        }
+        if ("plot_push".equals(replySource) && overlap >= 2) {
+            return true;
+        }
+        return overlap >= 3;
+    }
+
+    private String removeSceneTextFromSpeech(String speechText, String sceneText) {
+        String normalized = speechText == null ? "" : speechText.trim().replaceAll("\\s+", " ");
+        String scene = sceneText == null ? "" : sceneText.trim();
+        if (normalized.isBlank() || scene.isBlank()) {
+            return normalized;
+        }
+        normalized = removeLeadingScenePrefix(normalized, scene);
+        List<String> kept = new ArrayList<>();
+        for (String sentence : splitDisplaySentences(normalized)) {
+            if (!isDuplicateSceneSentence(sentence, scene)) {
+                kept.add(sentence.trim());
+            }
+        }
+        String cleaned = String.join(" ", kept).trim().replaceAll("\\s+", " ");
+        return trimStrayScenePunctuation(cleaned);
+    }
+
+    private String removeLeadingScenePrefix(String speechText, String sceneText) {
+        String normalized = speechText == null ? "" : speechText.trim().replaceAll("\\s+", " ");
+        if (normalized.isBlank() || sceneText == null || sceneText.isBlank()) {
+            return normalized;
+        }
+        int bestEnd = -1;
+        for (int index = 0; index < normalized.length(); index++) {
+            char ch = normalized.charAt(index);
+            if (!isSoftSceneBoundary(ch)) {
+                continue;
+            }
+            String prefix = normalized.substring(0, index + 1).trim();
+            String rest = normalized.substring(index + 1).trim();
+            if (!rest.isBlank() && isDuplicateScenePrefix(prefix, sceneText)) {
+                bestEnd = index + 1;
+            }
+        }
+        if (bestEnd <= 0 || bestEnd >= normalized.length()) {
+            return normalized;
+        }
+        return trimStrayScenePunctuation(normalized.substring(bestEnd));
+    }
+
+    private boolean isSoftSceneBoundary(char ch) {
+        return ch == ',' || ch == '\uFF0C' || ch == '\u3001' || ch == ';' || ch == '\uFF1B'
+                || ch == '\u3002' || ch == '!' || ch == '\uFF01' || ch == '?' || ch == '\uFF1F';
+    }
+
+    private boolean isDuplicateScenePrefix(String prefix, String sceneText) {
+        String prefixComparable = normalizeSceneComparableText(prefix);
+        String sceneComparable = normalizeSceneComparableText(sceneText);
+        if (prefixComparable.length() < 6 || sceneComparable.isBlank()) {
+            return false;
+        }
+        if (sceneComparable.contains(prefixComparable)) {
+            return true;
+        }
+        if (sceneSimilarity(prefixComparable, sceneComparable) >= 0.68 && looksLikeSceneNarration(prefix)) {
+            return true;
+        }
+        int overlap = 0;
+        for (String cue : List.of(
+                "\u4e24\u4eba", "\u6211\u4eec", "\u4e00\u8d77", "\u5e76\u80a9", "\u624b\u7275\u624b", "\u5f80", "\u5411", "\u8d70", "\u8fc7\u53bb",
+                "\u98df\u5802", "\u64cd\u573a", "\u5bbf\u820d", "\u56fe\u4e66\u9986", "\u8def\u4e0a", "\u5fae\u98ce", "\u508d\u665a", "\u51c9\u610f", "\u6c14\u6c1b"
+        )) {
+            if (prefixComparable.contains(cue) && sceneComparable.contains(cue)) {
+                overlap++;
+            }
+        }
+        return overlap >= 3;
+    }
+
+    private String trimStrayScenePunctuation(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        return text.replaceFirst("^[\\s,\\uFF0C\\u3001\\u3002.!\\uFF01?\\uFF1F;\\uFF1B:\\uFF1A]+", "").trim();
+    }
+
+    private boolean isDuplicateSceneSentence(String sentence, String sceneText) {
+        String speech = normalizeSceneComparableText(sentence);
+        String scene = normalizeSceneComparableText(sceneText);
+        if (speech.isBlank() || scene.isBlank()) {
+            return false;
+        }
+        if (speech.contains(scene) || scene.contains(speech)) {
+            return true;
+        }
+        double similarity = sceneSimilarity(speech, scene);
+        if (similarity >= 0.86) {
+            return true;
+        }
+        return similarity >= 0.70 && looksLikeSceneNarration(sentence);
+    }
+
+    private List<String> splitDisplaySentences(String text) {
+        List<String> sentences = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (int index = 0; index < text.length(); index++) {
+            char ch = text.charAt(index);
+            current.append(ch);
+            if (ch == '。' || ch == '！' || ch == '？' || ch == '!' || ch == '?') {
+                String sentence = current.toString().trim();
+                if (!sentence.isBlank()) {
+                    sentences.add(sentence);
+                }
+                current.setLength(0);
+            }
+        }
+        String rest = current.toString().trim();
+        if (!rest.isBlank()) {
+            sentences.add(rest);
+        }
+        return sentences;
+    }
+
+    private String normalizeSceneComparableText(String text) {
+        String normalized = text == null ? "" : text;
+        normalized = normalized.replaceAll("\\s+", "");
+        normalized = normalized.replaceAll("[，。！？、；：,.!?;:（）()“”‘’《》【】\\[\\]{}…—-]", "");
+        normalized = normalized.replace("我们俩", "两人")
+                .replace("咱们俩", "两人")
+                .replace("你们", "两人")
+                .replace("我们", "两人")
+                .replace("一块儿", "一起");
+        return normalized;
+    }
+
+    private double sceneSimilarity(String left, String right) {
+        if (left.isBlank() || right.isBlank()) {
+            return 0.0;
+        }
+        Set<String> leftGrams = charBigrams(left);
+        Set<String> rightGrams = charBigrams(right);
+        if (leftGrams.isEmpty() || rightGrams.isEmpty()) {
+            return left.equals(right) ? 1.0 : 0.0;
+        }
+        int shared = 0;
+        for (String gram : leftGrams) {
+            if (rightGrams.contains(gram)) {
+                shared++;
+            }
+        }
+        return (2.0 * shared) / (leftGrams.size() + rightGrams.size());
+    }
+
+    private Set<String> charBigrams(String text) {
+        Set<String> grams = new HashSet<>();
+        if (text.length() < 2) {
+            if (!text.isBlank()) {
+                grams.add(text);
+            }
+            return grams;
+        }
+        for (int index = 0; index < text.length() - 1; index++) {
+            grams.add(text.substring(index, index + 2));
+        }
+        return grams;
+    }
+
+    private boolean looksLikeSceneNarration(String sentence) {
+        String text = normalizeSceneComparableText(sentence);
+        boolean hasMoveOrGroup = sceneContainsAny(text, List.of("两人", "一起", "并肩", "走", "往", "向", "过去", "挪", "转"));
+        boolean hasPlaceOrAtmosphere = sceneContainsAny(text, List.of("操场", "小道", "路上", "宿舍", "食堂", "图书馆", "门口", "夕阳", "身影", "影子", "微风", "气氛"));
+        boolean hasDialogueQuestion = sceneContainsAny(text, List.of("吗", "嘛", "呢", "吧", "要不要", "有没有", "喜欢", "觉得"));
+        return text.length() <= 60 && hasMoveOrGroup && hasPlaceOrAtmosphere && !hasDialogueQuestion;
+    }
+
+    private boolean sceneContainsAny(String text, List<String> keywords) {
+        String safe = text == null ? "" : text;
+        for (String keyword : keywords) {
+            if (safe.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String blankTo(String value, String fallback) {

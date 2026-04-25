@@ -26,6 +26,18 @@ watch(() => props.messages.length, async () => {
 onMounted(async () => {
   await scrollToBottom();
 });
+
+function displayText(message: ConversationMessage) {
+  const speech = (message.speechText || message.text || "").trim();
+  const action = (message.actionText || "").trim();
+  if (!action) {
+    return speech;
+  }
+  if (!speech) {
+    return action;
+  }
+  return `${action}\n${speech}`;
+}
 </script>
 
 <template>
@@ -54,14 +66,6 @@ onMounted(async () => {
         </div>
 
         <div
-          v-if="message.actionText"
-          class="min-w-[8.5rem] max-w-[88%] rounded-2xl border border-white/10 bg-[#171926]/80 px-4 py-3 text-sm leading-6 text-white/64 sm:min-w-[10rem]"
-          :class="message.role === 'user' ? 'ml-auto' : ''"
-        >
-          {{ message.actionText }}
-        </div>
-
-        <div
           class="min-w-[8.5rem] max-w-[88%] overflow-hidden rounded-[1.6rem] border px-4 py-4 shadow-[0_16px_36px_rgba(4,6,18,0.26)] sm:min-w-[10rem] sm:px-5"
           :class="message.role === 'user'
             ? 'ml-auto border-[#4f6c93]/30 bg-[linear-gradient(160deg,rgba(58,78,109,0.92),rgba(27,39,60,0.96))] text-white'
@@ -71,7 +75,7 @@ onMounted(async () => {
             <div class="min-w-0 flex-1">
               <div class="text-xs text-white/48">{{ message.role === "user" ? "你" : agent?.name || "角色" }}</div>
               <div class="mt-2 whitespace-pre-wrap break-words text-[15px] leading-7 text-white/94 sm:text-[16px]">
-                {{ message.speechText || message.text }}
+                {{ displayText(message) }}
               </div>
             </div>
 

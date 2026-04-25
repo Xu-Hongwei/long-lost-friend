@@ -22,6 +22,44 @@ const emits = defineEmits<{
   choose: [choiceId: string];
   toggleDrawer: [drawer: "relationship" | "memory" | "plot" | "analytics"];
 }>();
+
+function sceneStatusText(session: SessionRecord | null) {
+  if (!session) {
+    return "剧情尚未铺开";
+  }
+  const scene = session.sceneState;
+  const summary = scene?.sceneSummary?.trim() || "";
+  if (summary && !isTransitionSummary(summary)) {
+    return summary;
+  }
+  const location = scene?.location?.trim() || "";
+  const subLocation = scene?.subLocation?.trim() || "";
+  if (location && location !== "聊天现场") {
+    const place = subLocation && !location.includes(subLocation) ? `${location}${subLocation}` : location;
+    return `${place}，${interactionModeLabel(scene?.interactionMode)}。`;
+  }
+  return session.plotState?.sceneFrame || "剧情尚未铺开";
+}
+
+function isTransitionSummary(summary: string) {
+  return /场景.*(带到|挪到|移动|转到|换了气氛)/.test(summary)
+    || summary.includes("接下来的话也跟着")
+    || summary.includes("变成并肩走着");
+}
+
+function interactionModeLabel(mode?: string) {
+  switch (mode) {
+    case "online_chat":
+      return "隔着屏幕慢慢聊着";
+    case "phone_call":
+      return "隔着电话继续靠近";
+    case "mixed_transition":
+      return "边走边继续聊天";
+    case "face_to_face":
+    default:
+      return "面对面继续聊天";
+  }
+}
 </script>
 
 <template>
@@ -67,7 +105,7 @@ const emits = defineEmits<{
         </div>
         <div class="rounded-[1.35rem] border border-white/8 bg-black/12 px-4 py-3">
           <div class="text-[11px] uppercase tracking-[0.2em] text-white/38">当前场景</div>
-          <div class="mt-2 text-[15px] leading-6 text-white/82">{{ session?.sceneState?.sceneSummary || session?.plotState?.sceneFrame || "剧情尚未铺开" }}</div>
+          <div class="mt-2 text-[15px] leading-6 text-white/82">{{ sceneStatusText(session) }}</div>
         </div>
       </div>
 
@@ -138,7 +176,7 @@ const emits = defineEmits<{
           :disabled="disabled"
           :loading="sending"
           :city="session?.visitorContext?.preferredCity"
-          :scene-summary="session?.sceneState?.sceneSummary || session?.plotState?.sceneFrame"
+          :scene-summary="sceneStatusText(session)"
           :agent-name="agent?.name"
           @update:model-value="emits('update:draft', $event)"
           @send="emits('send')"
@@ -181,8 +219,33 @@ const emits = defineEmits<{
           <div class="flex justify-between gap-4"><span class="text-white/42">回复任务</span><span>{{ session?.lastResponsePlan?.coreTask || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">主动程度</span><span>{{ session?.lastResponsePlan?.initiativeLevel || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">好感变化</span><span>{{ session?.lastTurnContext?.affectionDeltaTotal ?? 0 }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">场景移动意图</span><span>{{ session?.lastTurnContext?.sceneMoveIntent || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情信号</span><span>{{ session?.lastTurnContext?.plotSignal ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情间隔</span><span>{{ session?.lastTurnContext?.plotGap ?? 0 }}</span></div>
+        </div>
+      </section>
+
+      <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
+        <p class="tracking-[0.28em] text-[0.68rem] text-white/45">Quick Judge 捕捉</p>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/72">
+            状态 {{ session?.lastQuickJudgeStatus?.status || "暂无" }}
+          </span>
+          <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/72">
+            置信 {{ session?.lastQuickJudgeStatus?.confidence ?? 0 }}
+          </span>
+          <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/72">
+            已采纳 {{ session?.lastQuickJudgeStatus?.applied ? "是" : "否" }}
+          </span>
+        </div>
+        <div class="mt-4 space-y-2 text-sm text-white/64">
+          <div class="flex justify-between gap-4"><span class="text-white/42">回复优先级</span><span>{{ session?.lastQuickJudgeStatus?.replyPriority || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">修正主意图</span><span>{{ session?.lastQuickJudgeStatus?.primaryIntent || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">情绪覆盖</span><span>{{ session?.lastQuickJudgeStatus?.emotion || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">共享目标</span><span>{{ session?.lastQuickJudgeStatus?.sharedObjective || "暂无" }}</span></div>
+        </div>
+        <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 px-4 py-3 text-sm leading-6 text-white/62">
+          {{ session?.lastQuickJudgeStatus?.nextBestMove || session?.lastQuickJudgeStatus?.reason || "当前这一轮没有额外的 quick judge 修正。" }}
         </div>
       </section>
 

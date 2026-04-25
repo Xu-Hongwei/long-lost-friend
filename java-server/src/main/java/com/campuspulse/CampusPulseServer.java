@@ -41,6 +41,7 @@ public class CampusPulseServer {
                 llmClient,
                 safetyService,
                 analyticsService,
+                new QuickJudgeService(config),
                 new PlotDirectorAgentService(config)
         );
     }

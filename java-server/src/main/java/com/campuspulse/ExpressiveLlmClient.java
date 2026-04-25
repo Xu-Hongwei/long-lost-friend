@@ -161,6 +161,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private LlmResponse generateRemoteReplyWithSearch(LlmRequest request, String systemPrompt) throws Exception {
+        if (usesDashScopeChatSearch()) {
+            return generateRemoteReplyWithDashScopeSearch(request, systemPrompt);
+        }
         List<Object> input = new ArrayList<>();
         input.add(Map.of(
                 "role", "system",
@@ -200,6 +203,62 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         Map<String, Object> payload = Json.asObject(Json.parse(responseBody));
         Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
         ReplyParts reply = shapeStructuredReply(extractResponsesText(payload).trim());
+
+        return new LlmResponse(
+                reply.replyText,
+                reply.sceneText,
+                reply.actionText,
+                reply.speechText,
+                inferEmotionTag(request),
+                "remote",
+                Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
+                null,
+                false,
+                "remote"
+        );
+    }
+
+    private LlmResponse generateRemoteReplyWithDashScopeSearch(LlmRequest request, String systemPrompt) throws Exception {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "system", "content", systemPrompt));
+        for (ConversationSnippet snippet : request.shortTermContext) {
+            messages.add(Map.of("role", snippet.role, "content", snippet.text));
+        }
+        messages.add(Map.of(
+                "role", "user",
+                "content", buildUserCue(request) + "\n联网补充上下文：" + request.searchContext
+        ));
+
+        String body = Json.stringify(Map.of(
+                "model", config.llmModel,
+                "temperature", 0.88,
+                "enable_search", true,
+                "messages", messages
+        ));
+
+        HttpURLConnection connection = (HttpURLConnection) URI.create(config.llmBaseUrl + "/chat/completions").toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout((int) config.llmTimeout.toMillis());
+        connection.setReadTimeout((int) config.llmTimeout.toMillis());
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
+        connection.setRequestProperty("Authorization", "Bearer " + config.llmApiKey);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        int statusCode = connection.getResponseCode();
+        if (statusCode < 200 || statusCode >= 300) {
+            throw new IOException("LLM dashscope search request failed: " + statusCode);
+        }
+
+        String responseBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        Map<String, Object> payload = Json.asObject(Json.parse(responseBody));
+        List<Object> choices = Json.asArray(payload.get("choices"));
+        Map<String, Object> choice = Json.asObject(choices.get(0));
+        Map<String, Object> message = Json.asObject(choice.get("message"));
+        Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
+        ReplyParts reply = shapeStructuredReply(Json.asString(message.get("content")).trim());
 
         return new LlmResponse(
                 reply.replyText,
@@ -332,6 +391,8 @@ class ExpressiveLlmClient extends CompositeLlmClient {
 
         String continuityText = buildContinuityText(request.dialogueContinuityState);
         String backstoryText = buildBackstoryText(request.agent);
+        String structuredSceneRule = buildStructuredSceneRule(request);
+        String repairCueText = buildRepairCueText(request.pendingRepairCue);
 
         return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
                 + "说话风格：" + request.agent.speechStyle + "\n"
@@ -346,12 +407,14 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "时间上下文：" + timeText + "\n"
                 + "天气上下文：" + weatherText + "\n"
                 + "当前场景：" + sceneText + "\n"
+                + structuredSceneRule
                 + "角色当前情感状态：" + emotionText + "\n"
                 + "长期记忆摘要：" + summaryText + "\n"
                 + "优先召回的记忆层级：" + recallTier + "\n"
                 + "高相关记忆：" + recallText + "\n"
                 + "记忆使用计划：" + memoryPlanText + "\n"
                 + "上下文智能层：" + continuityText + "\n"
+                + repairCueText
                 + "当前事件：" + eventText + "\n"
                 + "本轮回应策略：" + blankTo(request.responseDirective, "保持角色一致，顺着当前聊天自然展开。") + "\n"
                 + "边界：" + String.join("；", request.agent.boundaries) + "\n"
@@ -360,15 +423,46 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "2. 如果用户这轮问了明确问题，第一句必须先直接回答问题，不能先演动作、先回忆剧情、先抒情。\n"
                 + "3. 场景推进和记忆带回只能放在回答当前问题之后，而且要轻，不要抢走当下这句话的重心。\n"
                 + "4. 不要永远一问一答，但也不要为了推进剧情而忽略用户刚刚抛来的球。\n"
-                + "5. 尽量不用括号动作，不要以“（……）”开头；把动作、视线、环境融进自然口语里。\n"
-                + "6. 普通回复通常 2 到 4 句；静默心跳或长聊心跳这类主动消息通常 1 到 2 句，更轻、更像临时想起对方。\n"
-                + "7. 如果 reply_source 是 plot_push，表示当前对话里顺势往前走半步，不是切到聊天外发消息，不要写成“给你发消息”“看到你回复”“屏幕那头”这种异步联系口吻。\n"
-                + "8. 如果 reply_source 是 silence_heartbeat 或 long_chat_heartbeat，才说明这是角色主动发出的轻消息；要像顺手接话，不像系统提醒。\n"
-                + "9. 如果用户输入很短，不要把压力丢回给用户，由你主动给一个容易接的话头。\n"
-                + "10. 如果上下文智能层给出当前共同目标、已确认计划、下一句必须承接或禁止违背事实，必须优先遵守；不要重新问已经确认的计划，不要把具体行动泛化成无关闲逛。\n"
-                + "10. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
-                + "11. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
-                + "10. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
+                + "5. 普通回复通常 2 到 4 句；静默心跳或长聊心跳这类主动消息通常 1 到 2 句，更轻、更像临时想起对方。\n"
+                + "6. 如果 reply_source 是 plot_push，表示当前对话里顺势往前走半步，不是切到聊天外发消息，不要写成“给你发消息”“看到你回复”“屏幕那头”这种异步联系口吻。\n"
+                + "7. 如果 reply_source 是 silence_heartbeat 或 long_chat_heartbeat，才说明这是角色主动发出的轻消息；要像顺手接话，不像系统提醒。\n"
+                + "8. 如果用户输入很短，不要把压力丢回给用户，由你主动给一个容易接的话头。\n"
+                + "9. 如果上下文智能层给出当前共同目标、已确认计划、下一句必须承接或禁止违背事实，必须优先遵守；不要重新问已经确认的计划，不要把具体行动泛化成无关闲逛。\n"
+                + "10. 如果存在上一轮理解修正，只能用一句轻轻的自然修正开头，然后马上回答本轮用户；不要反复道歉，不要解释内部原因。\n"
+                + "11. 如果需要写纯场景转移、位置变化或镜头过场，只能放进 [[SCENE]]...[[/SCENE]]；一旦输出了 [[SCENE]]，正文中禁止再次复述同一地点、移动方向、天气光线、氛围或镜头过场，正文只写角色真正说出口的话和极少量情绪承接。\n"
+                + "12. 有需要的话可以使用动作、姿态或视线来表达增强感觉，用一小句自然融入正文，但不能让动作抢走角色说话本身。\n"
+                + "13. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
+                + "14. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
+                + "15. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
+    }
+
+    private String buildStructuredSceneRule(LlmRequest request) {
+        if (request == null) {
+            return "";
+        }
+        boolean hasDirectorScene = request.sceneFrame != null && !request.sceneFrame.isBlank();
+        boolean transitionNeeded = request.dialogueContinuityState != null && request.dialogueContinuityState.sceneTransitionNeeded;
+        if (!transitionNeeded) {
+            return "";
+        }
+        String sceneHint = blankTo(request.sceneFrame, "顺着当前对话自然转场");
+        return "本轮场景结构要求：需要输出一个 [[SCENE]]...[[/SCENE]] 镜头过场，承接“"
+                + sceneHint
+                + "”。正文不要重复这句过场，只写角色如何接话。"
+                + (hasDirectorScene ? "" : " 如果没有明确地点变化，就写成很短的氛围过渡。")
+                + "\n";
+    }
+
+    private String buildRepairCueText(PendingRepairCue cue) {
+        if (cue == null || cue.instruction == null || cue.instruction.isBlank()) {
+            return "";
+        }
+        return "\u4e0a\u4e00\u8f6e\u7406\u89e3\u4fee\u6b63\uff1a"
+                + "\u5982\u679c\u8fd9\u4e2a\u4fee\u6b63\u4e0e\u672c\u8f6e\u7528\u6237\u8f93\u5165\u6709\u5173\uff0c\u5f00\u5934\u7528\u4e00\u53e5\u81ea\u7136\u3001\u4f4e\u8d1f\u62c5\u7684\u8bdd\u8f7b\u8f7b\u627f\u8ba4\u521a\u624d\u53ef\u80fd\u628a\u91cd\u70b9\u5e26\u504f\u4e86\uff0c\u7136\u540e\u7acb\u523b\u56de\u5230\u7528\u6237\u5f53\u524d\u610f\u56fe\u3002"
+                + "\u4e0d\u8981\u63d0\u6a21\u578b\u3001\u7cfb\u7edf\u3001QuickJudge \u6216\u5224\u65ad\u5668\uff0c\u4e0d\u8981\u957f\u7bc7\u9053\u6b49\uff0c\u6700\u591a\u4e00\u53e5\u4fee\u6b63\u3002"
+                + "\u4fee\u6b63\u63d0\u793a\uff1a" + cue.instruction
+                + "\uff08type=" + blankTo(cue.type, "repair")
+                + ", confidence=" + cue.confidence + "\uff09\n";
     }
 
     private String buildBackstoryText(AgentProfile agent) {
@@ -499,13 +593,15 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request.dialogueContinuityState != null
                 && request.dialogueContinuityState.sceneTransitionNeeded
                 && request.dialogueContinuityState.currentObjective != null
-                && request.dialogueContinuityState.currentObjective.contains("热饮")) {
-            return "你们顺着刚刚说好的方向往热饮那边走，话题没有散开。";
+                && !request.dialogueContinuityState.currentObjective.isBlank()) {
+            return buildObjectiveSceneLine(request.dialogueContinuityState.currentObjective);
         }
-        if (request.sceneState != null && request.sceneState.transitionPending) {
+        if (request.dialogueContinuityState != null
+                && request.dialogueContinuityState.sceneTransitionNeeded
+                && !blankTo(request.sceneFrame, "").isBlank()) {
             return blankTo(request.sceneFrame, "");
         }
-        if ("plot_push".equals(request.replySource) || isHeartbeatProactive(request.replySource)) {
+        if (isHeartbeatProactive(request.replySource) && request.sceneState != null && request.sceneState.transitionPending) {
             return blankTo(request.sceneFrame, "");
         }
         if (!hasQuestion && !answeredDirectly) {
@@ -568,11 +664,13 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         boolean askBack = shouldAskBack(request);
         if (request.dialogueContinuityState != null
                 && request.dialogueContinuityState.acceptedPlan != null
-                && request.dialogueContinuityState.acceptedPlan.contains("热饮")) {
-            return "那我们就先去买热饮，路上你不用重新找话题，我会接着刚才那句慢慢聊。";
+                && !request.dialogueContinuityState.acceptedPlan.isBlank()) {
+            return buildAcceptedPlanLine(request.dialogueContinuityState.acceptedPlan);
         }
         if (isShortInput(request.userMessage)) {
-            return askBack ? "要不要先从今天最想说的那一小段开始，我来陪你把后面的情绪慢慢拽出来？" : "你先把最想说的那一小段交给我，后面的情绪我们慢慢往外带。";
+            return askBack
+                    ? "要不要先从今天最想说的那一小段开始，我来陪你把后面的情绪慢慢拽出来？"
+                    : "要不要先从今天最想说的那一小段开始，后面的情绪我也会陪你慢慢往外带。";
         }
         if (containsQuestion(request.userMessage)) {
             return askBack ? "你也可以顺手告诉我，你真正卡住的是哪一层，我陪你一起拆开。" : "你这样问的时候，其实已经把心里那层意思递出来一点了。";
@@ -587,6 +685,47 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             return askBack ? "要不你再往下说一点，我想知道你刚才那句后面藏着的其实是什么。" : "你刚才那句后面其实还藏着东西，我听得出来。";
         }
         return askBack ? "如果你愿意，下一句可以再往里一点，我会认真接。" : "你不用急着推进，我会把你刚才那层意思稳稳接住。";
+    }
+
+    private String buildObjectiveSceneLine(String objective) {
+        if (objective.contains("热饮")) {
+            return "你们顺着刚刚说好的方向往热饮那边走，话题没有散开。";
+        }
+        if (objective.contains("图书馆")) {
+            return "你们顺着刚刚说好的方向往图书馆那边过去，气氛也跟着安静下来。";
+        }
+        if (objective.contains("食堂")) {
+            return "你们顺着刚刚说好的方向往食堂那边走，话题自然落回日常陪伴里。";
+        }
+        if (objective.contains("宿舍")) {
+            return "你们沿着刚刚说好的路线慢慢往宿舍那边走，谁都没有让话题断开。";
+        }
+        if (objective.contains("操场")) {
+            return "你们顺着刚刚说好的方向往操场那边去，步子和气氛都慢慢对上了。";
+        }
+        if (objective.contains("市区")) {
+            return "你们顺着刚刚说好的方向往外面走，话题也没有被重新打散。";
+        }
+        return "你们顺着刚刚说好的方向往前走，话题没有被重新打散。";
+    }
+
+    private String buildAcceptedPlanLine(String acceptedPlan) {
+        if (acceptedPlan.contains("热饮")) {
+            return "那我们就先去买热饮，路上你不用重新找话题，我会接着刚才那句慢慢聊。";
+        }
+        if (acceptedPlan.contains("图书馆")) {
+            return "那我们就先去图书馆，路上你不用急着换话题，我会顺着刚才那句接下去。";
+        }
+        if (acceptedPlan.contains("食堂")) {
+            return "那我们就先去食堂，边走边聊就够了，不用重新把气氛搭起来。";
+        }
+        if (acceptedPlan.contains("宿舍")) {
+            return "那我先陪你把这段路走到宿舍楼下，剩下的话我们路上慢慢接。";
+        }
+        if (acceptedPlan.contains("操场")) {
+            return "那我们就先去操场，走到那边之前，你刚才那句我会继续接住。";
+        }
+        return "那我们就先顺着刚才说好的方向往前走，话题不用重新起头。";
     }
 
     private String buildActionLine(LlmRequest request, boolean hasQuestion, boolean answeredDirectly) {
@@ -632,6 +771,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         }
         if ("plot_push".equals(request.replySource)) {
             return false;
+        }
+        if ("user_turn".equals(blankTo(request.replySource, "user_turn")) && isShortInput(request.userMessage)) {
+            return request.emotionState == null || !"uneasy".equals(blankTo(request.emotionState.currentMood, ""));
         }
         if (lastAssistantAskedQuestion(request)) {
             return false;
@@ -860,6 +1002,16 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 || text.contains("难道"));
     }
 
+    private boolean containsAny(String text, List<String> keywords) {
+        String safe = text == null ? "" : text;
+        for (String keyword : keywords) {
+            if (safe.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean isHeartbeatProactive(String replySource) {
         return "silence_heartbeat".equals(replySource)
                 || "long_chat_heartbeat".equals(replySource);
@@ -919,8 +1071,96 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 .replace(ACTION_CLOSE, "")
                 .trim();
         speechText = cleanSpeechText(speechText.isBlank() ? normalized : speechText);
+        if (!sceneText.isBlank()) {
+            speechText = removeLeadingSceneCarry(speechText);
+            speechText = removeDuplicateSceneSentences(speechText, sceneText);
+        }
         String combined = joinNonBlank(List.of(sceneText, actionText, speechText));
         return new ReplyParts(combined, sceneText, actionText, speechText);
+    }
+
+    private String removeLeadingSceneCarry(String speechText) {
+        String normalized = condenseWhitespace(speechText);
+        if (normalized.isBlank()) {
+            return "";
+        }
+        int sentenceEnd = firstSentenceEnd(normalized);
+        if (sentenceEnd <= 0 || sentenceEnd >= normalized.length()) {
+            return normalized;
+        }
+        String first = normalized.substring(0, sentenceEnd).trim();
+        if (!looksLikeSceneCarry(first)) {
+            return normalized;
+        }
+        return normalized.substring(sentenceEnd).trim();
+    }
+
+    private boolean looksLikeSceneCarry(String text) {
+        String compact = compact(text);
+        if (compact.isBlank()) {
+            return false;
+        }
+        boolean hasMoveCue = containsAny(compact, List.of("我们", "两人", "你们", "一起", "并肩", "往", "向", "走", "去", "过去", "方向"));
+        boolean hasPlaceCue = containsAny(compact, List.of("操场", "宿舍", "食堂", "图书馆", "外面", "路上", "热饮", "奶茶", "咖啡", "小雨", "窗外"));
+        boolean hasSceneTone = containsAny(compact, List.of("风", "微风", "雨", "天色", "气氛", "场景", "脚步", "方向"));
+        return compact.length() <= 46 && hasMoveCue && (hasPlaceCue || hasSceneTone);
+    }
+
+    private String removeDuplicateSceneSentences(String speechText, String sceneText) {
+        String normalized = condenseWhitespace(speechText);
+        if (normalized.isBlank()) {
+            return "";
+        }
+        List<String> kept = new ArrayList<>();
+        for (String sentence : splitSentences(normalized)) {
+            if (!isSceneDuplicateSentence(sentence, sceneText)) {
+                kept.add(sentence.trim());
+            }
+        }
+        return condenseWhitespace(String.join(" ", kept));
+    }
+
+    private boolean isSceneDuplicateSentence(String sentence, String sceneText) {
+        String sentenceCompact = compact(sentence);
+        String sceneCompact = compact(sceneText);
+        if (sentenceCompact.isBlank() || sceneCompact.isBlank()) {
+            return false;
+        }
+        if (sceneCompact.contains(sentenceCompact) || sentenceCompact.contains(sceneCompact)) {
+            return true;
+        }
+        int overlap = 0;
+        List<String> cues = List.of(
+                "两人", "我们", "一起", "并肩", "走", "往", "向", "去", "过去", "小道", "路上",
+                "操场", "宿舍", "食堂", "图书馆", "外面", "热饮", "夕阳", "风", "影子", "身影"
+        );
+        for (String cue : cues) {
+            if (sentenceCompact.contains(cue) && sceneCompact.contains(cue)) {
+                overlap++;
+            }
+        }
+        return overlap >= 3 && looksLikeSceneCarry(sentence);
+    }
+
+    private List<String> splitSentences(String text) {
+        List<String> sentences = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (int index = 0; index < text.length(); index++) {
+            char ch = text.charAt(index);
+            current.append(ch);
+            if (ch == '。' || ch == '！' || ch == '？' || ch == '!' || ch == '?') {
+                String sentence = current.toString().trim();
+                if (!sentence.isBlank()) {
+                    sentences.add(sentence);
+                }
+                current.setLength(0);
+            }
+        }
+        String rest = current.toString().trim();
+        if (!rest.isBlank()) {
+            sentences.add(rest);
+        }
+        return sentences;
     }
 
     private String cleanSceneText(String text) {
@@ -961,6 +1201,13 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             }
         }
         return builder.toString().trim();
+    }
+
+    private boolean usesDashScopeChatSearch() {
+        String baseUrl = blankTo(config.llmBaseUrl, "").toLowerCase();
+        String model = blankTo(config.llmModel, "").toLowerCase();
+        return baseUrl.contains("dashscope.aliyuncs.com")
+                || "qwen-plus-character".equals(model);
     }
 
     private String inferEmotionTag(LlmRequest request) {
@@ -1007,7 +1254,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request.intentState != null
                 && "romantic_probe".equals(request.intentState.primaryIntent)
                 && request.relationshipState != null
-                && "初识".equals(request.relationshipState.relationshipStage)) {
+                && "初识".equals(request.relationshipState.relationshipStage)
+                && !(containsQuestion(request.userMessage)
+                && (text.contains("有好感") || text.contains("喜欢我") || text.contains("对我也") || text.contains("会不会也喜欢")))) {
             return "我会在意你，也确实会被你吸引，但现在的我更想把这份靠近走稳一点，不想一上来就把话说满。";
         }
         return "";

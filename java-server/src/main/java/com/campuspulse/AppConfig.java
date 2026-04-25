@@ -82,31 +82,51 @@ class AppConfig {
         Path distDir = root.resolve("dist");
         Path staticDir = Files.exists(distDir.resolve("index.html")) ? distDir : root.resolve("public");
         String portValue = getenvOrDefault("PORT", "3000");
+        boolean preferDashScopeMain = hasAny(
+                System.getenv("DASHSCOPE_API_KEY"),
+                System.getenv("DASHSCOPE_BASE_URL"),
+                System.getenv("DASHSCOPE_BASE"),
+                System.getenv("DASHSCOPE_MODEL")
+        );
         String timeoutValue = firstNonBlank(
+                preferDashScopeMain ? System.getenv("DASHSCOPE_TIMEOUT_MS") : null,
                 System.getenv("ARK_TIMEOUT_MS"),
+                System.getenv("DASHSCOPE_TIMEOUT_MS"),
                 System.getenv("OPENAI_TIMEOUT_MS"),
                 "12000"
         );
         String llmBaseUrl = firstNonBlank(
+                preferDashScopeMain ? System.getenv("DASHSCOPE_BASE_URL") : null,
+                preferDashScopeMain ? System.getenv("DASHSCOPE_BASE") : null,
                 System.getenv("ARK_BASE_URL"),
+                System.getenv("DASHSCOPE_BASE_URL"),
+                System.getenv("DASHSCOPE_BASE"),
                 System.getenv("OPENAI_API_BASE"),
                 System.getenv("OPENAI_BASE_URL"),
                 System.getenv("OPENAI_BASE"),
-                "https://ark.cn-beijing.volces.com/api/v3"
+                preferDashScopeMain
+                        ? "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                        : "https://ark.cn-beijing.volces.com/api/v3"
         );
         String llmApiKey = firstNonBlank(
+                preferDashScopeMain ? System.getenv("DASHSCOPE_API_KEY") : null,
                 System.getenv("ARK_API_KEY"),
+                System.getenv("DASHSCOPE_API_KEY"),
                 System.getenv("OPENAI_API_KEY"),
                 ""
         );
         String llmModel = firstNonBlank(
+                preferDashScopeMain ? System.getenv("DASHSCOPE_MODEL") : null,
+                preferDashScopeMain ? "qwen-plus-character" : null,
                 System.getenv("ARK_MODEL"),
+                System.getenv("DASHSCOPE_MODEL"),
                 System.getenv("OPENAI_MODEL"),
-                "ep-20260418203515-nw4jb"
+                preferDashScopeMain ? "qwen-plus-character" : "ep-20260418203515-nw4jb"
         );
         Duration llmTimeout = Duration.ofMillis(Long.parseLong(timeoutValue));
         String plotTimeoutValue = firstNonBlank(
                 System.getenv("PLOT_LLM_TIMEOUT_MS"),
+                System.getenv("ARK_TIMEOUT_MS"),
                 System.getenv("DASHSCOPE_TIMEOUT_MS"),
                 System.getenv("OPENAI_TIMEOUT_MS"),
                 timeoutValue
@@ -124,24 +144,27 @@ class AppConfig {
                 llmTimeout,
                 firstNonBlank(
                         System.getenv("PLOT_LLM_BASE_URL"),
+                        System.getenv("ARK_BASE_URL"),
                         System.getenv("DASHSCOPE_BASE_URL"),
                         System.getenv("DASHSCOPE_BASE"),
                         System.getenv("OPENAI_API_BASE"),
                         System.getenv("OPENAI_BASE_URL"),
                         System.getenv("OPENAI_BASE"),
-                        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                        llmBaseUrl
                 ),
                 firstNonBlank(
                         System.getenv("PLOT_LLM_API_KEY"),
+                        System.getenv("ARK_API_KEY"),
                         System.getenv("DASHSCOPE_API_KEY"),
                         System.getenv("OPENAI_API_KEY"),
                         llmApiKey
                 ),
                 firstNonBlank(
                         System.getenv("PLOT_LLM_MODEL"),
+                        System.getenv("ARK_MODEL"),
                         System.getenv("DASHSCOPE_MODEL"),
                         System.getenv("OPENAI_MODEL"),
-                        "qwen-plus"
+                        llmModel
                 ),
                 Duration.ofMillis(Long.parseLong(plotTimeoutValue))
         );
@@ -174,5 +197,17 @@ class AppConfig {
             }
         }
         return trimmed;
+    }
+
+    private static boolean hasAny(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 }
