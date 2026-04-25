@@ -19,7 +19,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 final class Services {
     private Services() {
@@ -3742,21 +3741,6 @@ class ChatOrchestrator {
                 || tail.contains("好啊");
     }
 
-    private String mergeSceneText(String first, String second) {
-        String left = first == null ? "" : first.trim();
-        String right = second == null ? "" : second.trim();
-        if (left.isBlank()) {
-            return right;
-        }
-        if (right.isBlank() || left.contains(right)) {
-            return left;
-        }
-        if (right.contains(left)) {
-            return right;
-        }
-        return left + " " + right;
-    }
-
     private String selectSceneText(String plotSceneText, String llmSceneText, String speechText, String replySource) {
         String modelScene = llmSceneText == null ? "" : llmSceneText.trim();
         String directorScene = plotSceneText == null ? "" : plotSceneText.trim();
@@ -3764,34 +3748,6 @@ class ChatOrchestrator {
             return modelScene;
         }
         return directorScene;
-    }
-
-    private boolean speechAlreadyCarriesScene(String speechText, String sceneText, String replySource) {
-        if (speechText == null || speechText.isBlank() || sceneText == null || sceneText.isBlank()) {
-            return false;
-        }
-        String speech = normalizeSceneComparableText(speechText);
-        String scene = normalizeSceneComparableText(sceneText);
-        if (speech.contains(scene) || scene.contains(speech)) {
-            return true;
-        }
-        if (sceneSimilarity(speech, scene) >= 0.82) {
-            return true;
-        }
-        int overlap = 0;
-        List<String> cues = List.of(
-                "顺着", "往", "走", "过去", "路上", "外面", "门口", "操场", "宿舍", "图书馆",
-                "食堂", "热饮", "奶茶", "咖啡", "小道", "夕阳", "身影", "影子", "风", "场景", "气氛", "话题", "挪", "转"
-        );
-        for (String cue : cues) {
-            if (speech.contains(cue) && scene.contains(cue)) {
-                overlap++;
-            }
-        }
-        if ("plot_push".equals(replySource) && overlap >= 2) {
-            return true;
-        }
-        return overlap >= 3;
     }
 
     private String removeSceneTextFromSpeech(String speechText, String sceneText) {
@@ -4005,24 +3961,10 @@ class ChatOrchestrator {
     }
 
     private String buildChoiceReply(AgentProfile agent, StoryEvent event, ChoiceOption choice, RelationshipState state) {
-        if (agent != null) {
-            String cleanPrefix = switch (agent.id) {
-                case "healing" -> "她抬眼看向你，语气更轻了一点。";
-                case "lively" -> "她先是一怔，随后笑意慢慢亮了起来。";
-                case "cool" -> "他沉默了半拍，但没有把视线移开。";
-                case "artsy" -> "她像是把这句回应轻轻收进了晚风里。";
-                default -> "他把你的回应稳稳接住了。";
-            };
-            String cleanResultLine = switch (choice.outcomeType) {
-                case "success" -> "这次你给出的信号足够明确，关系明显往前走了一步。";
-                case "fail" -> "这次节奏有点错开了，气氛先慢了下来。";
-                default -> "这次气氛被维持住了，但还没到真正突破的时候。";
-            };
-            return cleanPrefix + " 在“" + event.title + "”这一刻，" + cleanResultLine + " " + state.relationshipFeedback;
-        }
-        String prefix = switch (agent.id) {
+        String agentId = agent == null ? "" : agent.id;
+        String prefix = switch (agentId) {
             case "healing" -> "她抬眼看向你，语气更轻了一点。";
-            case "lively" -> "她先是一怔，随后笑意慢慢亮起来。";
+            case "lively" -> "她先是一怔，随后笑意慢慢亮了起来。";
             case "cool" -> "他沉默了半拍，但没有把视线移开。";
             case "artsy" -> "她像是把这句回应轻轻收进了晚风里。";
             default -> "他把你的回应稳稳接住了。";

@@ -28,9 +28,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             this.speechText = speechText;
         }
 
-        ReplyParts(String replyText, String actionText, String speechText) {
-            this(replyText, "", actionText, speechText);
-        }
     }
 
     private final AppConfig config;
@@ -610,17 +607,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return "";
     }
 
-    private String buildSceneBridge(LlmRequest request) {
-        if (request.sceneFrame != null && !request.sceneFrame.isBlank()) {
-            return request.sceneFrame;
-        }
-        return buildLightSceneBridge(request);
-    }
-
-    private String buildLightSceneBridge(LlmRequest request) {
-        return conciseSceneHint(request);
-    }
-
     private boolean shouldCarryAfterQuestion(LlmRequest request) {
         String text = compact(request.userMessage);
         return text.contains("上次") || text.contains("记得") || text.contains("之前") || text.contains("答应");
@@ -867,55 +853,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return ACTION_OPEN + trimTrailingPunctuation(actionText) + "。" + ACTION_CLOSE;
     }
 
-    private ReplyParts shapeReply(String rawReply, String replySource) {
-        String normalized = condenseWhitespace(rawReply);
-        String actionText = "";
-        String speechText = normalized;
-
-        int openIndex = normalized.indexOf(ACTION_OPEN);
-        int closeIndex = normalized.indexOf(ACTION_CLOSE);
-        if (openIndex >= 0 && closeIndex > openIndex) {
-            actionText = normalized.substring(openIndex + ACTION_OPEN.length(), closeIndex).trim();
-            speechText = (normalized.substring(0, openIndex) + " " + normalized.substring(closeIndex + ACTION_CLOSE.length())).trim();
-        } else {
-            String[] heuristicSplit = heuristicSplit(normalized, replySource);
-            actionText = heuristicSplit[0];
-            speechText = heuristicSplit[1];
-        }
-
-        actionText = cleanActionText(actionText);
-        speechText = cleanSpeechText(speechText.isBlank() ? normalized : speechText);
-        String combined = actionText.isBlank() ? speechText : actionText + " " + speechText;
-        return new ReplyParts(combined.trim(), actionText, speechText);
-    }
-
-    private String[] heuristicSplit(String text, String replySource) {
-        if (text == null || text.isBlank()) {
-            return new String[] { "", "" };
-        }
-        String normalized = text.trim();
-        if (normalized.startsWith("（")) {
-            int end = normalized.indexOf("）");
-            if (end > 1 && end < Math.min(normalized.length() - 1, 40)) {
-                return new String[] {
-                        normalized.substring(1, end).trim(),
-                        normalized.substring(end + 1).trim()
-                };
-            }
-        }
-
-        int sentenceEnd = firstSentenceEnd(normalized);
-        if (sentenceEnd > 0 && sentenceEnd < normalized.length() - 1) {
-            String first = normalized.substring(0, sentenceEnd).trim();
-            String rest = normalized.substring(sentenceEnd).trim();
-            if (looksLikeActionLine(first, replySource)) {
-                return new String[] { first, rest };
-            }
-        }
-
-        return new String[] { "", normalized };
-    }
-
     private int firstSentenceEnd(String text) {
         for (int index = 0; index < text.length(); index++) {
             char current = text.charAt(index);
@@ -924,26 +861,6 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             }
         }
         return -1;
-    }
-
-    private boolean looksLikeActionLine(String text, String replySource) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String normalized = text.trim();
-        if ("plot_push".equals(replySource) && normalized.length() <= 38) {
-            return true;
-        }
-        String[] cues = {
-                "视线", "目光", "窗外", "雨", "风", "灯", "夜色", "杯沿", "靠窗", "走廊", "空气",
-                "安静", "停了停", "顿了顿", "轻声", "笑意", "语气", "发梢", "衣角", "手指", "指尖"
-        };
-        for (String cue : cues) {
-            if (normalized.contains(cue)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private String condenseWhitespace(String text) {

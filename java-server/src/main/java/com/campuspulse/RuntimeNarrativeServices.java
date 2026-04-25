@@ -6,12 +6,7 @@ import java.io.Serializable;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -2435,7 +2430,6 @@ class QuickJudgeService {
     private final String apiKey;
     private final String model;
     private final Duration timeout;
-    private final Path nodeBridgeScript;
     private final boolean forceAll;
     private final long resolveBudgetMs;
 
@@ -2443,7 +2437,6 @@ class QuickJudgeService {
         this.baseUrl = "";
         this.apiKey = "";
         this.model = DEFAULT_MODEL;
-        this.nodeBridgeScript = null;
         this.forceAll = envFlag("QUICK_JUDGE_FORCE_ALL");
         this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", 120L, 60L, 1000L);
         this.timeout = Duration.ofMillis(deriveTimeoutMs(2000L, resolveBudgetMs));
@@ -2453,7 +2446,6 @@ class QuickJudgeService {
         this.baseUrl = config == null ? "" : safe(config.plotLlmBaseUrl);
         this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
         this.model = config == null || safe(config.plotLlmModel).isBlank() ? DEFAULT_MODEL : safe(config.plotLlmModel);
-        this.nodeBridgeScript = config == null ? null : config.rootDir.resolve("scripts").resolve("plot-director-agent.mjs");
         this.forceAll = envFlag("QUICK_JUDGE_FORCE_ALL");
         this.resolveBudgetMs = envLong("QUICK_JUDGE_WAIT_MS", 120L, 60L, 1000L);
         long configuredTimeout = config == null || config.plotLlmTimeout == null ? 2000L : config.plotLlmTimeout.toMillis();
@@ -3032,14 +3024,12 @@ class PlotDirectorAgentService {
     private final String apiKey;
     private final String model;
     private final Duration timeout;
-    private final Path nodeBridgeScript;
 
     PlotDirectorAgentService() {
         this.baseUrl = "";
         this.apiKey = "";
         this.model = DEFAULT_PLOT_MODEL;
         this.timeout = Duration.ofMillis(12000);
-        this.nodeBridgeScript = null;
     }
 
     PlotDirectorAgentService(AppConfig config) {
@@ -3047,7 +3037,6 @@ class PlotDirectorAgentService {
         this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
         this.model = config == null || safe(config.plotLlmModel).isBlank() ? DEFAULT_PLOT_MODEL : safe(config.plotLlmModel);
         this.timeout = config == null || config.plotLlmTimeout == null ? Duration.ofMillis(12000) : config.plotLlmTimeout;
-        this.nodeBridgeScript = config == null ? null : config.rootDir.resolve("scripts").resolve("plot-director-agent.mjs");
     }
 
     PlotDirectorAgentDecision decide(
@@ -3781,13 +3770,6 @@ class PlotDirectorService {
         ));
     }
 
-    private boolean isExplicitSceneTransition(String userMessage) {
-        String text = userMessage == null ? "" : userMessage;
-        return containsAny(text, List.of(
-                "去操场", "去食堂", "去图书馆", "回宿舍", "送你回宿舍", "送她回宿舍",
-                "一起走", "路上", "出去走", "换个地方", "去外面", "到操场", "去市区"
-        ));
-    }
     private String phaseForBeat(int beatIndex) {
         if (beatIndex >= 9) return "收束";
         if (beatIndex >= 7) return "波动";
@@ -4064,20 +4046,6 @@ class SceneDirectorService {
         }
         return "";
     }
-    private String detectLocation(String text, String fallback) {
-        String compact = compact(text);
-        if (containsAny(compact, List.of("聊天框", "发消息", "回消息", "手机上", "屏幕那头"))) return "线上聊天";
-        if (containsAny(compact, List.of("打电话", "通话", "电话里"))) return "电话里";
-        if (containsAny(compact, List.of("到宿舍了", "宿舍楼下", "回到宿舍", "宿舍门口"))) return "宿舍";
-        if (containsAny(compact, List.of("路上", "送你回", "送她回", "一起走", "并肩走", "回去的路上"))) return "回去的路上";
-        if (isAnchoredLocation(compact, List.of("图书馆", "自习室", "阅览室"))) return "图书馆";
-        if (isAnchoredLocation(compact, List.of("食堂", "打饭", "饭桌"))) return "食堂";
-        if (isAnchoredLocation(compact, List.of("操场", "夜跑", "跑道", "看台"))) return "操场";
-        if (isAnchoredLocation(compact, List.of("市区", "校外", "出校"))) return "市区";
-        if (isAnchoredLocation(compact, List.of("宿舍", "回宿舍"))) return "宿舍";
-        return fallback == null || fallback.isBlank() ? "聊天现场" : fallback;
-    }
-
     private String detectSubLocation(String text) {
         String compact = compact(text);
         if (containsAny(compact, List.of("窗边", "靠窗"))) return "窗边";
@@ -4136,12 +4104,6 @@ class SceneDirectorService {
             }
         }
         return false;
-    }
-
-    private boolean isAnchoredLocation(String compact, List<String> locationKeywords) {
-        boolean mentionsLocation = containsAny(compact, locationKeywords);
-        boolean hasAnchor = containsAny(compact, List.of("去", "到", "在", "回", "进", "出", "路过", "门口", "楼下", "里", "边", "旁"));
-        return mentionsLocation && hasAnchor;
     }
 
     private SceneState cloneState(SceneState current) {
