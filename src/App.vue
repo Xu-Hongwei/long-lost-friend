@@ -146,6 +146,7 @@ onMounted(async () => {
             @choose="sessionStore.submitChoice"
             @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
             @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
+            @export-debug-data="sessionStore.exportDebugData"
             @toggleDrawer="uiStore.toggleDrawer"
           />
         </div>

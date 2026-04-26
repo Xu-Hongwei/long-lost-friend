@@ -42,6 +42,7 @@ public class CampusPulseServer {
                 safetyService,
                 analyticsService,
                 new QuickJudgeService(config),
+                new RelationshipCalibrationService(config),
                 new PlotDirectorAgentService(config)
         );
     }
@@ -189,6 +190,10 @@ public class CampusPulseServer {
 
         if ("GET".equals(request.method) && "/api/session/state".equals(request.path)) {
             return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.getSessionState(request.query.get("session_id"))));
+        }
+
+        if ("GET".equals(request.method) && "/api/session/export".equals(request.path)) {
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.exportSessionDebugData(request.query.get("session_id"))));
         }
 
         if ("GET".equals(request.method) && "/api/analytics/overview".equals(request.path)) {

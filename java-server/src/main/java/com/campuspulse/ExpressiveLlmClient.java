@@ -389,13 +389,16 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "；候选记忆=" + (request.memoryUsePlan.selectedMemories.isEmpty() ? "无" : String.join(" | ", request.memoryUsePlan.selectedMemories));
 
         String continuityText = buildContinuityText(request.dialogueContinuityState);
+        String turnContextText = buildTurnContextText(request.turnContext);
         String backstoryText = buildBackstoryText(request.agent);
+        String voiceProfileText = buildVoiceProfileText(request.agent);
         String structuredSceneRule = buildStructuredSceneRule(request);
         String repairCueText = buildRepairCueText(request.pendingRepairCue);
 
         return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
                 + "角色性别与代词：" + request.agent.gender + "，第三人称统一使用“" + request.agent.subjectPronoun + "”。\n"
                 + "说话风格：" + request.agent.speechStyle + "\n"
+                + "角色声音画像：" + voiceProfileText + "\n"
                 + "角色具体背景：" + backstoryText + "\n"
                 + "喜欢：" + String.join("、", request.agent.likes) + "\n"
                 + "雷点：" + String.join("、", request.agent.dislikes) + "\n"
@@ -414,6 +417,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "高相关记忆：" + recallText + "\n"
                 + "记忆使用计划：" + memoryPlanText + "\n"
                 + "上下文智能层：" + continuityText + "\n"
+                + "\u672c\u8f6e\u7ed3\u6784\u5316\u7406\u89e3\uff1a" + turnContextText + "\n"
                 + repairCueText
                 + "当前事件：" + eventText + "\n"
                 + "本轮回应策略：" + blankTo(request.responseDirective, "保持角色一致，顺着当前聊天自然展开。") + "\n"
@@ -436,12 +440,29 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "15. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
     }
 
+    private String buildVoiceProfileText(AgentProfile agent) {
+        if (agent == null || agent.voiceProfile == null) {
+            return "暂无更具体声音画像。";
+        }
+        AgentVoiceProfile voice = agent.voiceProfile;
+        List<String> parts = new ArrayList<>();
+        parts.add("句式节奏=" + blankTo(voice.sentenceRhythm, "未设定"));
+        parts.add("常用开场=" + joinOrEmpty(voice.openings));
+        parts.add("表达动作=" + joinOrEmpty(voice.signatureMoves));
+        parts.add("避免口吻=" + joinOrEmpty(voice.avoid));
+        parts.add("参考短句=" + joinOrEmpty(voice.sampleLines));
+        return String.join("；", parts);
+    }
+
     private String buildStructuredSceneRule(LlmRequest request) {
         if (request == null) {
             return "";
         }
         boolean hasDirectorScene = request.sceneFrame != null && !request.sceneFrame.isBlank();
         boolean transitionNeeded = request.dialogueContinuityState != null && request.dialogueContinuityState.sceneTransitionNeeded;
+        if (shouldSuppressSceneTransitionByTurnContext(request)) {
+            return "\u672c\u8f6e\u573a\u666f\u7ed3\u6784\u8981\u6c42\uff1a\u7ed3\u6784\u5316\u7406\u89e3\u5224\u5b9a\u6ca1\u6709\u771f\u5b9e\u4f4d\u7f6e\u8f6c\u79fb\uff0c\u4e0d\u8981\u8f93\u51fa [[SCENE]]...[[/SCENE]]\uff1b\u6b63\u6587\u53ea\u627f\u63a5\u7528\u6237\u5f53\u524d\u8bdd\u9898\u3001\u95ee\u9898\u6216\u60c5\u7eea\u3002\n";
+        }
         if (!transitionNeeded) {
             return "";
         }
@@ -463,6 +484,46 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 + "\u4fee\u6b63\u63d0\u793a\uff1a" + cue.instruction
                 + "\uff08type=" + blankTo(cue.type, "repair")
                 + ", confidence=" + cue.confidence + "\uff09\n";
+    }
+
+    private String buildTurnContextText(TurnContext context) {
+        if (context == null) {
+            return "\u6682\u65e0\u672c\u8f6e\u7ed3\u6784\u5316\u7406\u89e3\u3002";
+        }
+        List<String> parts = new ArrayList<>();
+        parts.add("userReplyAct=" + blankTo(context.userReplyAct, "none") + "(" + context.userReplyActConfidence + ")");
+        parts.add("sceneMoveKind=" + blankTo(context.sceneMoveKind, "no_change")
+                + (blankTo(context.sceneMoveTarget, "").isBlank() ? "" : "->" + context.sceneMoveTarget)
+                + "(" + context.sceneMoveConfidence + ")");
+        parts.add("quickJudgeTier=" + blankTo(context.recommendedQuickJudgeTier, "skip"));
+        parts.add("assistantObligation=" + summarizeAssistantObligation(context.assistantObligation));
+        parts.add("localConflicts=" + summarizeLocalConflicts(context.localConflicts));
+        return String.join("; ", parts);
+    }
+
+    private String summarizeAssistantObligation(AssistantObligation obligation) {
+        if (obligation == null || blankTo(obligation.type, "").isBlank()) {
+            return "none";
+        }
+        return blankTo(obligation.type, "none")
+                + "/priority=" + obligation.priority
+                + (blankTo(obligation.reason, "").isBlank() ? "" : "/reason=" + obligation.reason);
+    }
+
+    private String summarizeLocalConflicts(List<LocalConflict> conflicts) {
+        if (conflicts == null || conflicts.isEmpty()) {
+            return "none";
+        }
+        List<String> parts = new ArrayList<>();
+        for (LocalConflict conflict : conflicts) {
+            if (conflict == null || blankTo(conflict.type, "").isBlank()) {
+                continue;
+            }
+            parts.add(blankTo(conflict.type, "conflict")
+                    + ":" + blankTo(conflict.severity, "medium")
+                    + "->" + blankTo(conflict.recommendedAction, "repair"));
+        }
+        return parts.isEmpty() ? "none" : String.join("|", parts);
     }
 
     private String buildBackstoryText(AgentProfile agent) {
@@ -599,6 +660,9 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         if (request == null) {
             return "";
         }
+        if (shouldSuppressSceneTransitionByTurnContext(request)) {
+            return "";
+        }
         if (request.dialogueContinuityState != null
                 && request.dialogueContinuityState.sceneTransitionNeeded
                 && request.dialogueContinuityState.currentObjective != null
@@ -617,6 +681,36 @@ class ExpressiveLlmClient extends CompositeLlmClient {
             return conciseSceneHint(request);
         }
         return "";
+    }
+
+    private boolean shouldSuppressSceneTransitionByTurnContext(LlmRequest request) {
+        if (request == null || request.turnContext == null) {
+            return false;
+        }
+        TurnContext context = request.turnContext;
+        String moveKind = blankTo(context.sceneMoveKind, "");
+        if (isNonMovingSceneKind(moveKind)) {
+            return true;
+        }
+        if (context.localConflicts == null) {
+            return false;
+        }
+        for (LocalConflict conflict : context.localConflicts) {
+            String type = conflict == null ? "" : blankTo(conflict.type, "");
+            if ("scene_target_already_current".equals(type)
+                    || "user_cancels_active_objective".equals(type)
+                    || "scene_topic_not_move".equals(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isNonMovingSceneKind(String moveKind) {
+        return "topic_only".equals(moveKind)
+                || "stay".equals(moveKind)
+                || "cancel_move".equals(moveKind)
+                || "arrived".equals(moveKind);
     }
 
     private boolean shouldCarryAfterQuestion(LlmRequest request) {

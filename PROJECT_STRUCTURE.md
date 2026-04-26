@@ -111,7 +111,7 @@ C:\Users\Administrator\Desktop\chat
 - `src/components/MessageStack.vue`
   - 消息渲染层。
   - `sceneText` 作为场景气泡展示。
-  - `actionText` 已融合进对话气泡正文，不再单独展示动作气泡。
+  - `actionText` 已融合进对话气泡正文，不再单独展示动作气泡；后端仍兼容解析 `[[ACTION]]...[[/ACTION]]`，但提示词不再鼓励单独动作块。
   - `speechText` / `text` 是角色或用户真正说的话。
 
 - `src/components/ComposerBar.vue`
@@ -222,6 +222,7 @@ java-server/src/main/java/com/campuspulse/
 - `POST /api/visitor/context`
 - `POST /api/session/start`
 - `GET /api/session/state`
+- `GET /api/session/export`
 - `POST /api/chat/send`
 - `POST /api/session/presence`
 - `POST /api/session/checkpoint`
@@ -297,7 +298,8 @@ java-server/src/main/java/com/campuspulse/
 
 - 组装角色、关系、记忆、剧情、场景、Quick Judge 修正、时间天气等上下文。
 - 调用远程模型或本地 mock。
-- 解析 `[[SCENE]]...[[/SCENE]]`、`[[ACTION]]...[[/ACTION]]` 和正文。
+- 解析 `[[SCENE]]...[[/SCENE]]`、兼容解析 `[[ACTION]]...[[/ACTION]]` 和正文。
+- 当前推荐只把纯场景转移放入 `[[SCENE]]`；角色动作应自然融合进正文，不再作为单独动作气泡展示。
 - 屏蔽内部模块名，避免回复里出现 `QuickJudge`、`意图修正`、系统提示词等内部实现。
 - 清洗重复句、重复场景、过度旁白和明显不自然表达。
 
@@ -360,12 +362,20 @@ java-server/src/test/java/com/campuspulse/
 - `ExpressiveLlmClient` 最后收口，拿已经收敛过的状态生成自然语言。
 - 晚到的 Quick Judge 结果进入 `pendingQuickJudgeCorrection`，下一轮由主回复自然承接，不暴露内部模块名。
 
+关系评分协作：
+
+- `NarrativeRelationshipService` 每轮做本地即时评分，并输出 `scoreReasons`、`behaviorTags` 和 `riskFlags`。
+- 本地评分先抽取 `UserRelationalAct`，再统一折算关系分，避免评分逻辑散落在零散关键词判断里。
+- `RelationshipCalibrationService` 每 4 个用户回合异步调用一次 LLM 做保守复盘。
+- 异步评分不阻塞当前轮，晚到结果写入 `pendingRelationshipCalibration`。
+- 下一轮本地评分完成后最多小幅融合校准，总修正约束在 `±2` 内。
+
 ## 8. Quick Judge 配置
 
 前端非沉浸模式中可以调 Quick Judge：
 
 - `off`：关闭远程轻判断。
-- `smart`：默认模式，只在模糊/高价值轮尝试远程修正。
+- `smart`：默认模式，包含模糊/高价值轮机会型修正、用户纠错短等、每 4 轮后台巡检。
 - `always`：每轮都尝试远程修正，适合调试或压测。
 
 等待时间：
@@ -373,7 +383,10 @@ java-server/src/test/java/com/campuspulse/
 - 前端以秒为单位设置。
 - 当前前端限制为 `0.06s` 到 `5s`。
 - 默认值为 `0.3s`。
-- 后端会把该值转换为毫秒，并在主回复请求前作为最多额外等待窗口。
+- 后端会把该值转换为毫秒，并按触发等级作为最多额外等待窗口。
+- `urgent` 和 `opportunistic` 共享前端设置的等待时间，方便在“速度优先”和“修正优先”之间手动切换。
+- `background` 仍然不等待，只把晚到结果写入下一轮修正槽。
+- 前端 Quick Judge 面板会展示 `triggerScore`、`triggerReasons` 和 `suppressedReasons`，用于解释本地规则为什么启动或跳过。
 
 环境变量：
 
@@ -406,6 +419,9 @@ POST /api/session/presence
 
 - 先融合晚到 Quick Judge 修正。
 - 再进行本地连续性和意图收敛。
+- 同时复盘上一轮用户消息和角色自己上一句回复。
+- 如果角色上一句已经承接或执行了计划，心跳只顺着已发生动作轻轻续上，不重新问同一件事。
+- 重建心跳 `TurnContext` 时会继承上一轮剧情信号，避免长聊心跳让前端调试面板的本轮信号、剧情蓄力和剧情间隔意外归零。
 - 控制心跳触发频率，避免频繁打扰。
 - 生成更短、更贴近当前关系和上下文的主动陪伴回复。
 
@@ -519,3 +535,6 @@ npm run build:web
 - Quick Judge 面板是否能切换模式和等待时间。
 - `sceneText` 是否只承载场景转移，不和主回复重复。
 - `actionText` 是否融合进对话气泡正文。
+- 调试导出按钮是否能导出 `latestSignals`、`turnTimeline` 和最新会话状态。
+
+详细评分规则见 [SCORING_RULES.md](SCORING_RULES.md)。

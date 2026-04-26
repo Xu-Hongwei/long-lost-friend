@@ -83,6 +83,9 @@ const plotRows = computed(() => [
   ["\u5267\u60c5\u72b6\u6001", valueOrEmpty(props.plotArcState?.runStatus)],
   ["\u5267\u60c5\u52a8\u4f5c", valueOrEmpty(props.turnContext?.plotDirectorAction)],
   ["\u5267\u60c5\u7f6e\u4fe1\u5ea6", valueOrEmpty(props.turnContext?.plotDirectorConfidence)],
+  ["\u672c\u8f6e\u4fe1\u53f7", valueOrEmpty(props.turnContext?.plotSignal)],
+  ["\u5267\u60c5\u84c4\u529b", valueOrEmpty(props.turnContext?.plotPressure)],
+  ["\u4fe1\u53f7\u62c6\u5206", `scene ${props.turnContext?.plotSceneSignal ?? 0} / relation ${props.turnContext?.plotRelationshipSignal ?? 0} / event ${props.turnContext?.plotEventSignal ?? 0} / continuity ${props.turnContext?.plotContinuitySignal ?? 0} / risk ${props.turnContext?.plotRiskSignal ?? 0}`],
   ["\u95e8\u63a7\u539f\u56e0", valueOrEmpty(props.plotGate?.triggerReason || props.plotGate?.blockedReason)],
   ["\u4e0b\u4e00\u65b9\u5411", valueOrEmpty(props.plot?.nextExpectedDirection || props.plotState?.nextBeatHint)],
   ["\u63a8\u8fdb\u98ce\u9669", valueOrEmpty(props.turnContext?.plotRiskIfAdvance)],
@@ -119,6 +122,7 @@ const runtimeRows = computed(() => [
   ["\u9996\u4e2a\u52a8\u4f5c", valueOrEmpty(props.responsePlan?.firstMove)],
   ["\u4e3b\u52a8\u7a0b\u5ea6", valueOrEmpty(props.responsePlan?.initiativeLevel)],
   ["\u672c\u8f6e\u597d\u611f delta", valueOrEmpty(props.turnContext?.affectionDeltaTotal)],
+  ["\u8bc4\u5206\u539f\u56e0", joinList(props.turnContext?.scoreReasons)],
   ["\u884c\u4e3a\u6807\u7b7e", joinList(props.turnContext?.behaviorTags)],
   ["\u98ce\u9669\u6807\u7b7e", joinList(props.turnContext?.riskFlags)]
 ]);

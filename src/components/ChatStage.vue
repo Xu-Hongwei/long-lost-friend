@@ -8,7 +8,7 @@ import { formatDateTime, getEndingCandidateLabel, getOnlineLabel } from "../lib/
 
 type QuickJudgeMode = "off" | "smart" | "always";
 const quickJudgeModes: Array<{ value: QuickJudgeMode; label: string }> = [
-  { value: "smart", label: "高价值轮" },
+  { value: "smart", label: "智能巡检" },
   { value: "always", label: "每轮" },
   { value: "off", label: "关闭" }
 ];
@@ -32,6 +32,7 @@ const emits = defineEmits<{
   choose: [choiceId: string];
   setQuickJudgeMode: [mode: QuickJudgeMode];
   setQuickJudgeWaitSeconds: [value: number];
+  exportDebugData: [];
   toggleDrawer: [drawer: "relationship" | "memory" | "plot" | "analytics"];
 }>();
 
@@ -230,14 +231,25 @@ function interactionModeLabel(mode?: string) {
       </section>
 
       <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
-        <p class="tracking-[0.28em] text-[0.68rem] text-white/45">本轮决策链路</p>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/45">本轮决策链路</p>
+          <button
+            type="button"
+            class="rounded-full border border-white/10 bg-black/16 px-3 py-1.5 text-xs text-white/62 transition hover:border-white/20 hover:bg-white/8 hover:text-white"
+            :disabled="!session"
+            @click="emits('exportDebugData')"
+          >
+            导出调试数据
+          </button>
+        </div>
         <div class="mt-4 space-y-2 text-sm text-white/64">
           <div class="flex justify-between gap-4"><span class="text-white/42">主意图</span><span>{{ session?.lastIntentState?.primaryIntent || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">回复任务</span><span>{{ session?.lastResponsePlan?.coreTask || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">主动程度</span><span>{{ session?.lastResponsePlan?.initiativeLevel || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">好感变化</span><span>{{ session?.lastTurnContext?.affectionDeltaTotal ?? 0 }}</span></div>
-          <div class="flex justify-between gap-4"><span class="text-white/42">场景移动意图</span><span>{{ session?.lastTurnContext?.sceneMoveIntent || "暂无" }}</span></div>
-          <div class="flex justify-between gap-4"><span class="text-white/42">剧情信号</span><span>{{ session?.lastTurnContext?.plotSignal ?? 0 }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">场景移动意图</span><span>{{ session?.lastTurnContext?.sceneMoveKind || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">本轮信号</span><span>{{ session?.lastTurnContext?.plotSignal ?? 0 }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">剧情蓄力</span><span>{{ session?.lastTurnContext?.plotPressure ?? session?.plotArcState?.plotPressure ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情间隔</span><span>{{ session?.lastTurnContext?.plotGap ?? 0 }}</span></div>
         </div>
       </section>
@@ -262,7 +274,7 @@ function interactionModeLabel(mode?: string) {
         </div>
         <p class="mt-3 text-xs leading-5 text-white/46">
           {{ quickJudgeMode === "always" ? "每次回复都尝试远程修正，效果更稳，但可能增加等待；晚到结果会并入下一轮。"
-            : quickJudgeMode === "smart" ? "只在意图模糊、剧情关键或用户追问时启动远程修正；如果晚到，会并入下一轮。"
+            : quickJudgeMode === "smart" ? "模糊/高价值轮会机会型启动；用户纠错会按下方时间等待；每 4 轮会后台巡检一次且不阻塞，晚到并入下一轮。"
               : "远程轻判断已关闭；系统仍会保留本地修正和事实承接。" }}
         </p>
         <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 p-3">
@@ -301,6 +313,9 @@ function interactionModeLabel(mode?: string) {
           <div class="flex justify-between gap-4"><span class="text-white/42">修正主意图</span><span>{{ session?.lastQuickJudgeStatus?.primaryIntent || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">情绪覆盖</span><span>{{ session?.lastQuickJudgeStatus?.emotion || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">共享目标</span><span>{{ session?.lastQuickJudgeStatus?.sharedObjective || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">本地分数</span><span>{{ session?.lastQuickJudgeStatus?.triggerScore ?? 0 }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">触发原因</span><span class="text-right">{{ session?.lastQuickJudgeStatus?.triggerReasons?.join(" · ") || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">抑制原因</span><span class="text-right">{{ session?.lastQuickJudgeStatus?.suppressedReasons?.join(" · ") || "暂无" }}</span></div>
         </div>
         <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 px-4 py-3 text-sm leading-6 text-white/62">
           {{ session?.lastQuickJudgeStatus?.nextBestMove || session?.lastQuickJudgeStatus?.reason || "当前这一轮没有额外的轻判断修正。" }}

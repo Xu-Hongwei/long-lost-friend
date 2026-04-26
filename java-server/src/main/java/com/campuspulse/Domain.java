@@ -445,6 +445,7 @@ class AgentProfile implements Serializable {
     final List<String> styleTags;
     final List<String> moodPalette;
     final AgentBackstory backstory;
+    final AgentVoiceProfile voiceProfile;
 
     AgentProfile(
             String id,
@@ -515,7 +516,8 @@ class AgentProfile implements Serializable {
                 openingLine,
                 storyEvents,
                 visualProfile,
-                AgentBackstory.forAgent(id)
+                AgentBackstory.forAgent(id),
+                AgentVoiceProfile.forAgent(id)
         );
     }
 
@@ -536,6 +538,46 @@ class AgentProfile implements Serializable {
             List<StoryEvent> storyEvents,
             AgentVisualProfile visualProfile,
             AgentBackstory backstory
+    ) {
+        this(
+                id,
+                name,
+                archetype,
+                tagline,
+                palette,
+                avatarGlyph,
+                bio,
+                speechStyle,
+                likes,
+                dislikes,
+                relationshipRules,
+                boundaries,
+                openingLine,
+                storyEvents,
+                visualProfile,
+                backstory,
+                AgentVoiceProfile.forAgent(id)
+        );
+    }
+
+    AgentProfile(
+            String id,
+            String name,
+            String archetype,
+            String tagline,
+            List<String> palette,
+            String avatarGlyph,
+            String bio,
+            String speechStyle,
+            List<String> likes,
+            List<String> dislikes,
+            String relationshipRules,
+            List<String> boundaries,
+            String openingLine,
+            List<StoryEvent> storyEvents,
+            AgentVisualProfile visualProfile,
+            AgentBackstory backstory,
+            AgentVoiceProfile voiceProfile
     ) {
         this.id = id;
         this.name = name;
@@ -560,6 +602,76 @@ class AgentProfile implements Serializable {
         this.styleTags = visualProfile.styleTags;
         this.moodPalette = visualProfile.moodPalette;
         this.backstory = backstory;
+        this.voiceProfile = voiceProfile;
+    }
+}
+
+class AgentVoiceProfile implements Serializable {
+    final String sentenceRhythm;
+    final List<String> openings;
+    final List<String> signatureMoves;
+    final List<String> avoid;
+    final List<String> sampleLines;
+
+    AgentVoiceProfile(
+            String sentenceRhythm,
+            List<String> openings,
+            List<String> signatureMoves,
+            List<String> avoid,
+            List<String> sampleLines
+    ) {
+        this.sentenceRhythm = sentenceRhythm;
+        this.openings = openings;
+        this.signatureMoves = signatureMoves == null ? List.of() : signatureMoves;
+        this.avoid = avoid;
+        this.sampleLines = sampleLines;
+    }
+
+    static AgentVoiceProfile forAgent(String agentId) {
+        return switch (agentId) {
+            case "healing" -> new AgentVoiceProfile(
+                    "短中句为主，语气放慢，常用轻缓承接；可以有一点停顿感，但不要软到没有主见。",
+                    List.of("嗯，我听着。", "先别急。", "可以慢慢说。"),
+                    List.of("先安顿情绪再回答", "用具体小照顾表达在意", "把问题轻轻拆小"),
+                    List.of("过度俏皮", "强势命令", "连续反问", "像心理咨询师一样说教"),
+                    List.of("嗯，我听懂了。你不是想被劝快一点，只是想有人先陪你把这口气缓下来。", "那我们先不急着决定，先把你最在意的那一点说清楚。")
+            );
+            case "lively" -> new AgentVoiceProfile(
+                    "节奏快，句子更亮，有俏皮转折；可以用轻松玩笑开场，但关键处要突然认真。",
+                    List.of("欸，等一下。", "这个我可要认真听。", "好，这题我来接。"),
+                    List.of("用接梗拉近距离", "把沉闷话题变轻一点", "先热闹再认真落点"),
+                    List.of("长期低气压", "太端庄", "大段抒情", "过度温柔慢语速"),
+                    List.of("好，这个问题我先举手抢答。你不是麻烦，你只是刚好需要一个很会接球的人。", "行，那今天先不当懂事大人，先当五分钟被偏爱的人。")
+            );
+            case "cool" -> new AgentVoiceProfile(
+                    "短句、克制、少形容词；不急着热情，但回答要准，关键句可以直接认真。",
+                    List.of("嗯。", "我知道。", "可以。", "说重点。"),
+                    List.of("用行动感代替甜言蜜语", "先确认事实再给态度", "少问废话"),
+                    List.of("油腻调情", "夸张撒娇", "连续感叹号", "大段诗性旁白"),
+                    List.of("嗯，我听出来了。你不是要一个热闹答案，是要一个不会敷衍你的人。", "可以，我陪你去。但路上别硬撑，有事直接说。")
+            );
+            case "artsy" -> new AgentVoiceProfile(
+                    "句子有画面感，但要克制；允许隐喻和留白，最后必须落回现实回应。",
+                    List.of("我突然想到一个画面。", "这句话有点像傍晚。", "我懂你的意思。"),
+                    List.of("用画面或比喻承接情绪", "把抽象感受落成一句现实态度", "少量留白"),
+                    List.of("鸡汤口吻", "过度直白热血", "网络梗", "堆砌华丽形容词"),
+                    List.of("这句话像光线突然暗了一点。不是坏事，只是提醒我们该认真看清彼此。", "如果你愿意，我想把这个瞬间留久一点，不只是说说而已。")
+            );
+            case "sunny" -> new AgentVoiceProfile(
+                    "明亮直接，句子干净，有行动感；少绕弯，鼓励要落到具体下一步。",
+                    List.of("走，先别自己扛。", "行，我懂。", "那我们换个办法。"),
+                    List.of("给出具体行动建议", "用陪伴和执行力表达关心", "把低气压往前带一步"),
+                    List.of("虚浮抒情", "拖泥带水", "过度神秘", "只安慰不行动"),
+                    List.of("行，那我们先把事情拆小。你负责说，我负责陪你把第一步走出去。", "别硬撑。想休息就休息，想往前走我也陪你。")
+            );
+            default -> new AgentVoiceProfile(
+                    "自然、简洁、贴近当前对话。",
+                    List.of("嗯。"),
+                    List.of("顺着用户当前意图接话"),
+                    List.of("系统腔", "长篇说教"),
+                    List.of("我听到了，我们先从这句话开始。")
+            );
+        };
     }
 }
 
@@ -946,26 +1058,78 @@ class TurnContext implements Serializable {
     int closenessDelta;
     int trustDelta;
     int resonanceDelta;
+    List<String> scoreReasons = new ArrayList<>();
     List<String> behaviorTags = new ArrayList<>();
     List<String> riskFlags = new ArrayList<>();
     String sceneLocation;
     String interactionMode;
     int plotGap;
     int plotSignal;
+    int plotPressure;
+    int plotSceneSignal;
+    int plotRelationshipSignal;
+    int plotEventSignal;
+    int plotContinuitySignal;
+    int plotRiskSignal;
     String plotDirectorAction;
     String plotWhyNow;
     int plotDirectorConfidence;
     String plotRiskIfAdvance;
     String requiredUserSignal;
-    String sceneMoveIntent;
+    String sceneMoveKind;
     String sceneMoveTarget;
     String sceneMoveReason;
     int sceneMoveConfidence;
+    String userReplyAct;
+    int userReplyActConfidence;
+    AssistantObligation assistantObligation;
+    String recommendedQuickJudgeTier;
+    boolean shouldAskQuickJudge;
+    List<UserReplyActCandidate> userReplyActCandidates = new ArrayList<>();
+    List<LocalConflict> localConflicts = new ArrayList<>();
     String continuityObjective;
     String continuityAcceptedPlan;
     String continuityNextBestMove;
     boolean sceneTransitionNeeded;
     List<String> continuityGuards = new ArrayList<>();
+    String updatedAt;
+}
+
+class UserReplyActCandidate implements Serializable {
+    String act;
+    int score;
+    int confidence;
+    List<String> evidence = new ArrayList<>();
+}
+
+class AssistantObligation implements Serializable {
+    String type;
+    String source;
+    int priority;
+    List<String> expectedUserActs = new ArrayList<>();
+    String reason;
+}
+
+class LocalConflict implements Serializable {
+    String type;
+    String severity;
+    String sourceA;
+    String sourceB;
+    String recommendedAction;
+}
+
+class TurnUnderstandingState implements Serializable {
+    String primaryAct;
+    int confidence;
+    List<UserReplyActCandidate> candidates = new ArrayList<>();
+    List<LocalConflict> localConflicts = new ArrayList<>();
+    AssistantObligation assistantObligation;
+    String recommendedQuickJudgeTier;
+    boolean shouldAskQuickJudge;
+    String sceneMoveKind;
+    String sceneMoveTarget;
+    String sceneMoveReason;
+    int sceneMoveConfidence;
     String updatedAt;
 }
 
@@ -995,6 +1159,9 @@ class QuickJudgeStatus implements Serializable {
     String sharedObjective;
     String nextBestMove;
     String replyPriority;
+    int triggerScore;
+    List<String> triggerReasons = new ArrayList<>();
+    List<String> suppressedReasons = new ArrayList<>();
     String updatedAt;
 }
 
@@ -1003,6 +1170,28 @@ class PendingRepairCue implements Serializable {
     String instruction;
     int confidence;
     String createdAt;
+}
+
+class RelationshipScoreCalibration implements Serializable {
+    boolean used;
+    int closenessDelta;
+    int trustDelta;
+    int resonanceDelta;
+    int confidence;
+    String reason;
+    String createdAt;
+    int sourceTurn;
+
+    static RelationshipScoreCalibration none(String reason) {
+        RelationshipScoreCalibration calibration = new RelationshipScoreCalibration();
+        calibration.used = false;
+        calibration.reason = reason == null ? "" : reason;
+        return calibration;
+    }
+
+    boolean shouldApply() {
+        return used && confidence >= 70 && (closenessDelta != 0 || trustDelta != 0 || resonanceDelta != 0);
+    }
 }
 
 class SceneConsistencyAudit implements Serializable {
@@ -1089,6 +1278,7 @@ class PlotArcState implements Serializable {
     List<String> openThreads = new ArrayList<>();
     int lastPlotTurn;
     int forcePlotAtTurn;
+    int plotPressure;
     String plotProgress;
     String nextBeatHint;
     boolean checkpointReady;
@@ -1132,6 +1322,8 @@ class SessionRecord implements Serializable {
     QuickJudgeDecision pendingQuickJudgeCorrection;
     String pendingQuickJudgeCorrectionAt;
     PendingRepairCue pendingRepairCue;
+    RelationshipScoreCalibration pendingRelationshipCalibration;
+    String pendingRelationshipCalibrationAt;
 }
 
 class AnalyticsEvent implements Serializable {
@@ -1162,12 +1354,13 @@ class TurnEvaluation {
     final Delta affectionDelta;
     final List<String> behaviorTags;
     final List<String> riskFlags;
+    final List<String> scoreReasons;
     final boolean stageChanged;
     final String stageProgress;
     final String relationshipFeedback;
 
     TurnEvaluation(RelationshipState nextState, Delta affectionDelta) {
-        this(nextState, affectionDelta, List.of(), List.of(), false, "", "");
+        this(nextState, affectionDelta, List.of(), List.of(), false, "", "", List.of());
     }
 
     TurnEvaluation(
@@ -1179,6 +1372,19 @@ class TurnEvaluation {
             String stageProgress,
             String relationshipFeedback
     ) {
+        this(nextState, affectionDelta, behaviorTags, riskFlags, stageChanged, stageProgress, relationshipFeedback, List.of());
+    }
+
+    TurnEvaluation(
+            RelationshipState nextState,
+            Delta affectionDelta,
+            List<String> behaviorTags,
+            List<String> riskFlags,
+            boolean stageChanged,
+            String stageProgress,
+            String relationshipFeedback,
+            List<String> scoreReasons
+    ) {
         this.nextState = nextState;
         this.affectionDelta = affectionDelta;
         this.behaviorTags = behaviorTags;
@@ -1186,6 +1392,7 @@ class TurnEvaluation {
         this.stageChanged = stageChanged;
         this.stageProgress = stageProgress;
         this.relationshipFeedback = relationshipFeedback;
+        this.scoreReasons = scoreReasons;
     }
 }
 
@@ -1251,6 +1458,7 @@ class LlmRequest {
     final PlotGateDecision plotGateDecision;
     final DialogueContinuityState dialogueContinuityState;
     final PendingRepairCue pendingRepairCue;
+    final TurnContext turnContext;
 
     LlmRequest(
             AgentProfile agent,
@@ -1313,6 +1521,7 @@ class LlmRequest {
                 tensionState,
                 plotGateDecision,
                 dialogueContinuityState,
+                null,
                 null
         );
     }
@@ -1349,6 +1558,74 @@ class LlmRequest {
             DialogueContinuityState dialogueContinuityState,
             PendingRepairCue pendingRepairCue
     ) {
+        this(
+                agent,
+                relationshipState,
+                shortTermContext,
+                longTermSummary,
+                recalledMemoryTier,
+                recalledMemoryText,
+                currentUserMood,
+                responseCadence,
+                responseDirective,
+                event,
+                userMessage,
+                timeContext,
+                weatherContext,
+                sceneFrame,
+                sceneState,
+                memoryUsePlan,
+                emotionState,
+                replySource,
+                temperamentProfile,
+                searchContext,
+                intentState,
+                responsePlan,
+                uncertaintyState,
+                initiativeDecision,
+                memoryIntentBindings,
+                realityEnvelope,
+                tensionState,
+                plotGateDecision,
+                dialogueContinuityState,
+                pendingRepairCue,
+                null
+        );
+    }
+
+    LlmRequest(
+            AgentProfile agent,
+            RelationshipState relationshipState,
+            List<ConversationSnippet> shortTermContext,
+            String longTermSummary,
+            String recalledMemoryTier,
+            String recalledMemoryText,
+            String currentUserMood,
+            String responseCadence,
+            String responseDirective,
+            StoryEvent event,
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String sceneFrame,
+            SceneState sceneState,
+            MemoryUsePlan memoryUsePlan,
+            EmotionState emotionState,
+            String replySource,
+            TemperamentProfile temperamentProfile,
+            String searchContext,
+            IntentState intentState,
+            ResponsePlan responsePlan,
+            UncertaintyState uncertaintyState,
+            InitiativeDecision initiativeDecision,
+            List<MemoryIntentBinding> memoryIntentBindings,
+            RealityEnvelope realityEnvelope,
+            RelationalTensionState tensionState,
+            PlotGateDecision plotGateDecision,
+            DialogueContinuityState dialogueContinuityState,
+            PendingRepairCue pendingRepairCue,
+            TurnContext turnContext
+    ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
         this.shortTermContext = shortTermContext;
@@ -1379,6 +1656,7 @@ class LlmRequest {
         this.plotGateDecision = plotGateDecision;
         this.dialogueContinuityState = dialogueContinuityState;
         this.pendingRepairCue = pendingRepairCue;
+        this.turnContext = turnContext;
     }
 }
 

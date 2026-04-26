@@ -13,6 +13,14 @@ export interface AgentBackstory {
   plotHooks?: string[];
 }
 
+export interface AgentVoiceProfile {
+  sentenceRhythm?: string;
+  openings?: string[];
+  signatureMoves?: string[];
+  avoid?: string[];
+  sampleLines?: string[];
+}
+
 export interface AgentProfile {
   id: string;
   name: string;
@@ -31,6 +39,7 @@ export interface AgentProfile {
   styleTags?: string[];
   moodPalette?: string[];
   backstory?: AgentBackstory;
+  voiceProfile?: AgentVoiceProfile;
 }
 
 export interface ConversationMessage {
@@ -198,21 +207,35 @@ export interface TurnContext {
   closenessDelta?: number;
   trustDelta?: number;
   resonanceDelta?: number;
+  scoreReasons?: string[];
   behaviorTags?: string[];
   riskFlags?: string[];
   sceneLocation?: string;
   interactionMode?: string;
   plotGap?: number;
   plotSignal?: number;
+  plotPressure?: number;
+  plotSceneSignal?: number;
+  plotRelationshipSignal?: number;
+  plotEventSignal?: number;
+  plotContinuitySignal?: number;
+  plotRiskSignal?: number;
   plotDirectorAction?: string;
   plotWhyNow?: string;
   plotDirectorConfidence?: number;
   plotRiskIfAdvance?: string;
   requiredUserSignal?: string;
-  sceneMoveIntent?: string;
+  sceneMoveKind?: string;
   sceneMoveTarget?: string;
   sceneMoveReason?: string;
   sceneMoveConfidence?: number;
+  userReplyAct?: string;
+  userReplyActConfidence?: number;
+  assistantObligation?: AssistantObligation;
+  recommendedQuickJudgeTier?: string;
+  shouldAskQuickJudge?: boolean;
+  userReplyActCandidates?: UserReplyActCandidate[];
+  localConflicts?: LocalConflict[];
   continuityObjective?: string;
   continuityAcceptedPlan?: string;
   continuityNextBestMove?: string;
@@ -233,6 +256,29 @@ export interface DialogueContinuityState {
   updatedAt?: string;
 }
 
+export interface UserReplyActCandidate {
+  act?: string;
+  score?: number;
+  confidence?: number;
+  evidence?: string[];
+}
+
+export interface AssistantObligation {
+  type?: string;
+  source?: string;
+  priority?: number;
+  expectedUserActs?: string[];
+  reason?: string;
+}
+
+export interface LocalConflict {
+  type?: string;
+  severity?: string;
+  sourceA?: string;
+  sourceB?: string;
+  recommendedAction?: string;
+}
+
 export interface QuickJudgeStatus {
   attempted?: boolean;
   used?: boolean;
@@ -246,7 +292,22 @@ export interface QuickJudgeStatus {
   sharedObjective?: string;
   nextBestMove?: string;
   replyPriority?: string;
+  triggerScore?: number;
+  triggerReasons?: string[];
+  suppressedReasons?: string[];
   updatedAt?: string;
+}
+
+export interface RelationshipScoreCalibration {
+  used?: boolean;
+  applied?: boolean;
+  closenessDelta?: number;
+  trustDelta?: number;
+  resonanceDelta?: number;
+  confidence?: number;
+  reason?: string;
+  createdAt?: string;
+  sourceTurn?: number;
 }
 
 export interface PlotState {
@@ -254,6 +315,7 @@ export interface PlotState {
   phase?: string;
   sceneFrame?: string;
   openThreads?: string[];
+  plotPressure?: number;
   plotProgress?: string;
   nextBeatHint?: string;
 }
@@ -271,6 +333,7 @@ export interface PlotArcState {
   beatIndex?: number;
   arcIndex?: number;
   phase?: string;
+  plotPressure?: number;
   checkpointReady?: boolean;
   runStatus?: string;
   endingCandidate?: string;
@@ -349,6 +412,8 @@ export interface SessionRecord {
   lastTurnContext?: TurnContext;
   dialogueContinuityState?: DialogueContinuityState;
   lastQuickJudgeStatus?: QuickJudgeStatus;
+  pendingRelationshipCalibration?: RelationshipScoreCalibration;
+  pendingRelationshipCalibrationAt?: string;
   visitorContext: VisitorContext;
   timeContext: TimeContext;
   weatherContext: WeatherContext;
@@ -359,6 +424,20 @@ export interface SessionRecord {
   pendingChoices?: ChoiceOption[];
   pendingEventContext?: string;
   lastProactiveMessageAt?: string;
+}
+
+export interface SessionDebugExport {
+  schemaVersion: number;
+  exportedAt: string;
+  purpose: string;
+  note?: string;
+  sessionId: string;
+  agentId: string;
+  userTurnCount: number;
+  summary: Record<string, unknown>;
+  turnTimeline: Array<Record<string, unknown>>;
+  latestSignals: Record<string, unknown>;
+  session: SessionRecord;
 }
 
 export interface AnalyticsAgentPreference {

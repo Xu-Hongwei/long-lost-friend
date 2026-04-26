@@ -40,6 +40,7 @@ class PlotState implements Serializable {
     List<String> openThreads = new ArrayList<>();
     int lastPlotTurn;
     int forcePlotAtTurn;
+    int plotPressure;
     String plotProgress;
     String nextBeatHint;
     String updatedAt;
@@ -247,6 +248,7 @@ class SearchDecision {
 
 class SceneMoveIntent {
     final String type;
+    final String moveType;
     final String targetLocation;
     final String interactionMode;
     final boolean shouldMove;
@@ -263,13 +265,38 @@ class SceneMoveIntent {
             int confidence,
             String reason
     ) {
+        this(type, deriveMoveType(type, shouldMove, targetLocation), targetLocation, interactionMode, shouldMove, shouldCreateSceneText, confidence, reason);
+    }
+
+    SceneMoveIntent(
+            String type,
+            String moveType,
+            String targetLocation,
+            String interactionMode,
+            boolean shouldMove,
+            boolean shouldCreateSceneText,
+            int confidence,
+            String reason
+    ) {
         this.type = type == null || type.isBlank() ? "no_scene_change" : type;
+        this.moveType = moveType == null || moveType.isBlank() ? deriveMoveType(this.type, shouldMove, targetLocation) : moveType;
         this.targetLocation = targetLocation == null ? "" : targetLocation;
         this.interactionMode = interactionMode == null ? "" : interactionMode;
         this.shouldMove = shouldMove;
         this.shouldCreateSceneText = shouldCreateSceneText;
         this.confidence = Math.max(0, Math.min(100, confidence));
         this.reason = reason == null ? "" : reason;
+    }
+
+    private static String deriveMoveType(String type, boolean shouldMove, String targetLocation) {
+        String safeType = type == null ? "" : type;
+        if ("scene_topic".equals(safeType) || "ambient_reference".equals(safeType)) {
+            return "topic_only";
+        }
+        if (shouldMove && targetLocation != null && !targetLocation.isBlank()) {
+            return "move_to";
+        }
+        return "no_change";
     }
 
     boolean isExplicitMove() {
@@ -284,6 +311,10 @@ class SceneMoveIntent {
         return "scene_topic".equals(type) || "ambient_reference".equals(type);
     }
 
+    boolean blocksPlotAdvance() {
+        return List.of("stay", "cancel_move", "arrived", "topic_only").contains(moveType);
+    }
+
     static SceneMoveIntent none(String reason) {
         return new SceneMoveIntent("no_scene_change", "", "", false, false, 70, reason);
     }
@@ -296,25 +327,79 @@ class SceneMoveIntentService {
         if (compact.isBlank()) {
             return SceneMoveIntent.none("empty");
         }
+        if (isArrived(compact)) {
+            return new SceneMoveIntent("scene_status", "arrived", currentLocation(sceneState), currentInteraction(sceneState), false, false, 88, "user_says_already_arrived");
+        }
+        if (isStayOrCancel(compact)) {
+            return new SceneMoveIntent("scene_status", isCancelMove(compact) ? "cancel_move" : "stay", currentLocation(sceneState), currentInteraction(sceneState), false, false, 90, "user_blocks_or_cancels_move");
+        }
+        String returnTarget = returnTarget(compact, sceneState);
+        if (!returnTarget.isBlank()) {
+            return new SceneMoveIntent("explicit_move", "return_to", returnTarget, interactionFor(returnTarget, compact), true, true, 88, "return_move_request");
+        }
         if (isSceneTopicQuestion(compact)) {
-            return new SceneMoveIntent("scene_topic", "", "", false, false, 88, "scene_topic_question");
+            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 88, "scene_topic_question");
         }
         if (isAmbientReference(compact)) {
-            return new SceneMoveIntent("ambient_reference", "", "", false, false, 78, "ambient_reference");
+            return new SceneMoveIntent("ambient_reference", "topic_only", "", "", false, false, 78, "ambient_reference");
         }
         String explicitTarget = explicitTarget(compact);
         if (!explicitTarget.isBlank()) {
-            return new SceneMoveIntent("explicit_move", explicitTarget, interactionFor(explicitTarget, compact), true, true, 92, "explicit_move_request");
+            return new SceneMoveIntent("explicit_move", "move_to", explicitTarget, interactionFor(explicitTarget, compact), true, true, 92, "explicit_move_request");
         }
         if (hasMoveVerb(compact)) {
             String target = targetFromText(compact, sceneState);
-            return new SceneMoveIntent("explicit_move", target, interactionFor(target, compact), true, true, 84, "move_verb_request");
+            return new SceneMoveIntent("explicit_move", "move_to", target, interactionFor(target, compact), true, true, 84, "move_verb_request");
         }
         if (isImplicitMove(compact) && hasAcceptedPlan(continuityState)) {
             String target = targetFromObjective(continuityState.acceptedPlan, sceneState);
-            return new SceneMoveIntent("implicit_move", target, interactionFor(target, compact), true, true, 80, "accepted_plan_continuation");
+            return new SceneMoveIntent("implicit_move", "move_to", target, interactionFor(target, compact), true, true, 80, "accepted_plan_continuation");
         }
         return SceneMoveIntent.none("no_move_intent");
+    }
+
+    private boolean isArrived(String compact) {
+        return containsAny(compact, List.of(
+                "\u5df2\u7ecf\u5230\u4e86", "\u6211\u4eec\u5230\u4e86", "\u90fd\u5230\u4e86", "\u5230\u4e86",
+                "\u5df2\u7ecf\u5728"
+        ));
+    }
+
+    private boolean isStayOrCancel(String compact) {
+        return containsAny(compact, List.of(
+                "\u4e0d\u53bb\u4e86", "\u5148\u4e0d\u53bb", "\u522b\u53bb\u4e86", "\u4e0d\u7528\u53bb", "\u522b\u8d70",
+                "\u5148\u522b\u8d70", "\u4e0d\u6362\u5730\u65b9", "\u522b\u6362\u5730\u65b9", "\u7559\u5728\u8fd9",
+                "\u5c31\u5728\u8fd9", "\u5148\u5750\u4f1a", "\u5750\u4e0b\u5427"
+        ));
+    }
+
+    private boolean isCancelMove(String compact) {
+        return containsAny(compact, List.of(
+                "\u4e0d\u53bb\u4e86", "\u5148\u4e0d\u53bb", "\u522b\u53bb\u4e86", "\u4e0d\u7528\u53bb", "\u7b97\u4e86"
+        ));
+    }
+
+    private String returnTarget(String compact, SceneState sceneState) {
+        if (!containsAny(compact, List.of("\u56de\u53bb", "\u56de\u5230", "\u56de\u56fe\u4e66\u9986", "\u56de\u98df\u5802", "\u56de\u5bbf\u820d", "\u56de\u64cd\u573a"))) {
+            return "";
+        }
+        String explicit = explicitTarget(compact);
+        if (!explicit.isBlank()) {
+            return explicit;
+        }
+        if (containsAny(compact, List.of("\u56de\u56fe\u4e66\u9986"))) return "\u56fe\u4e66\u9986";
+        if (containsAny(compact, List.of("\u56de\u98df\u5802"))) return "\u98df\u5802";
+        if (containsAny(compact, List.of("\u56de\u5bbf\u820d"))) return "\u5bbf\u820d";
+        if (containsAny(compact, List.of("\u56de\u64cd\u573a"))) return "\u64cd\u573a";
+        return sceneState == null || sceneState.location == null || sceneState.location.isBlank() ? "\u539f\u6765\u7684\u5730\u65b9" : sceneState.location;
+    }
+
+    private String currentLocation(SceneState sceneState) {
+        return sceneState == null || sceneState.location == null ? "" : sceneState.location;
+    }
+
+    private String currentInteraction(SceneState sceneState) {
+        return sceneState == null || sceneState.interactionMode == null ? "" : sceneState.interactionMode;
     }
 
     private boolean isSceneTopicQuestion(String compact) {
@@ -391,6 +476,337 @@ class SceneMoveIntentService {
     }
 }
 
+class TurnUnderstandingService {
+    private final SceneMoveIntentService sceneMoveIntentService = new SceneMoveIntentService();
+
+    TurnUnderstandingState understand(
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            IntentState intentState,
+            DialogueContinuityState continuityState,
+            SceneState sceneState,
+            String nowIso
+    ) {
+        String text = userMessage == null ? "" : userMessage.trim();
+        String compact = compact(text);
+        SceneMoveIntent moveIntent = sceneMoveIntentService.classify(text, continuityState, sceneState);
+        AssistantObligation assistantObligation = detectAssistantObligation(recentContext);
+        String obligationType = assistantObligation == null ? "none" : blank(assistantObligation.type);
+        List<UserReplyActCandidate> candidates = new ArrayList<>();
+
+        addCandidate(candidates, "clarify", repairScore(compact, intentState), List.of("user_correction_or_meta_repair"));
+        addCandidate(candidates, "answer_question", answerQuestionScore(compact, obligationType), List.of("last_assistant_question"));
+        addCandidate(candidates, "accept_plan", acceptPlanScore(compact, obligationType, continuityState), List.of("soft_acceptance_or_active_plan"));
+        addCandidate(candidates, "reject", rejectScore(compact), List.of("reject_or_cancel_signal"));
+        addCandidate(candidates, "defer", deferScore(compact), List.of("defer_or_later_signal"));
+        addCandidate(candidates, "counter_offer", counterOfferScore(compact), List.of("alternative_offer_signal"));
+        addCandidate(candidates, "scene_move", moveIntent.shouldMove ? 3 + moveIntent.confidence / 18 : 0, List.of("scene_move:" + moveIntent.reason));
+        addCandidate(candidates, "scene_stay", stayScore(compact), List.of("stay_or_no_transition_signal"));
+        addCandidate(candidates, "topic_only", moveIntent.isSceneTopic() ? 8 : 0, List.of("scene_topic_not_movement"));
+        addCandidate(candidates, "emotion_share", "emotion_share".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 7 : 0, List.of("local_intent_emotion_share"));
+        addCandidate(candidates, "romantic_probe", "romantic_probe".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 7 : 0, List.of("local_intent_romantic_probe"));
+        addCandidate(candidates, "small_talk", ("small_talk".equals(intentState == null ? "" : blank(intentState.primaryIntent))
+                || "light_chat".equals(intentState == null ? "" : blank(intentState.primaryIntent))) ? 4 : 0, List.of("local_intent_light_chat"));
+
+        if (candidates.isEmpty()) {
+            addCandidate(candidates, "small_talk", 3, List.of("fallback_no_strong_signal"));
+        }
+        candidates.sort((left, right) -> Integer.compare(right.score, left.score));
+
+        UserReplyActCandidate top = candidates.get(0);
+        int second = candidates.size() > 1 ? candidates.get(1).score : 0;
+        List<LocalConflict> localConflicts = detectLocalConflicts(compact, obligationType, continuityState, sceneState, moveIntent, top, second);
+        int confidence = confidence(top.score, second, localConflicts);
+        String tier = recommendedTier(top.act, confidence, localConflicts, compact);
+
+        TurnUnderstandingState state = new TurnUnderstandingState();
+        state.primaryAct = top.act;
+        state.confidence = confidence;
+        state.candidates = candidates.size() > 4 ? new ArrayList<>(candidates.subList(0, 4)) : candidates;
+        state.localConflicts = localConflicts;
+        state.assistantObligation = assistantObligation;
+        state.recommendedQuickJudgeTier = tier;
+        state.shouldAskQuickJudge = !"skip".equals(tier);
+        state.sceneMoveKind = moveIntent.moveType;
+        state.sceneMoveTarget = moveIntent.targetLocation;
+        state.sceneMoveReason = moveIntent.reason;
+        state.sceneMoveConfidence = moveIntent.confidence;
+        state.updatedAt = nowIso;
+        return state;
+    }
+
+    private void addCandidate(List<UserReplyActCandidate> candidates, String act, int score, List<String> evidence) {
+        if (score <= 0) {
+            return;
+        }
+        UserReplyActCandidate candidate = new UserReplyActCandidate();
+        candidate.act = act;
+        candidate.score = score;
+        candidate.confidence = Math.max(35, Math.min(96, 40 + score * 7));
+        candidate.evidence = evidence == null ? new ArrayList<>() : new ArrayList<>(evidence);
+        candidates.add(candidate);
+    }
+
+    private int repairScore(String compact, IntentState intentState) {
+        int score = "meta_repair".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 8 : 0;
+        if (containsAny(compact, List.of(
+                "\u4f60\u6ca1\u56de\u7b54\u6211", "\u7b54\u975e\u6240\u95ee", "\u6211\u95ee\u7684\u662f", "\u522b\u8f6c\u79fb\u8bdd\u9898",
+                "\u4f60\u5728\u8bf4\u4ec0\u4e48", "\u4f60\u53c8\u91cd\u590d", "\u4e0d\u662f\u8fd9\u4e2a\u95ee\u9898", "\u4f60\u662f\u4e0d\u662f\u5fd8\u4e86",
+                "\u4e0d\u662f\u8fd9\u4e2a\u610f\u601d", "\u4f60\u7406\u89e3\u9519", "\u4e0d\u5bf9", "\u6211\u4eec\u4e0d\u662f", "\u5df2\u7ecf\u5728"
+        ))) {
+            score += 8;
+        }
+        return score;
+    }
+
+    private int answerQuestionScore(String compact, String obligation) {
+        if (!"answer_question".equals(obligation)) {
+            return 0;
+        }
+        int score = compact.length() <= 16 ? 6 : 3;
+        if (containsAny(compact, List.of("\u559c\u6b22", "\u4e0d\u559c\u6b22", "\u53ef\u4ee5", "\u4e0d\u884c", "\u6709", "\u6ca1\u6709", "\u662f", "\u4e0d\u662f", "\u597d", "\u4e0d\u597d"))) {
+            score += 3;
+        }
+        return score;
+    }
+
+    private int acceptPlanScore(String compact, String obligation, DialogueContinuityState continuityState) {
+        boolean activePlan = continuityState != null && (!blank(continuityState.acceptedPlan).isBlank()
+                || !blank(continuityState.currentObjective).isBlank()
+                || continuityState.sceneTransitionNeeded);
+        if (!activePlan && !"accept_plan".equals(obligation)) {
+            return 0;
+        }
+        if (containsAny(compact, List.of("\u53ef\u4ee5", "\u597d\u554a", "\u597d\u5440", "\u884c", "\u55ef", "\u542c\u4f60\u7684", "\u90a3\u5c31", "\u8d70\u5427"))) {
+            return "accept_plan".equals(obligation) ? 8 : 5;
+        }
+        return 0;
+    }
+
+    private int rejectScore(String compact) {
+        return containsAny(compact, List.of(
+                "\u4e0d\u7528", "\u4e0d\u8981", "\u4e0d\u60f3", "\u7b97\u4e86", "\u522b\u8fd9\u6837", "\u522b\u53bb", "\u4e0d\u53bb\u4e86", "\u4e0d\u7528\u4e86"
+        )) ? 8 : 0;
+    }
+
+    private int deferScore(String compact) {
+        return containsAny(compact, List.of("\u7b49\u4e0b", "\u7b49\u4e00\u4e0b", "\u665a\u70b9", "\u5148\u4e0d", "\u8fc7\u4f1a\u513f", "\u4e0b\u6b21\u5427")) ? 7 : 0;
+    }
+
+    private int counterOfferScore(String compact) {
+        return containsAny(compact, List.of("\u8981\u4e0d", "\u4e0d\u5982", "\u8fd8\u662f", "\u6362\u4e2a", "\u6211\u4eec\u53bb", "\u53bb\u522b\u7684")) ? 7 : 0;
+    }
+
+    private int stayScore(String compact) {
+        return containsAny(compact, List.of("\u5c31\u5728\u8fd9", "\u522b\u8d70", "\u5148\u522b\u8d70", "\u4e0d\u7528\u6362\u5730\u65b9", "\u522b\u6362\u5730\u65b9", "\u7559\u5728\u8fd9", "\u5148\u5750\u4f1a", "\u5750\u4e0b\u5427")) ? 8 : 0;
+    }
+
+    private List<LocalConflict> detectLocalConflicts(
+            String compact,
+            String obligation,
+            DialogueContinuityState continuityState,
+            SceneState sceneState,
+            SceneMoveIntent moveIntent,
+            UserReplyActCandidate top,
+            int secondScore
+    ) {
+        List<LocalConflict> conflicts = new ArrayList<>();
+        boolean activePlan = continuityState != null && (!blank(continuityState.acceptedPlan).isBlank()
+                || !blank(continuityState.currentObjective).isBlank()
+                || continuityState.sceneTransitionNeeded);
+        if (compact.length() <= 12 && top.score - secondScore <= 2 && secondScore > 0) {
+            conflicts.add(localConflict(
+                    "ambiguous_short_reply",
+                    "medium",
+                    "user_reply",
+                    "candidate_margin",
+                    "ask_quick_judge_or_use_last_obligation"
+            ));
+        }
+        if ("answer_question".equals(obligation) && activePlan && (top.score - secondScore <= 3)) {
+            conflicts.add(localConflict(
+                    "question_vs_plan_ambiguous",
+                    "high",
+                    "assistant_obligation",
+                    "active_plan",
+                    "prefer_answer_question_before_scene"
+            ));
+        }
+        if (("reject".equals(top.act) || "defer".equals(top.act) || "scene_stay".equals(top.act)) && activePlan) {
+            conflicts.add(localConflict(
+                    "user_cancels_active_objective",
+                    "high",
+                    "user_reply_act",
+                    "dialogue_continuity",
+                    "clear_or_hold_movement_goal"
+            ));
+        }
+        if (moveIntent != null && moveIntent.shouldMove && sceneAlreadyAt(sceneState, moveIntent.targetLocation)) {
+            conflicts.add(localConflict(
+                    "scene_target_already_current",
+                    "high",
+                    "scene_move_intent",
+                    "scene_state",
+                    "clear_duplicate_scene_move"
+            ));
+        }
+        if ("clarify".equals(top.act)) {
+            conflicts.add(localConflict(
+                    "user_self_rescue",
+                    "urgent",
+                    "user_reply_act",
+                    "assistant_reply",
+                    "repair_then_answer"
+            ));
+        }
+        return conflicts;
+    }
+
+    private LocalConflict localConflict(String type, String severity, String sourceA, String sourceB, String recommendedAction) {
+        LocalConflict conflict = new LocalConflict();
+        conflict.type = type == null ? "" : type;
+        conflict.severity = severity == null ? "medium" : severity;
+        conflict.sourceA = sourceA == null ? "" : sourceA;
+        conflict.sourceB = sourceB == null ? "" : sourceB;
+        conflict.recommendedAction = recommendedAction == null ? "" : recommendedAction;
+        return conflict;
+    }
+
+    private int confidence(int topScore, int secondScore, List<LocalConflict> conflicts) {
+        int margin = Math.max(0, topScore - secondScore);
+        int value = Math.min(96, 45 + topScore * 5 + margin * 5);
+        if (conflicts != null && !conflicts.isEmpty()) {
+            value -= Math.min(24, conflicts.size() * 8);
+        }
+        return Math.max(35, Math.min(96, value));
+    }
+
+    private String recommendedTier(String primaryAct, int confidence, List<LocalConflict> conflicts, String compact) {
+        if ("clarify".equals(primaryAct)
+                || hasConflict(conflicts, "user_self_rescue")
+                || hasConflict(conflicts, "user_cancels_active_objective")
+                || hasConflict(conflicts, "scene_target_already_current")) {
+            return "urgent";
+        }
+        if (conflicts != null && !conflicts.isEmpty()) {
+            return "opportunistic";
+        }
+        if (confidence < 68) {
+            return compact.length() <= 120 ? "background" : "skip";
+        }
+        return "skip";
+    }
+
+    private boolean hasConflict(List<LocalConflict> conflicts, String type) {
+        if (conflicts == null || type == null) {
+            return false;
+        }
+        for (LocalConflict conflict : conflicts) {
+            if (conflict != null && type.equals(conflict.type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private AssistantObligation detectAssistantObligation(List<ConversationSnippet> recentContext) {
+        String last = lastAssistantText(recentContext);
+        String compact = compact(last);
+        if (compact.isBlank()) {
+            return assistantObligation("none", "", 0, List.of(), "no_recent_assistant");
+        }
+        if (containsAny(compact, List.of("?", "\uff1f", "\u5417", "\u5462", "\u8981\u4e0d\u8981", "\u6709\u6ca1\u6709", "\u559c\u6b22", "\u89c9\u5f97"))) {
+            return assistantObligation(
+                    "answer_question",
+                    last,
+                    80,
+                    List.of("answer_question", "clarify"),
+                    "last_assistant_question"
+            );
+        }
+        if (containsAny(compact, List.of("\u6211\u4eec\u53bb", "\u4e00\u8d77\u53bb", "\u8981\u4e0d\u53bb", "\u53bb\u98df\u5802", "\u53bb\u64cd\u573a", "\u53bb\u56fe\u4e66\u9986", "\u9001\u4f60\u56de"))) {
+            return assistantObligation(
+                    "accept_plan",
+                    last,
+                    72,
+                    List.of("accept_plan", "reject", "defer", "counter_offer"),
+                    "last_assistant_plan_offer"
+            );
+        }
+        if (containsAny(compact, List.of("\u5148", "\u63a8\u8350", "\u9009\u4e00\u4e2a", "\u8bd5\u8bd5"))) {
+            return assistantObligation(
+                    "follow_instruction",
+                    last,
+                    58,
+                    List.of("answer_question", "clarify"),
+                    "last_assistant_instruction"
+            );
+        }
+        return assistantObligation("none", last, 0, List.of(), "no_explicit_obligation");
+    }
+
+    private AssistantObligation assistantObligation(
+            String type,
+            String source,
+            int priority,
+            List<String> expectedUserActs,
+            String reason
+    ) {
+        AssistantObligation obligation = new AssistantObligation();
+        obligation.type = type == null || type.isBlank() ? "none" : type;
+        obligation.source = truncate(source, 120);
+        obligation.priority = Math.max(0, Math.min(100, priority));
+        obligation.expectedUserActs = expectedUserActs == null ? new ArrayList<>() : new ArrayList<>(expectedUserActs);
+        obligation.reason = reason == null ? "" : reason;
+        return obligation;
+    }
+
+    private String lastAssistantText(List<ConversationSnippet> recentContext) {
+        if (recentContext == null) {
+            return "";
+        }
+        for (int index = recentContext.size() - 1; index >= 0; index--) {
+            ConversationSnippet snippet = recentContext.get(index);
+            if (snippet != null && "assistant".equals(snippet.role)) {
+                return blank(snippet.text);
+            }
+        }
+        return "";
+    }
+
+    private boolean sceneAlreadyAt(SceneState sceneState, String target) {
+        String anchor = compact((sceneState == null ? "" : blank(sceneState.location)) + (sceneState == null ? "" : blank(sceneState.subLocation)));
+        String compactTarget = compact(target);
+        return !anchor.isBlank() && !compactTarget.isBlank() && (anchor.contains(compactTarget) || compactTarget.contains(anchor));
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        String safe = blank(text);
+        for (String keyword : keywords) {
+            if (safe.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String compact(String value) {
+        return blank(value).replaceAll("\\s+", "");
+    }
+
+    private String truncate(String value, int maxLength) {
+        String safe = blank(value);
+        if (safe.length() <= maxLength) {
+            return safe;
+        }
+        return safe.substring(0, Math.max(0, maxLength));
+    }
+
+    private String blank(String value) {
+        return value == null ? "" : value;
+    }
+}
+
 class QuickJudgeDecision implements Serializable {
     final boolean used;
     final String primaryIntent;
@@ -434,22 +850,60 @@ class QuickJudgeDecision implements Serializable {
     boolean shouldApply() {
         return used
                 && confidence >= 65
-                && (!primaryIntent.isBlank()
-                || !secondaryIntent.isBlank()
-                || !emotion.isBlank()
-                || !sharedObjective.isBlank()
-                || !replyPriority.isBlank());
+                && (hasMeaningfulValue(primaryIntent)
+                || hasMeaningfulValue(secondaryIntent)
+                || hasMeaningfulEmotion(emotion)
+                || hasMeaningfulValue(sharedObjective)
+                || sceneTransitionNeeded
+                || hasMeaningfulValue(nextBestMove)
+                || hasMeaningfulValue(replyPriority));
+    }
+
+    static boolean hasMeaningfulValue(String value) {
+        String safe = value == null ? "" : value.trim();
+        return !safe.isBlank() && !"none".equals(safe);
+    }
+
+    static boolean hasMeaningfulEmotion(String value) {
+        String safe = value == null ? "" : value.trim();
+        return hasMeaningfulValue(safe) && !"neutral".equals(safe);
     }
 }
 
 class QuickJudgeTask {
     final CompletableFuture<QuickJudgeDecision> future;
     final long startedAtNanos;
+    final String triggerTier;
+    final String triggerReason;
+    final int triggerScore;
+    final List<String> triggerReasons;
+    final List<String> suppressedReasons;
     final AtomicLong completedAtNanos = new AtomicLong(0L);
 
     QuickJudgeTask(CompletableFuture<QuickJudgeDecision> future, long startedAtNanos) {
+        this(future, startedAtNanos, "opportunistic", "", 0, List.of(), List.of());
+    }
+
+    QuickJudgeTask(CompletableFuture<QuickJudgeDecision> future, long startedAtNanos, String triggerTier, String triggerReason) {
+        this(future, startedAtNanos, triggerTier, triggerReason, 0, List.of(), List.of());
+    }
+
+    QuickJudgeTask(
+            CompletableFuture<QuickJudgeDecision> future,
+            long startedAtNanos,
+            String triggerTier,
+            String triggerReason,
+            int triggerScore,
+            List<String> triggerReasons,
+            List<String> suppressedReasons
+    ) {
         this.future = future;
         this.startedAtNanos = startedAtNanos;
+        this.triggerTier = triggerTier == null ? "" : triggerTier;
+        this.triggerReason = triggerReason == null ? "" : triggerReason;
+        this.triggerScore = triggerScore;
+        this.triggerReasons = triggerReasons == null ? List.of() : List.copyOf(triggerReasons);
+        this.suppressedReasons = suppressedReasons == null ? List.of() : List.copyOf(suppressedReasons);
     }
 }
 
@@ -480,6 +934,7 @@ class QuickJudgeLocalCorrectionService {
         DialogueContinuityState nextContinuity = dialogueContinuityService.normalize(continuity, nowIso);
         nextContinuity = dialogueContinuityService.settleSceneTransitionIfArrived(nextContinuity, sceneState, nowIso);
         nextContinuity = clearArrivedMovementGoal(nextContinuity, sceneState, notes, nowIso);
+        nextContinuity = clearUserReportedArrivedGoal(nextContinuity, sceneState, userMessage, notes, nowIso);
         nextContinuity = preventQuestionAcceptanceFromRevivingMovement(nextContinuity, sceneState, recentContext, userMessage, notes, nowIso);
         return new QuickJudgeLocalCorrectionResult(intentState, nextContinuity, notes);
     }
@@ -510,6 +965,60 @@ class QuickJudgeLocalCorrectionService {
         next.updatedAt = nowIso;
         notes.add("arrived_movement_completed:" + target);
         return next;
+    }
+
+    private DialogueContinuityState clearUserReportedArrivedGoal(
+            DialogueContinuityState continuity,
+            SceneState sceneState,
+            String userMessage,
+            List<String> notes,
+            String nowIso
+    ) {
+        if (continuity == null) {
+            return continuity;
+        }
+        String compact = compact(userMessage);
+        if (compact.isBlank() || !looksLikeUserLocationCorrection(compact)) {
+            return continuity;
+        }
+        String target = firstNonBlank(
+                locationMentionedIn(compact),
+                objectiveTargetLocation(firstNonBlank(continuity.currentObjective, continuity.acceptedPlan))
+        );
+        if (target.isBlank()) {
+            return continuity;
+        }
+        DialogueContinuityState next = copyContinuity(continuity);
+        next.currentObjective = "";
+        next.acceptedPlan = "";
+        next.pendingUserOffer = "";
+        next.sceneTransitionNeeded = false;
+        next.nextBestMove = "\u7528\u6237\u5df2\u7ecf\u7ea0\u6b63\u4e86\u4f4d\u7f6e\uff1a\u5f53\u524d\u5df2\u5728" + target + "\uff0c\u4e0d\u8981\u518d\u91cd\u590d\u5f80" + target + "\u8d70\u3002";
+        next.mustNotContradict = next.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(next.mustNotContradict);
+        addUnique(next.mustNotContradict, "\u7528\u6237\u7ea0\u6b63\uff1a\u5f53\u524d\u5df2\u5728" + target + "\uff0c\u4e0d\u8981\u518d\u5199\u6b63\u5728\u53bb" + target + "\u3002");
+        if (sceneState != null) {
+            addUnique(next.mustNotContradict, "\u5f53\u524d\u573a\u666f\uff1a" + firstNonBlank(sceneState.location, target) + "\u3002");
+        }
+        next.confidence = Math.max(82, next.confidence);
+        next.updatedAt = nowIso;
+        notes.add("user_reported_arrived:" + target);
+        return next;
+    }
+
+    private boolean looksLikeUserLocationCorrection(String compact) {
+        return containsAny(compact, List.of(
+                "\u5df2\u7ecf\u5728", "\u4e0d\u662f\u5728", "\u4e0d\u662f\u5df2\u7ecf", "\u6211\u4eec\u4e0d\u662f\u5728", "\u6211\u4eec\u5df2\u7ecf\u5728", "\u90fd\u5230\u4e86"
+        ));
+    }
+
+    private String locationMentionedIn(String compact) {
+        if (compact.contains("\u98df\u5802")) return "\u98df\u5802";
+        if (compact.contains("\u64cd\u573a")) return "\u64cd\u573a";
+        if (compact.contains("\u56fe\u4e66\u9986")) return "\u56fe\u4e66\u9986";
+        if (compact.contains("\u5bbf\u820d")) return "\u5bbf\u820d";
+        if (compact.contains("\u5e02\u533a") || compact.contains("\u6821\u5916")) return "\u5e02\u533a";
+        if (compact.contains("\u70ed\u996e") || compact.contains("\u5976\u8336") || compact.contains("\u5496\u5561")) return "\u70ed\u996e";
+        return "";
     }
 
     private DialogueContinuityState preventQuestionAcceptanceFromRevivingMovement(
@@ -970,6 +1479,36 @@ class DialogueContinuityService {
         return next;
     }
 
+    DialogueContinuityState applyHeartbeatSelfContext(
+            DialogueContinuityState state,
+            String lastAssistantMessage,
+            String nowIso
+    ) {
+        DialogueContinuityState next = normalize(state, nowIso);
+        if (!assistantAlreadyCarriedPlan(lastAssistantMessage)) {
+            return next;
+        }
+        boolean hasObjective = hasActiveObjective(next)
+                || (next.acceptedPlan != null && !next.acceptedPlan.isBlank())
+                || next.sceneTransitionNeeded;
+        if (!hasObjective) {
+            return next;
+        }
+        String carriedObjective = firstNonBlank(next.acceptedPlan, next.currentObjective, next.pendingUserOffer);
+        next.currentObjective = "";
+        next.pendingUserOffer = "";
+        next.acceptedPlan = "";
+        next.sceneTransitionNeeded = false;
+        next.nextBestMove = "\u89d2\u8272\u4e0a\u4e00\u53e5\u5df2\u7ecf\u627f\u63a5\u5e76\u5f00\u59cb\u6267\u884c\u5f53\u524d\u8ba1\u5212\uff0c\u5fc3\u8df3\u53ea\u987a\u7740\u8fd9\u4e2a\u52a8\u4f5c\u8f7b\u8f7b\u7eed\u4e0a\uff0c\u4e0d\u8981\u91cd\u65b0\u8be2\u95ee\u662f\u5426\u8981\u53bb\u6216\u518d\u6b21\u53d1\u8d77\u540c\u4e00\u8ba1\u5212\u3002";
+        next.mustNotContradict = next.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(next.mustNotContradict);
+        if (!carriedObjective.isBlank()) {
+            next.mustNotContradict.add("\u4e0a\u4e00\u6761\u52a9\u624b\u56de\u590d\u5df2\u627f\u63a5\u8ba1\u5212\uff1a" + carriedObjective);
+        }
+        next.confidence = Math.max(70, next.confidence);
+        next.updatedAt = nowIso;
+        return next;
+    }
+
     private DialogueContinuityState cloneState(DialogueContinuityState source) {
         DialogueContinuityState next = new DialogueContinuityState();
         next.currentObjective = source.currentObjective;
@@ -1200,6 +1739,28 @@ class DialogueContinuityService {
 
     private String blank(String text) {
         return text == null ? "" : text;
+    }
+
+    private boolean assistantAlreadyCarriedPlan(String text) {
+        String compact = compact(text);
+        return containsAny(compact, List.of(
+                "\u90a3\u6211\u4eec\u5c31", "\u6211\u4eec\u5c31", "\u90a3\u5c31", "\u8fc7\u53bb\u770b\u770b",
+                "\u53bb\u770b\u770b", "\u8d70\u8fc7\u53bb", "\u5f80\u90a3\u8fb9", "\u8fb9\u8d70\u8fb9",
+                "\u5148\u53bb", "\u8d70\u5230", "\u5230\u4e86", "\u5750\u4e0b", "\u6211\u4eec\u8fc7\u53bb",
+                "\u4e00\u8d77\u8fc7\u53bb", "\u5c31\u8fc7\u53bb"
+        ));
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -2286,9 +2847,10 @@ class AffectionJudgeService {
             StoryEvent event,
             MemorySummary memorySummary,
             RelationshipService relationshipService,
+            AgentProfile agent,
             String nowIso
     ) {
-        TurnEvaluation evaluation = relationshipService.evaluateTurn(userMessage, relationshipState, event, memorySummary);
+        TurnEvaluation evaluation = relationshipService.evaluateTurn(userMessage, relationshipState, event, memorySummary, agent);
         EmotionState nextEmotion = normalizeEmotion(emotionState, nowIso);
 
         int openness = Math.max(0, evaluation.affectionDelta.trust);
@@ -2464,12 +3026,28 @@ class QuickJudgeService {
             MemorySummary memorySummary,
             IntentState localIntent,
             DialogueContinuityState localContinuity,
+            TurnUnderstandingState turnUnderstanding,
             boolean runtimeEnabled,
-            boolean runtimeForceAll
+            boolean runtimeForceAll,
+            int currentTurn
     ) {
         long startedAtNanos = System.nanoTime();
-        if (!runtimeEnabled || !remoteEnabled() || !(forceAll || runtimeForceAll || shouldJudge(userMessage, localIntent, localContinuity))) {
-            QuickJudgeTask task = new QuickJudgeTask(CompletableFuture.completedFuture(QuickJudgeDecision.none("skip")), startedAtNanos);
+        QuickJudgeTrigger trigger = decideTrigger(userMessage, localIntent, localContinuity, turnUnderstanding, runtimeEnabled, runtimeForceAll, currentTurn);
+        if (!remoteEnabled() && trigger.shouldStart) {
+            List<String> suppressed = new ArrayList<>(trigger.suppressedReasons);
+            suppressed.add("remote_disabled");
+            trigger = new QuickJudgeTrigger(false, "skip", "remote_disabled", trigger.score, trigger.reasons, suppressed);
+        }
+        if (!trigger.shouldStart) {
+            QuickJudgeTask task = new QuickJudgeTask(
+                    CompletableFuture.completedFuture(QuickJudgeDecision.none("skip:" + trigger.reason)),
+                    startedAtNanos,
+                    trigger.tier,
+                    trigger.reason,
+                    trigger.score,
+                    trigger.reasons,
+                    trigger.suppressedReasons
+            );
             task.completedAtNanos.set(startedAtNanos);
             return task;
         }
@@ -2483,13 +3061,22 @@ class QuickJudgeService {
                         tensionState,
                         memorySummary,
                         localIntent,
-                        localContinuity
+                        localContinuity,
+                        turnUnderstanding
                 );
             } catch (Exception ex) {
                 return QuickJudgeDecision.none("fallback:" + failureReason(ex));
             }
         }, EXECUTOR);
-        QuickJudgeTask task = new QuickJudgeTask(future, startedAtNanos);
+        QuickJudgeTask task = new QuickJudgeTask(
+                future,
+                startedAtNanos,
+                trigger.tier,
+                trigger.reason,
+                trigger.score,
+                trigger.reasons,
+                trigger.suppressedReasons
+        );
         future.whenComplete((decision, error) -> task.completedAtNanos.compareAndSet(0L, System.nanoTime()));
         return task;
     }
@@ -2498,11 +3085,14 @@ class QuickJudgeService {
         if (task == null || task.future == null) {
             return QuickJudgeDecision.none("missing_future");
         }
+        if (maxWaitMs <= 0L) {
+            return QuickJudgeDecision.none("background_deferred:" + blank(task.triggerReason));
+        }
         long waitMs = Math.max(1L, Math.min(maxWaitMs, timeout.toMillis()));
         try {
             return task.future.get(waitMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
-            return QuickJudgeDecision.none("timeout");
+            return QuickJudgeDecision.none("timeout:" + blank(task.triggerTier) + ":" + blank(task.triggerReason));
         } catch (Exception ex) {
             return QuickJudgeDecision.none("resolve:" + ex.getClass().getSimpleName());
         }
@@ -2513,6 +3103,14 @@ class QuickJudgeService {
             return resolveBudgetMs;
         }
         return Math.max(MIN_RESOLVE_BUDGET_MS, Math.min(MAX_RESOLVE_BUDGET_MS, requestedBudgetMs));
+    }
+
+    long resolveBudgetMs(Long requestedBudgetMs, QuickJudgeTask task) {
+        String tier = task == null ? "" : blank(task.triggerTier);
+        if ("background".equals(tier)) {
+            return 0L;
+        }
+        return resolveBudgetMs(requestedBudgetMs);
     }
 
     private long deriveTimeoutMs(long configuredTimeoutMs, long waitBudgetMs) {
@@ -2537,13 +3135,13 @@ class QuickJudgeService {
             return local;
         }
         IntentState next = copyIntent(local);
-        if (!decision.primaryIntent.isBlank()) {
+        if (QuickJudgeDecision.hasMeaningfulValue(decision.primaryIntent)) {
             next.primaryIntent = decision.primaryIntent;
         }
-        if (!decision.secondaryIntent.isBlank()) {
+        if (QuickJudgeDecision.hasMeaningfulValue(decision.secondaryIntent)) {
             next.secondaryIntent = decision.secondaryIntent;
         }
-        if (!decision.emotion.isBlank()) {
+        if (QuickJudgeDecision.hasMeaningfulEmotion(decision.emotion)) {
             next.emotion = decision.emotion;
         }
         if ("accept_plan_then_reassure".equals(decision.replyPriority)
@@ -2552,7 +3150,7 @@ class QuickJudgeService {
                 || "answer_then_reassure".equals(decision.replyPriority)) {
             next.needsEmpathy = true;
         }
-        if (!decision.sharedObjective.isBlank()) {
+        if (QuickJudgeDecision.hasMeaningfulValue(decision.sharedObjective)) {
             next.needsFollowup = true;
         }
         next.rationale = appendRationale(local.rationale, decision);
@@ -2565,14 +3163,16 @@ class QuickJudgeService {
             return local;
         }
         DialogueContinuityState next = copyContinuity(local);
-        if (!decision.sharedObjective.isBlank()) {
+        if (decision.sceneTransitionNeeded) {
+            next.sceneTransitionNeeded = true;
+        }
+        if (QuickJudgeDecision.hasMeaningfulValue(decision.sharedObjective)) {
             next.currentObjective = decision.sharedObjective;
             if (next.acceptedPlan == null || next.acceptedPlan.isBlank()
                     || "accept_plan_then_reassure".equals(decision.replyPriority)
                     || "answer_then_scene".equals(decision.replyPriority)) {
                 next.acceptedPlan = decision.sharedObjective;
             }
-            next.sceneTransitionNeeded = next.sceneTransitionNeeded || decision.sceneTransitionNeeded;
             if (next.mustNotContradict == null) {
                 next.mustNotContradict = new ArrayList<>();
             }
@@ -2581,7 +3181,7 @@ class QuickJudgeService {
                 next.mustNotContradict.add(guard);
             }
         }
-        if (!decision.nextBestMove.isBlank()) {
+        if (QuickJudgeDecision.hasMeaningfulValue(decision.nextBestMove)) {
             next.nextBestMove = decision.nextBestMove;
         }
         next.confidence = Math.max(next.confidence, decision.confidence);
@@ -2639,7 +3239,8 @@ class QuickJudgeService {
             RelationalTensionState tensionState,
             MemorySummary memorySummary,
             IntentState localIntent,
-            DialogueContinuityState localContinuity
+            DialogueContinuityState localContinuity,
+            TurnUnderstandingState turnUnderstanding
     ) throws IOException {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", model);
@@ -2659,7 +3260,8 @@ class QuickJudgeService {
                                 tensionState,
                                 memorySummary,
                                 localIntent,
-                                localContinuity
+                                localContinuity,
+                                turnUnderstanding
                         ))
                 )
         ));
@@ -2706,7 +3308,8 @@ class QuickJudgeService {
             RelationalTensionState tensionState,
             MemorySummary memorySummary,
             IntentState localIntent,
-            DialogueContinuityState localContinuity
+            DialogueContinuityState localContinuity,
+            TurnUnderstandingState turnUnderstanding
     ) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("task", "Refine the local intent, continuity objective, and reply priority for this single user turn.");
@@ -2738,6 +3341,7 @@ class QuickJudgeService {
                 "sceneTransitionNeeded", localContinuity != null && localContinuity.sceneTransitionNeeded,
                 "confidence", localContinuity == null ? 0 : localContinuity.confidence
         ));
+        input.put("turnUnderstanding", turnUnderstandingMap(turnUnderstanding));
         input.put("sceneState", Map.of(
                 "location", sceneState == null ? "" : safe(sceneState.location),
                 "interactionMode", sceneState == null ? "" : safe(sceneState.interactionMode),
@@ -2766,6 +3370,72 @@ class QuickJudgeService {
         return input;
     }
 
+    private Map<String, Object> turnUnderstandingMap(TurnUnderstandingState state) {
+        if (state == null) {
+            return Map.of();
+        }
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        if (state.candidates != null) {
+            for (UserReplyActCandidate candidate : state.candidates) {
+                if (candidate == null) {
+                    continue;
+                }
+                candidates.add(Map.of(
+                        "act", safe(candidate.act),
+                        "score", candidate.score,
+                        "confidence", candidate.confidence,
+                        "evidence", candidate.evidence == null ? List.of() : candidate.evidence
+                ));
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("primaryAct", safe(state.primaryAct));
+        result.put("confidence", state.confidence);
+        result.put("assistantObligation", assistantObligationMap(state.assistantObligation));
+        result.put("recommendedQuickJudgeTier", safe(state.recommendedQuickJudgeTier));
+        result.put("shouldAskQuickJudge", state.shouldAskQuickJudge);
+        result.put("sceneMoveKind", safe(state.sceneMoveKind));
+        result.put("sceneMoveTarget", safe(state.sceneMoveTarget));
+        result.put("sceneMoveReason", safe(state.sceneMoveReason));
+        result.put("sceneMoveConfidence", state.sceneMoveConfidence);
+        result.put("localConflicts", localConflictMaps(state.localConflicts));
+        result.put("candidates", candidates);
+        return result;
+    }
+
+    private Map<String, Object> assistantObligationMap(AssistantObligation obligation) {
+        if (obligation == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("type", safe(obligation.type));
+        map.put("source", safe(obligation.source));
+        map.put("priority", obligation.priority);
+        map.put("expectedUserActs", obligation.expectedUserActs == null ? List.of() : obligation.expectedUserActs);
+        map.put("reason", safe(obligation.reason));
+        return map;
+    }
+
+    private List<Map<String, Object>> localConflictMaps(List<LocalConflict> conflicts) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (conflicts == null) {
+            return result;
+        }
+        for (LocalConflict conflict : conflicts) {
+            if (conflict == null) {
+                continue;
+            }
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("type", safe(conflict.type));
+            map.put("severity", safe(conflict.severity));
+            map.put("sourceA", safe(conflict.sourceA));
+            map.put("sourceB", safe(conflict.sourceB));
+            map.put("recommendedAction", safe(conflict.recommendedAction));
+            result.add(map);
+        }
+        return result;
+    }
+
     private QuickJudgeDecision parseJudgeJson(String content) throws IOException {
         String json = extractJson(content);
         Map<String, Object> object = Json.asObject(Json.parse(json));
@@ -2778,30 +3448,128 @@ class QuickJudgeService {
         String replyPriority = sanitizeValue(Json.asString(object.get("replyPriority")), ALLOWED_PRIORITIES);
         int confidence = Math.max(0, Math.min(100, Json.asInt(object.get("confidence"), 0)));
         String reason = truncate(safe(Json.asString(object.get("reason"))), 60);
-        if (primaryIntent.isBlank() && sharedObjective.isBlank() && replyPriority.isBlank()) {
+        secondaryIntent = noneToBlank(secondaryIntent);
+        replyPriority = noneToBlank(replyPriority);
+        if (!QuickJudgeDecision.hasMeaningfulEmotion(emotion)) {
+            emotion = "";
+        }
+        if (primaryIntent.isBlank()
+                && secondaryIntent.isBlank()
+                && emotion.isBlank()
+                && sharedObjective.isBlank()
+                && !sceneTransitionNeeded
+                && nextBestMove.isBlank()
+                && replyPriority.isBlank()) {
             return QuickJudgeDecision.none("empty_remote");
         }
         return new QuickJudgeDecision(
                 true,
                 primaryIntent,
-                secondaryIntent.isBlank() ? "none" : secondaryIntent,
+                secondaryIntent,
                 emotion,
                 sharedObjective,
                 sceneTransitionNeeded,
                 nextBestMove,
-                replyPriority.isBlank() ? "none" : replyPriority,
+                replyPriority,
                 confidence,
                 reason.isBlank() ? "remote_quick_judge" : reason
         );
     }
 
-    private boolean shouldJudge(String userMessage, IntentState localIntent, DialogueContinuityState localContinuity) {
-        String compact = compact(userMessage);
-        if (compact.isBlank() || compact.length() > 90) {
-            return false;
+    private String noneToBlank(String value) {
+        String safe = safe(value);
+        return "none".equals(safe) ? "" : safe;
+    }
+
+    private record QuickJudgeTrigger(
+            boolean shouldStart,
+            String tier,
+            String reason,
+            int score,
+            List<String> reasons,
+            List<String> suppressedReasons
+    ) {
+    }
+
+    private QuickJudgeTrigger decideTrigger(
+            String userMessage,
+            IntentState localIntent,
+            DialogueContinuityState localContinuity,
+            TurnUnderstandingState turnUnderstanding,
+            boolean runtimeEnabled,
+            boolean runtimeForceAll,
+        int currentTurn
+    ) {
+        if (!runtimeEnabled) {
+            return new QuickJudgeTrigger(false, "skip", "disabled", 0, List.of(), List.of("runtime_disabled"));
         }
+        if (forceAll || runtimeForceAll) {
+            return new QuickJudgeTrigger(true, "always", "force_all", 100, List.of("force_all"), List.of());
+        }
+        String compact = compact(userMessage);
+        if (compact.isBlank()) {
+            return new QuickJudgeTrigger(false, "skip", "empty", 0, List.of(), List.of("empty_message"));
+        }
+        TriggerExplanation explanation = explainQuickJudgeTrigger(userMessage, localIntent, localContinuity);
+        if (isUserSelfRescue(compact, localIntent, localContinuity)) {
+            List<String> reasons = new ArrayList<>(explanation.reasons);
+            reasons.add("urgent_user_self_rescue:+5");
+            return new QuickJudgeTrigger(true, "urgent", "user_self_rescue", Math.max(5, explanation.score), reasons, explanation.suppressedReasons);
+        }
+        if (turnUnderstanding != null && turnUnderstanding.shouldAskQuickJudge) {
+            List<String> reasons = new ArrayList<>(explanation.reasons);
+            reasons.add("turn_understanding:" + blank(turnUnderstanding.primaryAct) + ":" + turnUnderstanding.confidence);
+            if (turnUnderstanding.localConflicts != null) {
+                for (LocalConflict conflict : turnUnderstanding.localConflicts) {
+                    if (conflict != null && conflict.type != null && !conflict.type.isBlank()) {
+                        reasons.add("understanding_conflict:" + blank(conflict.type) + ":" + blank(conflict.severity));
+                    }
+                }
+            }
+            String tier = blank(turnUnderstanding.recommendedQuickJudgeTier);
+            int score = Math.max(explanation.score, "urgent".equals(tier) ? 5 : 3);
+            if ("urgent".equals(tier)) {
+                return new QuickJudgeTrigger(true, "urgent", "turn_understanding", score, reasons, explanation.suppressedReasons);
+            }
+            if ("opportunistic".equals(tier)) {
+                return new QuickJudgeTrigger(true, "opportunistic", "turn_understanding", score, reasons, explanation.suppressedReasons);
+            }
+            if ("background".equals(tier) && shouldBackgroundReview(currentTurn, compact)) {
+                return new QuickJudgeTrigger(true, "background", "turn_understanding", score, reasons, explanation.suppressedReasons);
+            }
+        }
+        if (explanation.score >= 3) {
+            return new QuickJudgeTrigger(true, "opportunistic", "rule_high_value", explanation.score, explanation.reasons, explanation.suppressedReasons);
+        }
+        if (shouldBackgroundReview(currentTurn, compact)) {
+            List<String> reasons = new ArrayList<>(explanation.reasons);
+            reasons.add("periodic_review_turn:" + currentTurn);
+            return new QuickJudgeTrigger(true, "background", "periodic_review", explanation.score, reasons, explanation.suppressedReasons);
+        }
+        List<String> suppressed = new ArrayList<>(explanation.suppressedReasons);
+        suppressed.add("score_below_threshold:" + explanation.score);
+        return new QuickJudgeTrigger(false, "skip", "low_value", explanation.score, explanation.reasons, suppressed);
+    }
+
+    private record TriggerExplanation(int score, List<String> reasons, List<String> suppressedReasons) {
+    }
+
+    private TriggerExplanation explainQuickJudgeTrigger(String userMessage, IntentState localIntent, DialogueContinuityState localContinuity) {
+        String compact = compact(userMessage);
+        List<String> reasons = new ArrayList<>();
+        List<String> suppressed = new ArrayList<>();
+        if (compact.isBlank()) {
+            suppressed.add("empty_message");
+            return new TriggerExplanation(0, reasons, suppressed);
+        }
+        if (compact.length() > 90) {
+            suppressed.add("message_too_long:" + compact.length());
+            return new TriggerExplanation(0, reasons, suppressed);
+        }
+        int score = 0;
         if (localIntent == null) {
-            return true;
+            reasons.add("missing_local_intent:+3");
+            return new TriggerExplanation(3, reasons, suppressed);
         }
         boolean hasActiveContinuity = localContinuity != null
                 && (!blank(localContinuity.currentObjective).isBlank()
@@ -2811,45 +3579,84 @@ class QuickJudgeService {
                 && !hasActiveContinuity
                 && !localIntent.needsEmpathy
                 && !"meta_repair".equals(localIntent.primaryIntent)) {
-            return false;
+            suppressed.add("plain_light_chat");
+            return new TriggerExplanation(0, reasons, suppressed);
         }
-        int score = 0;
         if ("meta_repair".equals(localIntent.primaryIntent)) {
             score += 4;
+            reasons.add("primary_meta_repair:+4");
         }
         if ("romantic_probe".equals(localIntent.primaryIntent)) {
             score += 3;
+            reasons.add("primary_romantic_probe:+3");
         }
         if ("emotion_share".equals(localIntent.primaryIntent) || localIntent.needsEmpathy) {
             score += 3;
+            reasons.add("emotion_or_empathy:+3");
         }
         if ("scene_push".equals(localIntent.primaryIntent) && hasActiveContinuity) {
             score += 3;
+            reasons.add("scene_push_with_continuity:+3");
         }
         if ("low".equals(localIntent.clarity)) {
             score += 2;
+            reasons.add("low_clarity:+2");
         } else if ("medium".equals(localIntent.clarity)) {
             score += 1;
+            reasons.add("medium_clarity:+1");
         }
         if (localContinuity != null && localContinuity.sceneTransitionNeeded) {
             score += 3;
+            reasons.add("scene_transition_needed:+3");
         }
         if (hasActiveContinuity && localContinuity.confidence < 70) {
             score += 1;
+            reasons.add("continuity_low_confidence:+1");
         }
         if (compact.length() <= 12 && localContinuity != null
                 && (hasActiveContinuity
-                || (containsAny(compact, List.of("可以", "好啊", "好呀", "听你的", "那你讲", "你讲", "算了", "随便"))
+                || (containsAny(compact, List.of(
+                "\u53ef\u4ee5", "\u597d\u554a", "\u597d\u5440", "\u542c\u4f60\u7684", "\u90a3\u4f60\u8bb2", "\u4f60\u8bb2", "\u7b97\u4e86", "\u968f\u4fbf"
+        ))
                 && !"small_talk".equals(localIntent.primaryIntent)))) {
             score += 2;
+            reasons.add("short_acceptance_or_followup:+2");
         }
         if ("question_check".equals(localIntent.primaryIntent) && localContinuity != null && localContinuity.sceneTransitionNeeded) {
             score += 4;
+            reasons.add("question_during_transition:+4");
         }
         if (!"none".equals(blank(localIntent.secondaryIntent)) && !"".equals(blank(localIntent.secondaryIntent))) {
             score += 1;
+            reasons.add("secondary_intent:" + blank(localIntent.secondaryIntent) + ":+1");
         }
-        return score >= 3;
+        return new TriggerExplanation(score, reasons, suppressed);
+    }
+
+    private boolean isUserSelfRescue(String compact, IntentState localIntent, DialogueContinuityState localContinuity) {
+        if ("meta_repair".equals(localIntent == null ? "" : blank(localIntent.primaryIntent))) {
+            return true;
+        }
+        if (containsAny(compact, List.of(
+                "你没懂", "没懂我", "不是这个意思", "我不是这个意思", "你在说什么",
+                "你说什么", "你回复", "你咋回事", "怎么突然", "不对", "不是吧",
+                "重复了", "又说这个", "我们不是", "已经在", "刚才不是", "什么意思"
+        ))) {
+            return true;
+        }
+        if (compact.length() <= 2 && containsAny(compact, List.of("？", "?"))) {
+            return true;
+        }
+        return localContinuity != null
+                && localContinuity.sceneTransitionNeeded
+                && compact.length() <= 12
+                && containsAny(compact, List.of("不是", "不对", "已经", "在哪", "哪里", "？", "?"));
+    }
+
+    private boolean shouldBackgroundReview(int currentTurn, String compact) {
+        return currentTurn > 0
+                && currentTurn % 4 == 0
+                && compact.length() <= 120;
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -3026,6 +3833,295 @@ class QuickJudgeService {
     }
 }
 
+class RelationshipCalibrationTask {
+    final CompletableFuture<RelationshipScoreCalibration> future;
+    final int sourceTurn;
+
+    RelationshipCalibrationTask(CompletableFuture<RelationshipScoreCalibration> future, int sourceTurn) {
+        this.future = future;
+        this.sourceTurn = sourceTurn;
+    }
+}
+
+class RelationshipCalibrationService {
+    private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "relationship-calibration");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    private final String baseUrl;
+    private final String apiKey;
+    private final String model;
+    private final Duration timeout;
+
+    RelationshipCalibrationService() {
+        this.baseUrl = "";
+        this.apiKey = "";
+        this.model = "qwen-plus";
+        this.timeout = Duration.ofMillis(2000);
+    }
+
+    RelationshipCalibrationService(AppConfig config) {
+        this.baseUrl = config == null ? "" : safe(config.plotLlmBaseUrl);
+        this.apiKey = config == null ? "" : safe(config.plotLlmApiKey);
+        this.model = config == null || safe(config.plotLlmModel).isBlank() ? "qwen-plus" : safe(config.plotLlmModel);
+        long configuredTimeout = config == null || config.plotLlmTimeout == null ? 2000L : config.plotLlmTimeout.toMillis();
+        this.timeout = Duration.ofMillis(Math.max(1000L, Math.min(4000L, configuredTimeout)));
+    }
+
+    boolean shouldStart(int currentTurn, String userMessage, TurnEvaluation localEvaluation) {
+        if (!remoteEnabled()) {
+            return false;
+        }
+        if (currentTurn <= 0 || currentTurn % 4 != 0) {
+            return false;
+        }
+        String compact = safe(userMessage).replaceAll("\\s+", "");
+        if (compact.isBlank() || compact.length() > 180) {
+            return false;
+        }
+        return localEvaluation != null && localEvaluation.affectionDelta != null;
+    }
+
+    RelationshipCalibrationTask start(
+            int currentTurn,
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            AgentProfile agent,
+            RelationshipState previousState,
+            TurnEvaluation localEvaluation
+    ) {
+        if (!shouldStart(currentTurn, userMessage, localEvaluation)) {
+            return new RelationshipCalibrationTask(
+                    CompletableFuture.completedFuture(RelationshipScoreCalibration.none("skip")),
+                    currentTurn
+            );
+        }
+        CompletableFuture<RelationshipScoreCalibration> future = CompletableFuture.supplyAsync(() -> {
+            try {
+                RelationshipScoreCalibration calibration = callRemoteCalibration(
+                        currentTurn,
+                        userMessage,
+                        recentContext,
+                        agent,
+                        previousState,
+                        localEvaluation
+                );
+                calibration.sourceTurn = currentTurn;
+                return calibration;
+            } catch (Exception ex) {
+                return RelationshipScoreCalibration.none("fallback:" + failureReason(ex));
+            }
+        }, EXECUTOR);
+        return new RelationshipCalibrationTask(future, currentTurn);
+    }
+
+    private RelationshipScoreCalibration callRemoteCalibration(
+            int currentTurn,
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            AgentProfile agent,
+            RelationshipState previousState,
+            TurnEvaluation localEvaluation
+    ) throws IOException {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", model);
+        payload.put("temperature", 0.1);
+        payload.put("messages", List.of(
+                Map.of(
+                        "role", "system",
+                        "content", "You are a hidden relationship-score calibrator for a campus romance chat game. Return ONLY strict JSON. Do not write dialogue. Calibrate the local score conservatively."
+                ),
+                Map.of(
+                        "role", "user",
+                        "content", Json.stringify(buildInput(currentTurn, userMessage, recentContext, agent, previousState, localEvaluation))
+                )
+        ));
+        return callHttp(payload);
+    }
+
+    private Map<String, Object> buildInput(
+            int currentTurn,
+            String userMessage,
+            List<ConversationSnippet> recentContext,
+            AgentProfile agent,
+            RelationshipState previousState,
+            TurnEvaluation localEvaluation
+    ) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("task", "Check whether the local relationship score needs a tiny next-turn calibration.");
+        input.put("rules", List.of(
+                "Return only JSON.",
+                "Be conservative. If the local score is reasonable, return zero deltas.",
+                "Each dimension delta must be between -2 and 2.",
+                "Total absolute correction should usually be <= 2.",
+                "Do not reward generic small talk unless it shows care, memory, boundary respect, or concrete shared action.",
+                "Do not punish shy or short replies if they answer the current context."
+        ));
+        input.put("output_schema", Map.of(
+                "closenessDelta", "-2..2 integer",
+                "trustDelta", "-2..2 integer",
+                "resonanceDelta", "-2..2 integer",
+                "confidence", "0..100 integer",
+                "reason", "short snake_case reason"
+        ));
+        input.put("turn", currentTurn);
+        input.put("userMessage", safe(userMessage));
+        input.put("agent", Map.of(
+                "id", agent == null ? "" : safe(agent.id),
+                "name", agent == null ? "" : safe(agent.name),
+                "archetype", agent == null ? "" : safe(agent.archetype)
+        ));
+        input.put("previousRelationship", Map.of(
+                "closeness", previousState == null ? 0 : previousState.closeness,
+                "trust", previousState == null ? 0 : previousState.trust,
+                "resonance", previousState == null ? 0 : previousState.resonance,
+                "stage", previousState == null ? "" : safe(previousState.relationshipStage)
+        ));
+        Delta delta = localEvaluation == null || localEvaluation.affectionDelta == null ? new Delta() : localEvaluation.affectionDelta;
+        input.put("localDelta", Map.of(
+                "closeness", delta.closeness,
+                "trust", delta.trust,
+                "resonance", delta.resonance,
+                "total", delta.total
+        ));
+        input.put("localReasons", localEvaluation == null || localEvaluation.scoreReasons == null ? List.of() : localEvaluation.scoreReasons);
+        input.put("behaviorTags", localEvaluation == null || localEvaluation.behaviorTags == null ? List.of() : localEvaluation.behaviorTags);
+        input.put("riskFlags", localEvaluation == null || localEvaluation.riskFlags == null ? List.of() : localEvaluation.riskFlags);
+        input.put("recentContext", summarizeRecentContext(recentContext));
+        return input;
+    }
+
+    private RelationshipScoreCalibration callHttp(Map<String, Object> payload) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) URI.create(trimTrailingSlash(baseUrl) + "/chat/completions").toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout((int) timeout.toMillis());
+        connection.setReadTimeout((int) timeout.toMillis());
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(Json.stringify(payload).getBytes(StandardCharsets.UTF_8));
+        }
+        int status = connection.getResponseCode();
+        String raw = new String(
+                (status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream()).readAllBytes(),
+                StandardCharsets.UTF_8
+        );
+        if (status < 200 || status >= 300) {
+            throw new IOException("relationship_calibration_http_" + status + ":" + raw);
+        }
+        Map<String, Object> parsed = Json.asObject(Json.parse(raw));
+        List<Object> choices = Json.asArray(parsed.get("choices"));
+        if (choices.isEmpty()) {
+            throw new IOException("relationship_calibration_empty_choices");
+        }
+        Map<String, Object> choice = Json.asObject(choices.get(0));
+        Map<String, Object> message = Json.asObject(choice.get("message"));
+        return parseCalibrationJson(Json.asString(message.get("content")));
+    }
+
+    private RelationshipScoreCalibration parseCalibrationJson(String content) throws IOException {
+        Map<String, Object> object = Json.asObject(Json.parse(extractJson(content)));
+        RelationshipScoreCalibration calibration = new RelationshipScoreCalibration();
+        calibration.used = true;
+        calibration.closenessDelta = clamp(Json.asInt(object.get("closenessDelta"), 0), -2, 2);
+        calibration.trustDelta = clamp(Json.asInt(object.get("trustDelta"), 0), -2, 2);
+        calibration.resonanceDelta = clamp(Json.asInt(object.get("resonanceDelta"), 0), -2, 2);
+        calibration.confidence = clamp(Json.asInt(object.get("confidence"), 0), 0, 100);
+        calibration.reason = truncate(safe(Json.asString(object.get("reason"))), 80);
+        return normalizeTotal(calibration);
+    }
+
+    private RelationshipScoreCalibration normalizeTotal(RelationshipScoreCalibration calibration) {
+        int total = calibration.closenessDelta + calibration.trustDelta + calibration.resonanceDelta;
+        if (Math.abs(total) <= 2) {
+            return calibration;
+        }
+        if (Math.abs(calibration.resonanceDelta) > 0) {
+            calibration.resonanceDelta -= Integer.signum(total);
+            total = calibration.closenessDelta + calibration.trustDelta + calibration.resonanceDelta;
+        }
+        if (Math.abs(total) > 2 && Math.abs(calibration.closenessDelta) > 0) {
+            calibration.closenessDelta -= Integer.signum(total);
+            total = calibration.closenessDelta + calibration.trustDelta + calibration.resonanceDelta;
+        }
+        if (Math.abs(total) > 2 && Math.abs(calibration.trustDelta) > 0) {
+            calibration.trustDelta -= Integer.signum(total);
+        }
+        return calibration;
+    }
+
+    private List<Map<String, Object>> summarizeRecentContext(List<ConversationSnippet> recentContext) {
+        List<Map<String, Object>> summary = new ArrayList<>();
+        if (recentContext == null) {
+            return summary;
+        }
+        int start = Math.max(0, recentContext.size() - 6);
+        for (int index = start; index < recentContext.size(); index++) {
+            ConversationSnippet snippet = recentContext.get(index);
+            if (snippet == null || snippet.text == null || snippet.text.isBlank()) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("role", safe(snippet.role));
+            row.put("text", truncate(snippet.text, 140));
+            summary.add(row);
+        }
+        return summary;
+    }
+
+    private boolean remoteEnabled() {
+        return !baseUrl.isBlank() && !apiKey.isBlank();
+    }
+
+    private String extractJson(String content) throws IOException {
+        String text = safe(content).trim();
+        if (text.startsWith("```")) {
+            text = text.replaceFirst("^```[a-zA-Z]*", "").replaceFirst("```$", "").trim();
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            throw new IOException("relationship_calibration_non_json");
+        }
+        return text.substring(start, end + 1);
+    }
+
+    private String trimTrailingSlash(String value) {
+        String text = safe(value);
+        while (text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    private String failureReason(Exception ex) {
+        if (ex == null) {
+            return "unknown";
+        }
+        String message = safe(ex.getMessage());
+        if (!message.isBlank()) {
+            return truncate(message.replaceAll("\\s+", " "), 160);
+        }
+        return ex.getClass().getSimpleName();
+    }
+
+    private String truncate(String value, int maxLength) {
+        String text = safe(value);
+        return text.length() <= maxLength ? text : text.substring(0, maxLength);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+}
+
 class PlotDirectorAgentService {
     private static final String DEFAULT_PLOT_MODEL = "qwen-plus";
     private final String baseUrl;
@@ -3055,6 +4151,7 @@ class PlotDirectorAgentService {
             int forcePlotAtTurn,
             boolean explicitTransition,
             int signal,
+            int plotPressure,
             EmotionState emotionState,
             RelationshipState relationshipState,
             MemorySummary memorySummary,
@@ -3066,7 +4163,7 @@ class PlotDirectorAgentService {
             return guard;
         }
 
-        PlotDirectorAgentDecision local = localDecision(text, replySource, currentTurn, gap, forcePlotAtTurn, signal);
+        PlotDirectorAgentDecision local = localDecision(text, replySource, currentTurn, gap, forcePlotAtTurn, signal, plotPressure);
         if (!remoteEnabled()) {
             return local;
         }
@@ -3079,6 +4176,7 @@ class PlotDirectorAgentService {
                     gap,
                     forcePlotAtTurn,
                     signal,
+                    plotPressure,
                     emotionState,
                     relationshipState,
                     memorySummary,
@@ -3131,13 +4229,32 @@ class PlotDirectorAgentService {
             int currentTurn,
             int gap,
             int forcePlotAtTurn,
-            int signal
+            int signal,
+            int plotPressure
     ) {
-        if (currentTurn >= forcePlotAtTurn && gap >= 5 && signal >= 2) {
+        if (currentTurn >= forcePlotAtTurn && gap >= 5 && (signal >= 2 || plotPressure >= 4)) {
             return new PlotDirectorAgentDecision(
                     "advance_plot",
                     "force_window_with_context_signal",
                     "\u5267\u60c5\u53ea\u987a\u7740\u521a\u624d\u7684\u8bdd\u5f80\u524d\u534a\u6b65\uff0c\u4e0d\u8df3\u5f00\u5f53\u524d\u7528\u6237\u610f\u601d\u3002",
+                    transitionLine(text),
+                    true
+            );
+        }
+        if (plotPressure >= 7 && gap >= 3) {
+            return new PlotDirectorAgentDecision(
+                    "advance_plot",
+                    "accumulated_plot_pressure_ready",
+                    "\u524d\u51e0\u8f6e\u7684\u6c14\u6c1b\u5df2\u7ecf\u84c4\u5230\u53ef\u4ee5\u81ea\u7136\u5f80\u524d\u8d70\u4e00\u62cd\u3002",
+                    transitionLine(text),
+                    true
+            );
+        }
+        if (plotPressure >= 5 && gap >= 5) {
+            return new PlotDirectorAgentDecision(
+                    "advance_plot",
+                    "steady_plot_pressure_ready",
+                    "\u5267\u60c5\u84c4\u529b\u5df2\u7ecf\u8db3\u591f\uff0c\u53ef\u4ee5\u5728\u4e0d\u62a2\u8bdd\u7684\u60c5\u51b5\u4e0b\u63a8\u8fdb\u534a\u6b65\u3002",
                     transitionLine(text),
                     true
             );
@@ -3170,6 +4287,7 @@ class PlotDirectorAgentService {
             int gap,
             int forcePlotAtTurn,
             int signal,
+            int plotPressure,
             EmotionState emotionState,
             RelationshipState relationshipState,
             MemorySummary memorySummary,
@@ -3192,6 +4310,7 @@ class PlotDirectorAgentService {
                                 gap,
                                 forcePlotAtTurn,
                                 signal,
+                                plotPressure,
                                 emotionState,
                                 relationshipState,
                                 memorySummary,
@@ -3241,6 +4360,7 @@ class PlotDirectorAgentService {
             int gap,
             int forcePlotAtTurn,
             int signal,
+            int plotPressure,
             EmotionState emotionState,
             RelationshipState relationshipState,
             MemorySummary memorySummary,
@@ -3265,6 +4385,7 @@ class PlotDirectorAgentService {
         input.put("gapSinceLastPlot", gap);
         input.put("forcePlotAtTurn", forcePlotAtTurn);
         input.put("contextSignal", signal);
+        input.put("plotPressure", plotPressure);
         Map<String, Object> turnContextPayload = new LinkedHashMap<>();
         turnContextPayload.put("primaryIntent", turnContext == null ? "" : safe(turnContext.primaryIntent));
         turnContextPayload.put("secondaryIntent", turnContext == null ? "" : safe(turnContext.secondaryIntent));
@@ -3273,8 +4394,23 @@ class PlotDirectorAgentService {
         turnContextPayload.put("affectionDeltaTotal", turnContext == null ? 0 : turnContext.affectionDeltaTotal);
         turnContextPayload.put("behaviorTags", turnContext == null || turnContext.behaviorTags == null ? List.of() : turnContext.behaviorTags);
         turnContextPayload.put("riskFlags", turnContext == null || turnContext.riskFlags == null ? List.of() : turnContext.riskFlags);
+        turnContextPayload.put("scoreReasons", turnContext == null || turnContext.scoreReasons == null ? List.of() : turnContext.scoreReasons);
+        turnContextPayload.put("plotSignalBreakdown", Map.of(
+                "total", turnContext == null ? 0 : turnContext.plotSignal,
+                "pressure", turnContext == null ? 0 : turnContext.plotPressure,
+                "scene", turnContext == null ? 0 : turnContext.plotSceneSignal,
+                "relationship", turnContext == null ? 0 : turnContext.plotRelationshipSignal,
+                "event", turnContext == null ? 0 : turnContext.plotEventSignal,
+                "continuity", turnContext == null ? 0 : turnContext.plotContinuitySignal,
+                "risk", turnContext == null ? 0 : turnContext.plotRiskSignal
+        ));
         turnContextPayload.put("sceneLocation", turnContext == null ? "" : safe(turnContext.sceneLocation));
         turnContextPayload.put("interactionMode", turnContext == null ? "" : safe(turnContext.interactionMode));
+        turnContextPayload.put("userReplyAct", turnContext == null ? "" : safe(turnContext.userReplyAct));
+        turnContextPayload.put("userReplyActConfidence", turnContext == null ? 0 : turnContext.userReplyActConfidence);
+        turnContextPayload.put("assistantObligation", turnContext == null ? Map.of() : assistantObligationMap(turnContext.assistantObligation));
+        turnContextPayload.put("localConflicts", turnContext == null ? List.of() : localConflictMaps(turnContext.localConflicts));
+        turnContextPayload.put("sceneMoveKind", turnContext == null ? "" : safe(turnContext.sceneMoveKind));
         turnContextPayload.put("continuityObjective", turnContext == null ? "" : safe(turnContext.continuityObjective));
         turnContextPayload.put("continuityAcceptedPlan", turnContext == null ? "" : safe(turnContext.continuityAcceptedPlan));
         turnContextPayload.put("continuityNextBestMove", turnContext == null ? "" : safe(turnContext.continuityNextBestMove));
@@ -3476,6 +4612,39 @@ class PlotDirectorAgentService {
         return result;
     }
 
+    private Map<String, Object> assistantObligationMap(AssistantObligation obligation) {
+        if (obligation == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("type", safe(obligation.type));
+        map.put("source", safe(obligation.source));
+        map.put("priority", obligation.priority);
+        map.put("expectedUserActs", obligation.expectedUserActs == null ? List.of() : obligation.expectedUserActs);
+        map.put("reason", safe(obligation.reason));
+        return map;
+    }
+
+    private List<Map<String, Object>> localConflictMaps(List<LocalConflict> conflicts) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (conflicts == null) {
+            return result;
+        }
+        for (LocalConflict conflict : conflicts) {
+            if (conflict == null) {
+                continue;
+            }
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("type", safe(conflict.type));
+            map.put("severity", safe(conflict.severity));
+            map.put("sourceA", safe(conflict.sourceA));
+            map.put("sourceB", safe(conflict.sourceB));
+            map.put("recommendedAction", safe(conflict.recommendedAction));
+            result.add(map);
+        }
+        return result;
+    }
+
     private String trimTrailingSlash(String value) {
         String text = safe(value);
         while (text.endsWith("/")) {
@@ -3597,8 +4766,20 @@ class PlotDirectorService {
         boolean explicitTransition = moveIntent.isExplicitMove();
         int signal = explicitTransition ? 0 : sceneSignal(userMessage, memorySummary, emotionState, weatherContext, timeContext, replySource, moveIntent);
         signal = adjustSignalWithTurnContext(signal, turnContext, currentTurn, current.forcePlotAtTurn);
+        int plotPressure = evolvePlotPressure(current.plotPressure, signal, moveIntent, explicitTransition);
         enrichTurnContext(turnContext, moveIntent);
-        enrichTurnContext(turnContext, gap, signal, replySource, nowIso);
+        enrichTurnContext(turnContext, gap, signal, plotPressure, replySource, nowIso);
+        enrichPlotSignalBreakdown(
+                turnContext,
+                signal,
+                userMessage,
+                memorySummary,
+                emotionState,
+                replySource,
+                moveIntent,
+                currentTurn,
+                current.forcePlotAtTurn
+        );
         PlotDirectorAgentDecision directorDecision = plotDirectorAgentService.decide(
                 userMessage,
                 replySource,
@@ -3607,6 +4788,7 @@ class PlotDirectorService {
                 current.forcePlotAtTurn,
                 explicitTransition,
                 signal,
+                plotPressure,
                 emotionState,
                 relationshipState,
                 memorySummary,
@@ -3622,29 +4804,100 @@ class PlotDirectorService {
             next.phase = phaseForBeat(next.beatIndex);
             next.lastPlotTurn = currentTurn;
             next.forcePlotAtTurn = currentTurn + 7;
+            next.plotPressure = 0;
             next.sceneFrame = mergeSceneCue(buildSceneFrame(next.phase, userMessage, emotionState, timeContext, weatherContext), directorDecision.sceneCue);
             next.nextBeatHint = nextBeatHint(next.beatIndex);
             next.plotProgress = "第" + next.beatIndex + "/10拍 · " + next.phase;
             pushUniqueLimited(next.openThreads, openThread(userMessage, memorySummary, next.phase) + " / " + directorDecision.reason, 6);
             next.updatedAt = nowIso;
+            consumePlotSignal(turnContext, nowIso);
             return new PlotDecision(next, null, null, true, "plot_push", next.sceneFrame, directorSceneText, detail);
         }
 
         next.sceneFrame = "transition_only".equals(directorDecision.action)
                 ? mergeSceneCue(current.sceneFrame, directorDecision.sceneCue)
                 : buildAmbientScene(current.sceneFrame, emotionState, timeContext, weatherContext);
+        next.plotPressure = plotPressure;
         next.updatedAt = nowIso;
         return new PlotDecision(next, null, null, false, replySource, next.sceneFrame, directorSceneText, detail);
     }
 
-    private void enrichTurnContext(TurnContext turnContext, int gap, int signal, String replySource, String nowIso) {
+    private void enrichTurnContext(TurnContext turnContext, int gap, int signal, int plotPressure, String replySource, String nowIso) {
         if (turnContext == null) {
             return;
         }
         turnContext.plotGap = gap;
         turnContext.plotSignal = signal;
+        turnContext.plotPressure = plotPressure;
         turnContext.replySource = replySource;
         turnContext.updatedAt = nowIso;
+    }
+
+    private void enrichPlotSignalBreakdown(
+            TurnContext turnContext,
+            int totalSignal,
+            String userMessage,
+            MemorySummary memorySummary,
+            EmotionState emotionState,
+            String replySource,
+            SceneMoveIntent moveIntent,
+            int currentTurn,
+            int forcePlotAtTurn
+    ) {
+        if (turnContext == null) {
+            return;
+        }
+        String text = userMessage == null ? "" : userMessage;
+        int risk = turnContext.riskFlags == null ? 0 : turnContext.riskFlags.size();
+        int relationship = 0;
+        if (turnContext.affectionDeltaTotal > 0) {
+            relationship++;
+        }
+        if (turnContext.behaviorTags != null && !turnContext.behaviorTags.isEmpty()) {
+            relationship++;
+        }
+        if ("romantic_probe".equals(turnContext.primaryIntent)) {
+            relationship++;
+        }
+
+        int event = 0;
+        if (memorySummary != null && memorySummary.openLoops != null && !memorySummary.openLoops.isEmpty()) {
+            event++;
+        }
+        if (containsAny(text, List.of("上次", "之前", "还记得", "后来", "答应"))) {
+            event++;
+        }
+
+        int continuity = 0;
+        if (turnContext.continuityObjective != null && !turnContext.continuityObjective.isBlank()) {
+            continuity++;
+        }
+        if (turnContext.continuityAcceptedPlan != null && !turnContext.continuityAcceptedPlan.isBlank()) {
+            continuity++;
+        }
+        if (turnContext.sceneTransitionNeeded || (moveIntent != null && moveIntent.isImplicitMove())) {
+            continuity++;
+        }
+        if (moveIntent != null && moveIntent.blocksPlotAdvance()) {
+            continuity = Math.max(0, continuity - 1);
+        }
+        if ("long_chat_heartbeat".equals(replySource)) {
+            continuity++;
+        }
+
+        int scene = Math.max(0, totalSignal - relationship - event - continuity + risk);
+        if (emotionState != null && emotionState.longing >= 32) {
+            relationship = Math.max(relationship, 1);
+        }
+        if (currentTurn >= forcePlotAtTurn) {
+            event++;
+        }
+
+        turnContext.plotSceneSignal = Math.max(0, scene);
+        turnContext.plotRelationshipSignal = Math.max(0, relationship);
+        turnContext.plotEventSignal = Math.max(0, event);
+        turnContext.plotContinuitySignal = Math.max(0, continuity);
+        turnContext.plotRiskSignal = Math.max(0, risk);
     }
 
     private void enrichTurnContext(TurnContext turnContext, PlotDirectorAgentDecision directorDecision) {
@@ -3658,11 +4911,26 @@ class PlotDirectorService {
         turnContext.requiredUserSignal = directorDecision.requiredUserSignal;
     }
 
+    private void consumePlotSignal(TurnContext turnContext, String nowIso) {
+        if (turnContext == null) {
+            return;
+        }
+        turnContext.plotGap = 0;
+        turnContext.plotSignal = 0;
+        turnContext.plotPressure = 0;
+        turnContext.plotSceneSignal = 0;
+        turnContext.plotRelationshipSignal = 0;
+        turnContext.plotEventSignal = 0;
+        turnContext.plotContinuitySignal = 0;
+        turnContext.plotRiskSignal = 0;
+        turnContext.updatedAt = nowIso;
+    }
+
     private void enrichTurnContext(TurnContext turnContext, SceneMoveIntent moveIntent) {
         if (turnContext == null || moveIntent == null) {
             return;
         }
-        turnContext.sceneMoveIntent = moveIntent.type;
+        turnContext.sceneMoveKind = moveIntent.moveType;
         turnContext.sceneMoveTarget = moveIntent.targetLocation;
         turnContext.sceneMoveReason = moveIntent.reason;
         turnContext.sceneMoveConfidence = moveIntent.confidence;
@@ -3685,10 +4953,32 @@ class PlotDirectorService {
         if ("meta_repair".equals(turnContext.primaryIntent) || (turnContext.riskFlags != null && !turnContext.riskFlags.isEmpty())) {
             adjusted = Math.max(0, adjusted - 1);
         }
+        String replyAct = turnContext.userReplyAct == null ? "" : turnContext.userReplyAct;
+        if (containsAny(replyAct, List.of("answer_question", "topic_only", "scene_stay", "reject", "defer", "clarify"))) {
+            adjusted = Math.max(0, adjusted - 2);
+        }
+        if (turnContext.sceneMoveKind != null && List.of("stay", "cancel_move", "arrived", "topic_only").contains(turnContext.sceneMoveKind)) {
+            adjusted = Math.max(0, adjusted - 2);
+        }
+        if (turnContext.localConflicts != null && !turnContext.localConflicts.isEmpty()) {
+            adjusted = Math.max(0, adjusted - 1);
+        }
         if (currentTurn >= forcePlotAtTurn) {
             adjusted++;
         }
         return Math.max(0, adjusted);
+    }
+
+    private int evolvePlotPressure(int previousPressure, int signal, SceneMoveIntent moveIntent, boolean explicitTransition) {
+        int pressure = Math.max(0, previousPressure);
+        if (explicitTransition || moveIntent != null && moveIntent.blocksPlotAdvance()) {
+            return Math.max(0, pressure - 1);
+        }
+        if (signal <= 0) {
+            return Math.max(0, pressure - 1);
+        }
+        int gain = Math.max(1, signal - 2);
+        return Math.min(10, Math.max(signal, pressure + gain));
     }
 
     private String directorDetail(PlotDirectorAgentDecision decision) {
@@ -3884,6 +5174,7 @@ class PlotDirectorService {
         next.openThreads = new ArrayList<>(current.openThreads);
         next.lastPlotTurn = current.lastPlotTurn;
         next.forcePlotAtTurn = current.forcePlotAtTurn;
+        next.plotPressure = current.plotPressure;
         next.plotProgress = current.plotProgress;
         next.nextBeatHint = current.nextBeatHint;
         next.updatedAt = current.updatedAt;
@@ -4040,7 +5331,7 @@ class SceneDirectorService {
         next.interactionMode = moveIntent.shouldMove && !moveIntent.interactionMode.isBlank()
                 ? moveIntent.interactionMode
                 : detectInteractionMode(text, next.interactionMode);
-        next.sceneSummary = buildSceneSummary(next, changed, text);
+        next.sceneSummary = buildSceneSummary(next, changed, text, moveIntent);
         next.updatedAt = nowIso;
         return next;
     }
@@ -4072,12 +5363,27 @@ class SceneDirectorService {
         return fallback == null || fallback.isBlank() ? "face_to_face" : fallback;
     }
 
-    private String buildSceneSummary(SceneState state, boolean changed, String userMessage) {
+    private String buildSceneSummary(SceneState state, boolean changed, String userMessage, SceneMoveIntent moveIntent) {
         if (changed) {
             String place = state.subLocation == null || state.subLocation.isBlank()
                     ? state.location
                     : state.location + state.subLocation;
             return "场景被轻轻带到了" + place + "这一侧，接下来的话也跟着换了气氛。";
+        }
+        String moveType = moveIntent == null ? "" : safe(moveIntent.moveType);
+        boolean duplicateTargetMove = moveIntent != null
+                && moveIntent.shouldMove
+                && !safe(moveIntent.targetLocation).isBlank()
+                && safe(moveIntent.targetLocation).equals(safe(state.location));
+        if (("topic_only".equals(moveType)
+                || "stay".equals(moveType)
+                || "cancel_move".equals(moveType)
+                || "arrived".equals(moveType)
+                || "no_change".equals(moveType)
+                || duplicateTargetMove)
+                && !"online_chat".equals(state.interactionMode)
+                && !"phone_call".equals(state.interactionMode)) {
+            return state.sceneSummary == null || state.sceneSummary.isBlank() ? "\u4f60\u4eec\u8fd8\u5728\u540c\u4e00\u4e2a\u573a\u666f\u91cc\uff0c\u628a\u8bdd\u6162\u6162\u5f80\u4e0b\u63a5\u3002" : state.sceneSummary;
         }
         if ("online_chat".equals(state.interactionMode)) {
             return "话题暂时落回了线上，语气也更像隔着一层屏幕慢慢对上。";
@@ -4228,6 +5534,7 @@ class EnhancedPlotDirectorService extends PlotDirectorService {
         nextArc.openThreads = new ArrayList<>(base.nextPlotState == null ? arc.openThreads : base.nextPlotState.openThreads);
         nextArc.lastPlotTurn = base.nextPlotState == null ? arc.lastPlotTurn : base.nextPlotState.lastPlotTurn;
         nextArc.forcePlotAtTurn = base.nextPlotState == null ? arc.forcePlotAtTurn : base.nextPlotState.forcePlotAtTurn;
+        nextArc.plotPressure = base.nextPlotState == null ? arc.plotPressure : base.nextPlotState.plotPressure;
         nextArc.plotProgress = "第" + nextArc.beatIndex + "拍 / 第" + nextArc.arcIndex + "段";
         nextArc.nextBeatHint = base.nextPlotState == null ? arc.nextBeatHint : base.nextPlotState.nextBeatHint;
         nextArc.checkpointReady = base.advanced && nextArc.beatIndex > 0 && nextArc.beatIndex % 10 == 0;
@@ -4388,6 +5695,7 @@ class EnhancedPlotDirectorService extends PlotDirectorService {
         next.openThreads = new ArrayList<>(current.openThreads);
         next.lastPlotTurn = current.lastPlotTurn;
         next.forcePlotAtTurn = current.forcePlotAtTurn;
+        next.plotPressure = current.plotPressure;
         next.plotProgress = current.plotProgress;
         next.nextBeatHint = current.nextBeatHint;
         next.checkpointReady = current.checkpointReady;

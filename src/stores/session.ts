@@ -5,6 +5,7 @@ import type {
   AgentProfile,
   AnalyticsOverview,
   PresenceResponse,
+  SessionDebugExport,
   SessionRecord,
   VisitorContextUpdateResult,
   VisitorInitResult
@@ -331,6 +332,24 @@ export const useSessionStore = defineStore("session", () => {
     return result;
   }
 
+  async function exportDebugData() {
+    if (!currentSession.value) {
+      return;
+    }
+    const snapshot = await api<SessionDebugExport>(`/api/session/export?session_id=${encodeURIComponent(currentSession.value.sessionId)}`);
+    const agentName = snapshot.session?.agent?.name || currentSession.value.agent.name || "session";
+    const filename = `campus-pulse-${agentName}-${snapshot.sessionId}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   return {
     booting,
     busy,
@@ -360,6 +379,7 @@ export const useSessionStore = defineStore("session", () => {
     submitChoice,
     continueCheckpoint,
     settleCheckpoint,
-    updatePresence
+    updatePresence,
+    exportDebugData
   };
 });

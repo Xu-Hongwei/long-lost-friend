@@ -2,6 +2,7 @@ package com.campuspulse;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,7 @@ public class SmokeTest {
         shouldAnswerFeelingQuestionDirectly(orchestrator);
         shouldCarrySceneForward(orchestrator);
         shouldExposeStructuredReplyParts(orchestrator);
+        shouldExportSessionDebugSnapshot(orchestrator);
         shouldPersistVisitorContext(orchestrator);
         shouldTriggerPresenceHeartbeat(orchestrator);
         shouldHoldPlotOnEarlyTurns(orchestrator);
@@ -48,6 +50,9 @@ public class SmokeTest {
         shouldKeepPlotPushInsideCurrentConversation(orchestrator);
         shouldPreferWeightedEvent(orchestrator);
         shouldBlockStageJumpByTrustGate(orchestrator);
+        shouldUseDimensionGateForInternalStageUpdates(orchestrator);
+        shouldApplyOnlyMeaningfulQuickJudgeCorrections();
+        shouldKeepSceneSummaryWhenAlreadyAtTarget();
         shouldOfferChoiceInteraction(orchestrator);
         shouldApplyChoiceOutcome(orchestrator);
         shouldSoftBlockUnsafeInput(orchestrator);
@@ -215,6 +220,24 @@ public class SmokeTest {
         assertTrue(result.containsKey("action_text"), "chat reply should expose action_text field");
     }
 
+    private static void shouldExportSessionDebugSnapshot(ChatOrchestrator orchestrator) throws Exception {
+        Map<String, Object> visitor = orchestrator.initVisitor("");
+        Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
+        orchestrator.sendMessage(Map.of(
+                "visitorId", visitor.get("visitorId"),
+                "sessionId", session.get("sessionId"),
+                "agentId", "healing",
+                "userMessage", "\u6211\u4eca\u5929\u6709\u70b9\u7d2f\uff0c\u4f46\u8fd8\u662f\u60f3\u548c\u4f60\u804a\u4e00\u4f1a\u3002"
+        ));
+
+        Map<String, Object> snapshot = orchestrator.exportSessionDebugData(String.valueOf(session.get("sessionId")));
+        assertTrue("session_debug_snapshot".equals(String.valueOf(snapshot.get("purpose"))), "debug export should identify its purpose");
+        assertTrue(castMap(snapshot.get("summary")).containsKey("quickJudgeStatus"), "debug export should include summary signals");
+        assertTrue(!Json.asArray(snapshot.get("turnTimeline")).isEmpty(), "debug export should include turn timeline");
+        assertTrue(castMap(snapshot.get("latestSignals")).containsKey("turnContext"), "debug export should include latest signal snapshot");
+        assertTrue(castMap(snapshot.get("session")).containsKey("history"), "debug export should include full session payload");
+    }
+
     private static void shouldPersistVisitorContext(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");
         Map<String, Object> updated = orchestrator.updateVisitorContext(Map.of(
@@ -352,6 +375,93 @@ public class SmokeTest {
         Map<String, Object> nextState = orchestrator.getSessionState((String) session.get("sessionId"));
         Map<String, Object> relationship = castMap(nextState.get("relationshipState"));
         assertTrue(!"确认关系".equals(String.valueOf(relationship.get("relationshipStage"))), "high closeness alone should not skip into final stage");
+    }
+
+    private static void shouldUseDimensionGateForInternalStageUpdates(ChatOrchestrator orchestrator) throws Exception {
+        Method method = ChatOrchestrator.class.getDeclaredMethod("relationshipStageForState", RelationshipState.class, String.class);
+        method.setAccessible(true);
+
+        RelationshipState oneDimensional = new RelationshipState();
+        oneDimensional.closeness = 90;
+        oneDimensional.trust = 0;
+        oneDimensional.resonance = 0;
+        oneDimensional.affectionScore = 90;
+        String gated = String.valueOf(method.invoke(orchestrator, oneDimensional, "\u521d\u8bc6"));
+        assertTrue("\u521d\u8bc6".equals(gated), "internal stage update should require all three dimensions, not only total score");
+
+        RelationshipState allHigh = new RelationshipState();
+        allHigh.closeness = 30;
+        allHigh.trust = 30;
+        allHigh.resonance = 30;
+        allHigh.affectionScore = 90;
+        String singleStep = String.valueOf(method.invoke(orchestrator, allHigh, "\u521d\u8bc6"));
+        assertTrue("\u5347\u6e29".equals(singleStep), "internal stage update should advance at most one stage per turn");
+    }
+
+    private static void shouldApplyOnlyMeaningfulQuickJudgeCorrections() {
+        QuickJudgeDecision noop = new QuickJudgeDecision(
+                true,
+                "",
+                "none",
+                "neutral",
+                "",
+                false,
+                "",
+                "none",
+                90,
+                "noop"
+        );
+        assertTrue(!noop.shouldApply(), "quick judge noop values should not count as an applied correction");
+
+        QuickJudgeDecision sceneOnly = new QuickJudgeDecision(
+                true,
+                "",
+                "",
+                "",
+                "",
+                true,
+                "",
+                "",
+                90,
+                "scene_only"
+        );
+        assertTrue(sceneOnly.shouldApply(), "scene transition correction should apply even without objective text");
+
+        QuickJudgeDecision nextMoveOnly = new QuickJudgeDecision(
+                true,
+                "",
+                "",
+                "",
+                "",
+                false,
+                "\u5148\u56de\u7b54\u7528\u6237\u521a\u624d\u7684\u95ee\u9898",
+                "",
+                90,
+                "next_move_only"
+        );
+        assertTrue(nextMoveOnly.shouldApply(), "nextBestMove-only correction should apply");
+    }
+
+    private static void shouldKeepSceneSummaryWhenAlreadyAtTarget() {
+        SceneDirectorService sceneDirector = new SceneDirectorService();
+        SceneState current = new SceneState();
+        current.location = "\u56fe\u4e66\u9986";
+        current.interactionMode = "face_to_face";
+        current.sceneSummary = "\u4f60\u4eec\u5df2\u7ecf\u5728\u56fe\u4e66\u9986\u91cc\u5b89\u9759\u5730\u804a\u7740\u3002";
+        current.updatedAt = "2026-04-26T00:00:00Z";
+
+        SceneState next = sceneDirector.evolve(
+                current,
+                "\u6211\u4eec\u53bb\u56fe\u4e66\u9986\u5427",
+                null,
+                null,
+                null,
+                3,
+                "2026-04-26T00:01:00Z"
+        );
+
+        assertTrue("\u56fe\u4e66\u9986".equals(next.location), "duplicate scene move should keep current location");
+        assertTrue(current.sceneSummary.equals(next.sceneSummary), "duplicate scene move should keep existing summary");
     }
 
     private static void shouldOfferChoiceInteraction(ChatOrchestrator orchestrator) throws Exception {

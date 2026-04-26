@@ -12,6 +12,7 @@ final class ClosedLoopAgentTest {
         shouldAllowPlotAdvanceAfterEnoughContext(orchestrator);
         shouldExposeThreeAgentStateInSession(orchestrator);
         shouldKeepAcceptedPlanInDialogueContinuity(orchestrator);
+        shouldClearCarriedPlanForHeartbeat();
     }
 
     private static void shouldCoordinateChatScoringAndPlotHold(ChatOrchestrator orchestrator) throws Exception {
@@ -103,6 +104,9 @@ final class ClosedLoopAgentTest {
         assertNonBlank(latest.get("reply_text"), "chat agent should still answer during plot decision");
         assertTrue(castMap(latest.get("emotion_state")).containsKey("currentMood"), "emotion state should keep feeding chat tone");
         assertTrue(advanced != null, "enough context should allow one plot beat to advance");
+        Map<String, Object> advancedTurnContext = castMap(advanced.get("turn_context"));
+        assertTrue(((Number) advancedTurnContext.get("plotGap")).intValue() == 0, "advanced plot turn should consume plot gap");
+        assertTrue(((Number) advancedTurnContext.get("plotSignal")).intValue() == 0, "advanced plot turn should consume plot signal");
         Map<String, Object> advancedDelta = castMap(advanced.get("affection_delta"));
         assertTrue(((Number) advancedDelta.get("total")).intValue() >= 4, "plot advancement should apply a stronger macro score than ordinary micro chat");
         assertTrue(Json.asArray(advanced.get("behavior_tags")).stream().map(String::valueOf).anyMatch("plot_macro_score"::equals), "plot advancement should mark macro scoring");
@@ -125,6 +129,25 @@ final class ClosedLoopAgentTest {
         assertTrue(castMap(state.get("lastResponsePlan")).containsKey("dialogueMode"), "session should expose latest response plan");
         assertTrue(castMap(state.get("lastHumanizationAudit")).containsKey("feltHeard"), "session should expose humanization audit");
         assertTrue(castMap(state.get("lastTurnContext")).containsKey("plotDirectorAction"), "session should expose latest shared turn context");
+    }
+
+    private static void shouldClearCarriedPlanForHeartbeat() {
+        DialogueContinuityState state = new DialogueContinuityState();
+        state.currentObjective = "\u4e00\u8d77\u5f80\u524d\u8d70";
+        state.acceptedPlan = "\u4e00\u8d77\u5f80\u524d\u8d70";
+        state.sceneTransitionNeeded = true;
+        state.nextBestMove = "\u627f\u63a5\u8ba1\u5212\u5f00\u59cb\u884c\u52a8";
+
+        DialogueContinuityState result = new DialogueContinuityService().applyHeartbeatSelfContext(
+                state,
+                "\u90a3\u6211\u4eec\u5c31\u8fc7\u53bb\u770b\u770b\uff0c\u8bf4\u4e0d\u5b9a\u4f1a\u6709\u65b0\u7684\u98ce\u666f\u3002",
+                "2026-04-26T10:00:00Z"
+        );
+
+        assertTrue(result.currentObjective.isBlank(), "heartbeat should clear already-carried objective");
+        assertTrue(result.acceptedPlan.isBlank(), "heartbeat should clear already-carried accepted plan");
+        assertTrue(!result.sceneTransitionNeeded, "heartbeat should not re-trigger the same scene transition");
+        assertTrue(result.nextBestMove.contains("\u4e0d\u8981\u91cd\u65b0\u8be2\u95ee"), "heartbeat should instruct the agent not to ask the same plan again");
     }
 
     private static void shouldKeepAcceptedPlanInDialogueContinuity(ChatOrchestrator orchestrator) throws Exception {

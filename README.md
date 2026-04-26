@@ -7,8 +7,10 @@
 - 短期上下文 + 长期结构化记忆
 - 好感度与关系阶段状态机
 - 剧情事件触发
+- 本轮信号与剧情蓄力调试
 - 安全拦截与兜底回复
 - 试点数据概览
+- 会话调试数据导出
 - 可切换的大模型接入层
 
 ## 启动
@@ -92,7 +94,7 @@ npm start
   -> IntentInference 本地意图初判
   -> DialogueContinuity 初判
   -> LocalCorrection 第一次收敛
-  -> 判断是否模糊/高价值轮
+  -> 判断 QuickJudge 触发等级
   -> 条件异步启动 QuickJudge
 
   -> PlotDirector 当前轮决策
@@ -103,7 +105,7 @@ npm start
        融合 QuickJudge
        LocalCorrection 第三次收敛
      否则
-       不阻塞或只极短等待
+       按触发等级决定是否等待；除 background 外共享前端设置的等待时间
        晚到结果进入下一轮修正槽
 
   -> ExpressiveLlmClient 生成主回复
@@ -113,6 +115,32 @@ npm start
 
 如果 QuickJudge 晚到但置信度足够高，结果会进入下一轮修正槽。下一轮主回复可以自然承认轻微理解偏差，例如“刚才我好像理解偏了一点”，但不会暴露 `QuickJudge`、系统提示词或内部模块名。
 
+QuickJudge 的 `smart` 模式不是只靠高价值轮触发，而是三层触发：
+
+- 用户纠错/困惑/场景不一致：`urgent`，主回复前按前端设置的等待时间短等。
+- 模糊意图、关系试探、情绪承接、场景推进：`opportunistic`，同样共享前端设置的等待时间。
+- 每 4 个用户回合：`background`，后台巡检，不阻塞当前轮。
+
+非沉浸模式的 Quick Judge 面板会展示本地触发分数、触发原因和抑制原因，方便判断这一轮为什么启动、为什么跳过，或为什么只进入后台巡检。
+
+剧情调试面板里有两个容易混淆的字段：
+
+- `本轮信号 / plotSignal`：只表示当前这一轮有没有推进剧情的上下文信号；剧情真正推进后会被消费并归零。
+- `剧情蓄力 / plotPressure`：跨轮累计的剧情压力，用来避免一轮信号不足但连续几轮都在铺垫时剧情永远不动；剧情推进后同样会归零。
+
+关系评分采用“双层协调”：
+
+- 本地评分每轮同步执行，立即更新 `RelationshipState`、`scoreReasons`、`behaviorTags` 和 `riskFlags`。
+- 本地评分会先抽取 `UserRelationalAct`，例如具体照顾、记忆承接、边界尊重、催促控制或敷衍抽离，再统一折算为分数。
+- 异步 LLM 评分每 4 个用户回合后台触发一次，不阻塞当前轮回复。
+- 异步结果晚到后进入 `pendingRelationshipCalibration`，下一轮本地评分完成后才小幅融合。
+- 单次校准总修正控制在约 `±2`，只作为复盘校准，不直接接管本地评分。
+
+调试导出：
+
+- 非沉浸模式可点击“导出调试数据”，导出当前会话的消息、最新智能体信号、Quick Judge 状态、剧情蓄力和关系评分摘要。
+- 后端接口为 `GET /api/session/export?session_id=...`，用于复盘“为什么这一轮推剧情/没推剧情”“为什么 Quick Judge 没采用”等问题。
+
 ## 目录
 
 - `java-server/`：Java 后端源码
@@ -120,3 +148,4 @@ npm start
 - `static/`：Vite 公开静态资源，当前存放角色图像
 - `run-java.ps1`：编译并启动 Java 服务
 - `test-java.ps1`：编译并执行 Java smoke test
+- `SCORING_RULES.md`：关系评分、QuickJudge 触发分、剧情本轮信号/蓄力和剧情推进协作规则
