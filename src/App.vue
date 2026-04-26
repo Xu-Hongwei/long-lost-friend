@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import HeroSection from "./components/HeroSection.vue";
 import AgentRail from "./components/AgentRail.vue";
 import ChatStage from "./components/ChatStage.vue";
@@ -17,6 +17,7 @@ const presenceStore = usePresenceStore();
 const chatStore = useChatStore();
 const checkpointStore = useCheckpointStore();
 const cityDraft = ref("");
+const chatStageAnchor = ref<HTMLElement | null>(null);
 
 const activeDrawerTitle = computed(() => {
   const mapping = {
@@ -39,18 +40,33 @@ const sceneMoodStyle = computed(() => {
 });
 
 async function startFromHero() {
-  const targetId = sessionStore.currentSession?.agent.id || sessionStore.selectedAgent?.id;
+  const targetId = sessionStore.selectedAgent?.id || sessionStore.currentSession?.agent.id;
   if (targetId) {
     await sessionStore.startSession(targetId);
+    await scrollToChatStage();
   }
+}
+
+async function handleSelectAgent(agentId: string) {
+  sessionStore.selectAgent(agentId);
+  await sessionStore.startSession(agentId);
 }
 
 async function handleStart(agentId: string) {
   await sessionStore.startSession(agentId);
+  await scrollToChatStage();
 }
 
 async function saveCity() {
   await sessionStore.saveVisitorContext(cityDraft.value.trim());
+}
+
+async function scrollToChatStage() {
+  await nextTick();
+  chatStageAnchor.value?.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
 }
 
 watch(
@@ -108,28 +124,31 @@ onMounted(async () => {
           :agents="sessionStore.agents"
           :selected-agent-id="sessionStore.currentAgentId"
           :active-session-agent-id="sessionStore.currentSession?.agent.id"
-          @select="sessionStore.selectAgent"
+          :active-session-user-turn-count="sessionStore.currentSession?.userTurnCount || 0"
+          @select="handleSelectAgent"
           @start="handleStart"
         />
 
-        <ChatStage
-          :session="sessionStore.currentSession"
-          :agent="sessionStore.selectedAgent"
-          :analytics="sessionStore.analytics"
-          :ui-mode="uiStore.uiMode"
-          :draft="chatStore.draft"
-          :sending="chatStore.sending"
-          :disabled="chatStore.disabled"
-          :quick-judge-mode="sessionStore.quickJudgeMode"
-          :quick-judge-enabled="sessionStore.quickJudgeEnabled"
-          :quick-judge-wait-seconds="sessionStore.quickJudgeWaitSeconds"
-          @update:draft="chatStore.setDraft"
-          @send="chatStore.send"
-          @choose="sessionStore.submitChoice"
-          @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
-          @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
-          @toggleDrawer="uiStore.toggleDrawer"
-        />
+        <div ref="chatStageAnchor" class="scroll-mt-6">
+          <ChatStage
+            :session="sessionStore.currentSession"
+            :agent="sessionStore.currentSession?.agent || sessionStore.selectedAgent"
+            :analytics="sessionStore.analytics"
+            :ui-mode="uiStore.uiMode"
+            :draft="chatStore.draft"
+            :sending="chatStore.sending"
+            :disabled="chatStore.disabled"
+            :quick-judge-mode="sessionStore.quickJudgeMode"
+            :quick-judge-enabled="sessionStore.quickJudgeEnabled"
+            :quick-judge-wait-seconds="sessionStore.quickJudgeWaitSeconds"
+            @update:draft="chatStore.setDraft"
+            @send="chatStore.send"
+            @choose="sessionStore.submitChoice"
+            @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
+            @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
+            @toggleDrawer="uiStore.toggleDrawer"
+          />
+        </div>
       </div>
 
       <div class="mt-6 flex flex-wrap items-center gap-3">

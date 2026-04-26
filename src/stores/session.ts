@@ -53,9 +53,6 @@ export const useSessionStore = defineStore("session", () => {
   const quickJudgeEnabled = computed(() => quickJudgeMode.value !== "off");
 
   const selectedAgent = computed(() => {
-    if (currentSession.value?.agent) {
-      return currentSession.value.agent;
-    }
     return agents.value.find((agent) => agent.id === currentAgentId.value) || agents.value[0] || null;
   });
 

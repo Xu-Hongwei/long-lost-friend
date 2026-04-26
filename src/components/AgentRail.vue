@@ -2,16 +2,25 @@
 import { motion } from "motion-v";
 import type { AgentProfile } from "../types";
 
-defineProps<{
+const props = defineProps<{
   agents: AgentProfile[];
   selectedAgentId: string;
   activeSessionAgentId?: string;
+  activeSessionUserTurnCount?: number;
 }>();
 
 const emits = defineEmits<{
   select: [agentId: string];
   start: [agentId: string];
 }>();
+
+function hasStartedChat(agentId: string) {
+  return props.activeSessionAgentId === agentId && (props.activeSessionUserTurnCount || 0) > 0;
+}
+
+function startLabel(agent: AgentProfile) {
+  return hasStartedChat(agent.id) ? "回到聊天" : `选${agent.objectPronoun || "TA"}开场`;
+}
 </script>
 
 <template>
@@ -67,7 +76,7 @@ const emits = defineEmits<{
                 </p>
                 <p class="mt-2 text-sm leading-6 text-white/68">{{ agent.tagline }}</p>
               </div>
-              <span v-if="activeSessionAgentId === agent.id" class="rounded-full bg-white/12 px-3 py-1 text-[11px] text-white/72">
+              <span v-if="hasStartedChat(agent.id)" class="rounded-full bg-white/12 px-3 py-1 text-[11px] text-white/72">
                 续聊中
               </span>
             </div>
@@ -87,7 +96,7 @@ const emits = defineEmits<{
               class="mt-auto inline-flex items-center self-start rounded-full border border-white/12 px-4 py-2 text-sm text-white/78 transition hover:border-white/24 hover:bg-white/6"
               @click.stop="emits('start', agent.id)"
             >
-              {{ activeSessionAgentId === agent.id ? "回到聊天" : `选${agent.objectPronoun || "TA"}开场` }}
+              {{ startLabel(agent) }}
             </button>
           </div>
         </div>
