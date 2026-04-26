@@ -373,7 +373,6 @@ export interface AnalyticsOverview {
   avgTurns: number;
   avgSessionMinutes: number;
   retention7d: number;
-  feedbackCompletionRate: number;
   agentPreference: AnalyticsAgentPreference[];
 }
 

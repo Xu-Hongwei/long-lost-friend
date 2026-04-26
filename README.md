@@ -8,7 +8,7 @@
 - 好感度与关系阶段状态机
 - 剧情事件触发
 - 安全拦截与兜底回复
-- 试点数据概览与反馈收集
+- 试点数据概览
 - 可切换的大模型接入层
 
 ## 启动
@@ -116,7 +116,7 @@ npm start
 ## 目录
 
 - `java-server/`：Java 后端源码
-- `public/`：前端单页试玩界面
+- `src/`：Vue 前端源码
+- `static/`：Vite 公开静态资源，当前存放角色图像
 - `run-java.ps1`：编译并启动 Java 服务
 - `test-java.ps1`：编译并执行 Java smoke test
-- `server/`：上一版 Node 实现，当前不作为默认启动入口

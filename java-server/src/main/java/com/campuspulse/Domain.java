@@ -1134,18 +1134,6 @@ class SessionRecord implements Serializable {
     PendingRepairCue pendingRepairCue;
 }
 
-class UserFeedback implements Serializable {
-    String id;
-    String visitorId;
-    String sessionId;
-    String agentId;
-    int rating;
-    String likedPoint;
-    String improvementPoint;
-    boolean continueIntent;
-    String createdAt;
-}
-
 class AnalyticsEvent implements Serializable {
     String id;
     String type;
@@ -1162,7 +1150,6 @@ class AppState implements Serializable {
     List<VisitorRecord> visitors = new ArrayList<>();
     List<SessionRecord> sessions = new ArrayList<>();
     List<ConversationMessage> messages = new ArrayList<>();
-    List<UserFeedback> feedback = new ArrayList<>();
     List<AnalyticsEvent> analyticsEvents = new ArrayList<>();
 
     static AppState empty() {

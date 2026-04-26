@@ -1,7 +1,6 @@
 package com.campuspulse;
 
 import java.nio.file.Path;
-import java.nio.file.Files;
 import java.time.Duration;
 
 class AppConfig {
@@ -80,7 +79,7 @@ class AppConfig {
     static AppConfig load() {
         Path root = Path.of("").toAbsolutePath().normalize();
         Path distDir = root.resolve("dist");
-        Path staticDir = Files.exists(distDir.resolve("index.html")) ? distDir : root.resolve("public");
+        Path staticDir = distDir;
         String portValue = getenvOrDefault("PORT", "3000");
         boolean preferDashScopeMain = hasAny(
                 System.getenv("DASHSCOPE_API_KEY"),

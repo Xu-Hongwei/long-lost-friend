@@ -331,30 +331,6 @@ export const useSessionStore = defineStore("session", () => {
     return result;
   }
 
-  async function submitFeedback(payload: {
-    rating: number;
-    likedPoint: string;
-    improvementPoint: string;
-    continueIntent: boolean;
-  }) {
-    if (!currentSession.value) {
-      return;
-    }
-    await api("/api/feedback", {
-      method: "POST",
-      body: JSON.stringify({
-        visitor_id: visitorId.value,
-        session_id: currentSession.value.sessionId,
-        agent_id: currentSession.value.agent.id,
-        rating: payload.rating,
-        liked_point: payload.likedPoint,
-        improvement_point: payload.improvementPoint,
-        continue_intent: payload.continueIntent
-      })
-    });
-    await loadAnalytics();
-  }
-
   return {
     booting,
     busy,
@@ -384,7 +360,6 @@ export const useSessionStore = defineStore("session", () => {
     submitChoice,
     continueCheckpoint,
     settleCheckpoint,
-    updatePresence,
-    submitFeedback
+    updatePresence
   };
 });

@@ -163,8 +163,7 @@ const analyticsRows = computed(() => [
   ["\u4f1a\u8bdd\u6570", valueOrEmpty(props.analytics?.sessionCount)],
   ["\u5e73\u5747\u8f6e\u6b21", valueOrEmpty(props.analytics?.avgTurns)],
   ["\u5e73\u5747\u65f6\u957f", valueOrEmpty(props.analytics?.avgSessionMinutes)],
-  ["7 \u65e5\u7eed\u73a9\u7387", `${props.analytics?.retention7d ?? "--"}%`],
-  ["\u53cd\u9988\u5b8c\u6210\u7387", `${props.analytics?.feedbackCompletionRate ?? "--"}%`]
+  ["7 \u65e5\u7eed\u73a9\u7387", `${props.analytics?.retention7d ?? "--"}%`]
 ]);
 
 const sections = computed(() => [

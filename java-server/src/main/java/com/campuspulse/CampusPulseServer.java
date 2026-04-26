@@ -191,23 +191,6 @@ public class CampusPulseServer {
             return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.getSessionState(request.query.get("session_id"))));
         }
 
-        if ("GET".equals(request.method) && "/api/session/history".equals(request.path)) {
-            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.getSessionHistory(request.query.get("session_id"))));
-        }
-
-        if ("POST".equals(request.method) && "/api/feedback".equals(request.path)) {
-            Map<String, Object> body = readJsonBody(request);
-            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.submitFeedback(Map.of(
-                    "visitorId", Json.asString(body.get("visitor_id")),
-                    "sessionId", Json.asString(body.get("session_id")),
-                    "agentId", Json.asString(body.get("agent_id")),
-                    "rating", Json.asInt(body.get("rating"), 4),
-                    "likedPoint", Json.asString(body.get("liked_point")),
-                    "improvementPoint", Json.asString(body.get("improvement_point")),
-                    "continueIntent", body.get("continue_intent") instanceof Boolean bool && bool
-            ))));
-        }
-
         if ("GET".equals(request.method) && "/api/analytics/overview".equals(request.path)) {
             return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.getAnalyticsOverview()));
         }

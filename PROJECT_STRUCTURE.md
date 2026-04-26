@@ -1,48 +1,62 @@
 # PROJECT_STRUCTURE
 
-## 当前版本概览
+本文档只记录当前有效的项目结构、运行方式和核心协作链路。历史试验、已删除接口、旧 Node 后端、旧原生前端和一次性排错记录不再保留在这里。
 
-当前项目已经从“原生静态前端 + Java 轻量后端”升级为：
+## 1. 项目定位
 
-- 前端：`Vue 3 + Vite + TypeScript + Pinia + Tailwind CSS + Motion for Vue`
-- 后端：轻量 Java HTTP 服务，目录在 `java-server/src/main/java/com/campuspulse/`
-- 持久化：本地文件 `data/runtime/state.bin`
-- 静态资源托管：Java 服务优先读取 `dist/`，若前端尚未构建则回退到旧 `public/`
-- 智能体形态：主聊天智能体 + 剧情编排 + 好感评估 + 记忆/情绪/场景系统
+Campus Pulse 是一个面向校园关系模拟的聊天型 Web 应用：
 
-默认启动：
+- 前端：Vue 3 + Vite + TypeScript + Pinia + Tailwind CSS + Motion for Vue。
+- 后端：轻量 Java HTTP 服务，无 Spring 依赖。
+- 持久化：本地文件 `data/runtime/state.bin`。
+- 静态资源：Vite 从 `static/` 复制公开资源，构建后由 Java 服务托管 `dist/`。
+- 核心体验：选择角色，进入持续会话，由主回复、剧情导演、场景导演、意图修正、记忆与关系系统共同驱动对话。
 
-```bash
-npm start
-```
-
-这会先执行前端构建，再启动 Java 服务，最终访问地址仍是：
+默认访问地址：
 
 ```text
 http://localhost:3000
 ```
 
-前端本地开发预留命令：
+## 2. 常用命令
+
+```bash
+npm start
+```
+
+先执行 `npm run build:web`，再通过 `run-java.ps1` 编译并启动 Java 服务。
 
 ```bash
 npm run dev:web
 ```
 
-前端类型检查：
+仅启动 Vite 前端开发服务，适合单独调前端。
 
 ```bash
 npm run check:web
 ```
 
-后端测试：
+执行 Vue/TypeScript 类型检查。
+
+```bash
+npm run build:web
+```
+
+构建前端到 `dist/`。
 
 ```bash
 npm test
 ```
 
----
+先构建前端，再执行 Java smoke / regression 测试。
 
-## 根目录结构
+```powershell
+.\test-java.ps1
+```
+
+只编译 Java 并运行 Java 测试。
+
+## 3. 根目录结构
 
 ```text
 C:\Users\Administrator\Desktop\chat
@@ -56,744 +70,452 @@ C:\Users\Administrator\Desktop\chat
 ├─ run-java.ps1
 ├─ test-java.ps1
 ├─ src/
-│  ├─ main.ts
-│  ├─ App.vue
-│  ├─ styles.css
-│  ├─ vite-env.d.ts
-│  ├─ components/
-│  ├─ stores/
-│  ├─ lib/
-│  └─ types.ts
 ├─ static/
-│  └─ characters/
-├─ public/
-│  ├─ index.html
-│  ├─ app.js
-│  └─ styles.css
-├─ dist/                        # 构建产物，运行时优先使用
 ├─ java-server/
-│  └─ src/main/java/com/campuspulse/
 ├─ data/runtime/
-│  ├─ state.bin
-│  └─ state.json
-├─ build/
-├─ server/
-└─ tests/
+├─ dist/          # 前端构建产物，可删除后重新生成
+├─ build/         # Java 编译/测试产物，可删除后重新生成
+└─ node_modules/  # npm 依赖，不建议随手删除
 ```
 
-说明：
+当前不再使用的旧目录：
 
-- `src/` 是当前真正维护中的前端源码目录。
-- `static/` 是 Vite 的公开静态资源目录，目前主要存放角色图像。
-- `dist/` 是 Vue 前端构建输出目录。
-- `public/` 仍然保留旧版原生前端，作为未构建时的兜底静态目录。
-- `server/` 与 `tests/` 中的旧 Node 结构不是当前默认运行链路。
+- `public/`：旧原生前端，已删除。
+- `server/`：旧 Node 后端，已删除。
+- `tests/`：旧 Node 测试，已删除。
+- 旧桥接脚本：已删除。
 
----
+## 4. 前端结构
 
-## 前端结构
+### 4.1 入口
 
-### `index.html`
+- `index.html`：Vite HTML 入口，挂载 `#app`。
+- `src/main.ts`：创建 Vue 应用、注册 Pinia、挂载 `App.vue`。
+- `src/App.vue`：页面总装配层，串联 Hero、角色选择、聊天舞台、抽屉和全局氛围色。
+- `src/styles.css`：Tailwind 入口和全局视觉样式。
 
-Vite 前端入口文件，挂载 Vue 根节点 `#app`。
+### 4.2 组件
 
-### `src/main.ts`
+- `src/components/HeroSection.vue`
+  - 首页主视觉区。
+  - 展示当前选中角色的海报、主标题、副标题和开始/续聊按钮。
 
-前端启动入口，负责：
+- `src/components/AgentRail.vue`
+  - 角色横向选择区。
+  - 点击角色会同步切换 Hero、聊天窗口和当前会话。
 
-- 创建 Vue 应用
-- 注入 Pinia
-- 挂载 `App.vue`
-- 引入全局样式
+- `src/components/ChatStage.vue`
+  - 聊天主舞台。
+  - 管理沉浸/观察布局、Quick Judge 面板、消息流、输入区和侧栏信息。
 
-### `src/App.vue`
+- `src/components/MessageStack.vue`
+  - 消息渲染层。
+  - `sceneText` 作为场景气泡展示。
+  - `actionText` 已融合进对话气泡正文，不再单独展示动作气泡。
+  - `speechText` / `text` 是角色或用户真正说的话。
 
-当前前端总装配层，负责：
+- `src/components/ComposerBar.vue`
+  - 输入框和发送按钮。
 
-- 组织首屏 Hero、角色轨道、聊天主舞台
-- 管理沉浸模式 / 观察模式切换
-- 串联 `CheckpointSheet` 与 `InsightDrawer`
-- 将当前选中角色的色板映射到全局氛围背景
+- `src/components/InsightDrawer.vue`
+  - 观察/沉浸辅助信息抽屉。
+  - 展示关系、记忆、剧情、场景、Quick Judge 等状态。
 
-### `src/components/`
+- `src/components/CheckpointSheet.vue`
+  - 每阶段关键节点的总结和继续/结算入口。
 
-当前主要组件：
+- `src/components/RelationshipMiniPanel.vue`
+  - 关系阶段和关系数值展示。
 
-- `HeroSection.vue`
-  - 首页主视觉区
-  - 展示主推角色海报、情绪化文案和主 CTA
-- `AgentRail.vue`
-  - 角色横向轨道
-  - 展示角色立绘、标签、选中态和续聊入口
-- `ChatStage.vue`
-  - 聊天主舞台
-  - 负责消息流、上下文条、关键选项、输入区与桌面端侧边信息区
-- `MessageStack.vue`
-  - 三层消息展示
-  - `sceneText / actionText / speechText` 分离渲染
-- `ComposerBar.vue`
-  - 底部输入条
-  - 结合当前角色、城市和场景提示
-- `InsightDrawer.vue`
-  - 沉浸模式下的底部抽屉
-  - 展示关系、记忆、剧情、数据
-- `CheckpointSheet.vue`
-  - 每 10 拍的阶段总结弹层
-  - 提供“继续推进 / 结算本阶段”
-- `RelationshipMiniPanel.vue`
-  - 关系阶段和三维好感的轻量展示
-- `PlotMiniPanel.vue`
-  - 当前剧情阶段、拍数、路线主题和心跳说明
+- `src/components/PlotMiniPanel.vue`
+  - 剧情阶段、拍数、路线和心跳说明展示。
 
-### `src/stores/`
+### 4.3 Store
 
-当前主要状态层：
+- `src/stores/session.ts`
+  - 会话总状态。
+  - 负责角色列表、当前角色、当前会话、访客 ID、城市上下文、Quick Judge 配置和主要 API 调用。
+  - Quick Judge 前端模式：`off`、`smart`、`always`。
+  - Quick Judge 等待时间：前端以秒为单位传入，当前范围为 `0.06s` 到 `5s`，默认 `0.3s`。
 
-- `session.ts`
-  - 会话总状态中心
-  - 管理 `visitor / agents / currentSession / analytics`
-  - 对接 `/api/visitor/init`、`/api/session/start`、`/api/chat/send`、`/api/session/state`
-- `presence.ts`
-  - 在线心跳状态
-  - 管理输入状态、页面可见性和 `/api/session/presence`
-- `chat.ts`
-  - 当前输入草稿与发送行为
-  - 把输入和心跳状态联动起来
-- `ui.ts`
-  - 管理 `immersive / inspector` 模式和抽屉状态
-- `checkpoint.ts`
-  - 管理阶段总结面板是否打开、是否可继续、是否可结算
+- `src/stores/chat.ts`
+  - 输入草稿和发送行为。
+  - 与 presence typing 状态联动。
 
-### `src/lib/`
+- `src/stores/presence.ts`
+  - 页面可见性、焦点、输入状态和心跳上报。
 
-- `api.ts`
-  - 前端统一 API 调用封装
-- `labels.ts`
-  - 时间、情绪、回复来源、结局倾向等展示标签转换
+- `src/stores/ui.ts`
+  - 沉浸模式、观察模式、抽屉开关。
 
-### `src/types.ts`
+- `src/stores/checkpoint.ts`
+  - 阶段总结弹层状态。
 
-前端类型中心，定义：
+### 4.4 类型与工具
 
-- `AgentProfile`
-- `SessionRecord`
-- `ConversationMessage`
-- `RelationshipState`
-- `MemorySummary`
-- `EmotionState`
-- `PlotState`
-- `PlotArcState`
-- `SceneState`
-- `PresenceState`
-- `AnalyticsOverview`
+- `src/types.ts`
+  - 前端 API 数据类型中心。
+  - 重点类型包括 `AgentProfile`、`SessionRecord`、`ConversationMessage`、`SceneState`、`DialogueContinuityState`、`QuickJudgeStatus`。
 
-### `src/styles.css`
+- `src/lib/api.ts`
+  - 前端统一 fetch 封装。
 
-前端全局样式入口，负责：
+- `src/lib/labels.ts`
+  - 回复来源、时间、情绪、阶段等 UI 标签转换。
 
-- 引入 Tailwind CSS
-- 定义基础视觉 token
-- 处理全局背景、滚动条、图片和动效降级
+## 5. 静态资源
 
----
-
-## 角色视觉资源
-
-### `static/characters/`
-
-当前每个角色都已经补上了本地原创角色图像，目录结构如下：
+角色图片放在 `static/characters/`。Vite 构建时会复制到 `dist/characters/`，后端通过静态文件服务返回。
 
 ```text
 static/characters/
-├─ healing/
-│  ├─ portrait.svg
-│  └─ cover.svg
-├─ lively/
-│  ├─ portrait.svg
-│  └─ cover.svg
-├─ cool/
-│  ├─ portrait.svg
-│  └─ cover.svg
-├─ artsy/
-│  ├─ portrait.svg
-│  └─ cover.svg
-└─ sunny/
-   ├─ portrait.svg
-   └─ cover.svg
+├─ healing/portrait.png
+├─ lively/portrait.png
+├─ cool/portrait.png
+├─ artsy/portrait.png
+└─ sunny/portrait.png
 ```
 
-当前角色视觉方向：
+角色 ID 与当前视觉方向：
 
-- `healing`：图书馆窗边、暖杏粉、温柔治愈
-- `lively`：社团灯牌、夜市热闹、明亮橙金
-- `cool`：夜色楼道、冷蓝灰、克制慢热
-- `artsy`：黄昏桥边、雾紫奶灰、文艺镜头
-- `sunny`：操场清风、清透雾蓝、行动派陪伴
+- `healing`：林晚栀，图书馆窗边，温柔治愈。
+- `lively`：许朝暮，社团夜市，活泼元气。
+- `cool`：沈砚，夜色楼道，冷静慢热。
+- `artsy`：顾遥，黄昏桥边，文艺内敛。
+- `sunny`：周燃，操场清风，阳光运动。
 
-这些图片在构建后会被复制到 `dist/characters/...` 下，由 Java 静态服务直接提供。
+角色设定的后端源头在 `java-server/src/main/java/com/campuspulse/Domain.java`，前端不要把 UI 标签当成设定真源。
 
----
+## 6. 后端结构
 
-## 后端结构
+后端源码目录：
 
-### `AppConfig.java`
+```text
+java-server/src/main/java/com/campuspulse/
+├─ CampusPulseServer.java
+├─ AppConfig.java
+├─ Domain.java
+├─ Services.java
+├─ RuntimeNarrativeServices.java
+├─ AdaptiveServices.java
+├─ ExpressiveLlmClient.java
+├─ NarrativeRelationshipService.java
+├─ EventNarrativeRegistry.java
+├─ Json.java
+└─ ApiException.java
+```
 
----
+### 6.1 `CampusPulseServer.java`
 
-## 2026-04-22 本轮新增记录
+轻量 HTTP 入口，负责：
 
-### 后端人性化闭环
+- 启动 socket 服务。
+- 托管 `dist/` 静态文件。
+- 路由 `/api/*` 请求。
+- 组装核心服务并创建 `ChatOrchestrator`。
 
-- `java-server/src/main/java/com/campuspulse/Domain.java`
-  - 新增运行时类型：
-    - `IntentState`
-    - `ResponsePlan`
-    - `UncertaintyState`
-    - `InitiativeDecision`
-    - `MemoryIntentBinding`
-    - `SearchGroundingSummary`
-    - `RealityEnvelope`
-    - `RelationalTensionState`
-    - `PlotGateDecision`
-    - `SceneConsistencyAudit`
-    - `RealityAudit`
-    - `HumanizationAudit`
-  - `SessionRecord` 新增：
-    - `tensionState`
-    - `lastIntentState`
-    - `lastResponsePlan`
-    - `lastHumanizationAudit`
-    - `lastRealityAudit`
-    - `lastPlotGateDecision`
-  - `LlmRequest` 新增：
-    - `intentState`
-    - `responsePlan`
-    - `uncertaintyState`
-    - `initiativeDecision`
-    - `memoryIntentBindings`
-    - `realityEnvelope`
-    - `tensionState`
-    - `plotGateDecision`
+当前 API：
 
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `ChatOrchestrator` 已接入：
-    - `IntentInferenceService`
-    - `ResponsePlanningService`
-    - `InitiativePolicyService`
-    - `BoundaryResponseService`
-    - `PlotGateService`
-    - `RealityGuardService`
-    - `HumanizationEvaluationService`
-  - `sendMessage` 和 `updatePresence` 现在都会产出并落库：
-    - 意图判断
-    - 回复计划
-    - 张力状态
-    - 真实性审计
-    - 人性化审计
-    - 剧情门控结果
-  - 新增返回字段：
-    - `intent_state`
-    - `response_plan`
-    - `humanization_audit`
-    - `reality_audit`
-    - `plot_gate_reason`
-    - `tension_state`
+- `GET /api/health`
+- `GET /api/agents`
+- `POST /api/visitor/init`
+- `POST /api/visitor/context`
+- `POST /api/session/start`
+- `GET /api/session/state`
+- `POST /api/chat/send`
+- `POST /api/session/presence`
+- `POST /api/session/checkpoint`
+- `POST /api/session/settle`
+- `POST /api/event/choose`
+- `GET /api/analytics/overview`
 
-### 真实性与场景修复
+### 6.2 `AppConfig.java`
 
-- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
-  - 重写并稳定化：
-    - `IntentInferenceService`
-    - `ResponsePlanningService`
-    - `InitiativePolicyService`
-    - `BoundaryResponseService`
-    - `PlotGateService`
-    - `RealityGuardService`
-    - `HumanizationEvaluationService`
-    - `SocialMemoryService`
-    - `EnhancedSocialMemoryService`
-    - `PlotDirectorService`
-    - `SceneDirectorService`
-    - `SearchDecisionService`
-    - `EnhancedPlotDirectorService`
-    - `EnhancedPresenceHeartbeatService`
-    - `RealityContextService`
-  - 当前已明确修复的运行时问题：
-    - 歌词/台词类问题默认不允许乱编
-    - 下午场景下会修正“日落”类错位表达
-    - 晴天场景下会修正“下雨/带伞”类错位表达
-    - `face_to_face` / `mixed_transition` 场景会剔除“打字/发消息/看到你回复”这类线上措辞
-    - 关键剧情新增 `PlotGateDecision`，会按场景、关系底线和间隔做门控
-    - 连续冒犯会提升 `tensionState.guarded`，角色会明确表达不舒服并降主动
-    - 记忆使用新增低价值过滤，避免把“你好啊”这类寒暄误当成高相关回调
-
-### LLM 输出层
-
-- `java-server/src/main/java/com/campuspulse/ExpressiveLlmClient.java`
-  - 新增 `buildPolicySpeech(...)`
-  - 当前主回复会优先处理：
-    - 元对话纠偏
-    - 歌词/台词拒绝乱编
-    - 被冒犯后的边界回应
-    - 初识阶段的慢速升温
-
-### 前端调试字段
-
-- `src/types.ts`
-  - 新增：
-    - `TensionState`
-    - `IntentState`
-    - `ResponsePlan`
-    - `HumanizationAudit`
-    - `RealityAudit`
-    - `PlotGateDecision`
-
-- `src/App.vue`
-- `src/components/InsightDrawer.vue`
-  - inspector 视图已接入：
-    - 本轮判断
-    - 闭环审计
-    - 张力状态
-    - 剧情门控
-
-### 回归验证
-
-- `java-server/src/test/java/com/campuspulse/HumanizationRegressionTest.java`
-  - 新增脚本回归覆盖：
-    - 歌词问题拒绝乱编
-    - 面对面场景去除线上消息措辞
-    - 下午 + 晴天场景修正“日落/下雨”错位
-    - 连续冒犯进入 `guarded`
-    - 场景不匹配时阻止关键剧情误触发
-
-- `java-server/src/test/java/com/campuspulse/SmokeTest.java`
-  - 已接入 `HumanizationRegressionTest.run(orchestrator)`
-
-### 当前验证结论
-
-- `powershell -ExecutionPolicy Bypass -File ./test-java.ps1`
-  - 已通过
-- `com.campuspulse.ExperienceReplay`
-  - 已手动回放验证
-  - 当前 mock 链路下，已明显减少：
-    - 乱编事实
-    - 场景错位
-    - 线上/线下措辞混用
-    - 低质量记忆回调
-
-运行配置入口，负责读取：
+运行配置中心，负责读取：
 
 - `PORT`
+- `DASHSCOPE_*`
+- `ARK_*`
+- `OPENAI_*`
+- `PLOT_LLM_*`
+- `QUICK_JUDGE_*`
+
+当前静态目录固定为 `dist/`。如果没有先构建前端，Java 服务会找不到前端页面。
+
+### 6.3 `Domain.java`
+
+领域模型与角色设定中心，负责：
+
+- 5 个角色的基础资料、性别代词、视觉资源、人物背景。
+- 会话、消息、记忆、关系、剧情、场景、意图、Quick Judge 状态等序列化模型。
+- `AppState` 本地持久化结构。
+
+修改角色设定时优先改这里。
+
+### 6.4 `Services.java`
+
+主业务编排层，核心类是 `ChatOrchestrator`，负责：
+
+- 初始化访客和会话。
+- 处理用户消息。
+- 调用记忆、关系、安全、剧情、场景、Quick Judge 和 LLM。
+- 写入状态文件。
+- 生成前端需要的响应 payload。
+- 处理 presence 心跳、checkpoint、事件选择和 analytics。
+
+### 6.5 `RuntimeNarrativeServices.java`
+
+运行时叙事服务集合，包含：
+
+- `IntentInferenceService`：本地意图初判。
+- `DialogueContinuityService`：连续对话目标、承诺、追问和场景转移状态。
+- `QuickJudgeLocalCorrectionService`：本地修正收敛。
+- `QuickJudgeService`：条件远程轻判断，晚到结果可进入下一轮修正槽。
+- `SceneMoveIntentService`：本地结构化判断“用户是否想移动/换场景”。
+- `PlotDirectorAgentService`：剧情导演智能体，决定当前轮是否推进剧情或转场。
+- `PlotDirectorService` / `EnhancedPlotDirectorService`：把导演结果落成 `PlotDecision`。
+- `SceneDirectorService`：维护当前地点、互动模式、场景目标。
+- `PresenceHeartbeatService` / `EnhancedPresenceHeartbeatService`：心跳回复。
+- `RealityGuardService`：返回前事实与场景一致性修复。
+- `HumanizationEvaluationService`：回复是否自然、是否过度机械的审计。
+- `SearchDecisionService` / `RealityContextService`：时间、天气、搜索上下文。
+
+### 6.6 `AdaptiveServices.java`
+
+本地自适应能力扩展，包含：
+
+- `AdaptiveMemoryService`
+- `AdaptiveRelationshipService`
+- `AdaptiveSafetyService`
+- `AdaptiveCompositeLlmClient`
+
+主要负责记忆提取、关系评分、安全检查和 LLM 降级组合。
+
+### 6.7 `ExpressiveLlmClient.java`
+
+主回复生成层，负责：
+
+- 组装角色、关系、记忆、剧情、场景、Quick Judge 修正、时间天气等上下文。
+- 调用远程模型或本地 mock。
+- 解析 `[[SCENE]]...[[/SCENE]]`、`[[ACTION]]...[[/ACTION]]` 和正文。
+- 屏蔽内部模块名，避免回复里出现 `QuickJudge`、`意图修正`、系统提示词等内部实现。
+- 清洗重复句、重复场景、过度旁白和明显不自然表达。
+
+### 6.8 关系与事件
+
+- `NarrativeRelationshipService.java`
+  - 关系数值和关系阶段更新。
+
+- `EventNarrativeRegistry.java`
+  - 角色事件、路线反馈、剧情事件叙事。
+
+### 6.9 测试
+
+```text
+java-server/src/test/java/com/campuspulse/
+├─ SmokeTest.java
+├─ HumanizationRegressionTest.java
+└─ ClosedLoopAgentTest.java
+```
+
+测试重点：
+
+- API 基础链路。
+- 角色回复人性化回归。
+- 闭环剧情/关系/记忆行为。
+
+## 7. 当前主对话链路
+
+用户发送消息后，当前核心流程是：
+
+```text
+用户输入
+  -> IntentInference 本地意图初判
+  -> DialogueContinuity 初判
+  -> QuickJudgeLocalCorrection 第一次收敛
+  -> 判断 QuickJudge 模式与触发条件
+  -> 条件异步启动 QuickJudge
+
+  -> PlotDirector 当前轮剧情决策
+  -> SceneDirector 场景更新
+  -> QuickJudgeLocalCorrection 第二次收敛
+
+  -> 如果 QuickJudge 已返回且置信度足够
+       融合 QuickJudge
+       QuickJudgeLocalCorrection 第三次收敛
+     否则
+       不阻塞或仅短暂等待
+       晚到结果写入下一轮修正槽
+
+  -> ExpressiveLlmClient 生成主回复
+  -> RealityGuard / Humanization / Scene 清洗
+  -> 保存状态并返回前端
+```
+
+设计原则：
+
+- `PlotDirector` 是当前轮硬前置，因为剧情推进和转场不能完全等下一轮修。
+- `QuickJudge` 是机会型并行助手，不应该长期卡住主回复。
+- `SceneDirector` 吃结构化场景移动意图，负责更新当前地点和互动模式。
+- `ExpressiveLlmClient` 最后收口，拿已经收敛过的状态生成自然语言。
+- 晚到的 Quick Judge 结果进入 `pendingQuickJudgeCorrection`，下一轮由主回复自然承接，不暴露内部模块名。
+
+## 8. Quick Judge 配置
+
+前端非沉浸模式中可以调 Quick Judge：
+
+- `off`：关闭远程轻判断。
+- `smart`：默认模式，只在模糊/高价值轮尝试远程修正。
+- `always`：每轮都尝试远程修正，适合调试或压测。
+
+等待时间：
+
+- 前端以秒为单位设置。
+- 当前前端限制为 `0.06s` 到 `5s`。
+- 默认值为 `0.3s`。
+- 后端会把该值转换为毫秒，并在主回复请求前作为最多额外等待窗口。
+
+环境变量：
+
+- `QUICK_JUDGE_FORCE_ALL=true`
+  - 后端诊断开关，强制非空消息都尝试 Quick Judge。
+  - 日常更推荐用前端面板控制。
+
+- `QUICK_JUDGE_WAIT_MS`
+  - 后端兜底等待窗口。
+  - 当前前端传值会覆盖这一兜底值。
+
+## 9. 心跳机制
+
+前端通过 `presence.ts` 上报：
+
+- 页面是否可见。
+- 页面是否聚焦。
+- 用户是否正在输入。
+- 草稿长度。
+- 最后输入时间。
+- 客户端当前时间。
+
+后端入口：
+
+```text
+POST /api/session/presence
+```
+
+心跳回复不会简单复用普通用户消息的完整推进逻辑，而是走 presence 专用路径：
+
+- 先融合晚到 Quick Judge 修正。
+- 再进行本地连续性和意图收敛。
+- 控制心跳触发频率，避免频繁打扰。
+- 生成更短、更贴近当前关系和上下文的主动陪伴回复。
+
+## 10. LLM 与降级策略
+
+主回复优先级：
+
+1. 如果配置了 `DASHSCOPE_API_KEY` 或相关 `DASHSCOPE_*`，主回复优先使用 DashScope OpenAI-Compatible 链路。
+2. 未配置 DashScope 时，回退到 `ARK_*`。
+3. 再回退到 `OPENAI_*`。
+4. 没有可用远程模型或请求失败时，使用本地 mock。
+
+默认主回复模型：
+
+```text
+qwen-plus-character
+```
+
+剧情/轻判断链路可用 `PLOT_LLM_*` 独立覆盖；没有独立配置时复用主 LLM 配置。
+
+常用环境变量：
+
+- `DASHSCOPE_API_KEY`
+- `DASHSCOPE_BASE_URL`
+- `DASHSCOPE_MODEL`
+- `DASHSCOPE_TIMEOUT_MS`
 - `ARK_API_KEY`
 - `ARK_MODEL`
 - `ARK_BASE_URL`
 - `ARK_TIMEOUT_MS`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_BASE_URL`
+- `OPENAI_TIMEOUT_MS`
+- `PLOT_LLM_API_KEY`
+- `PLOT_LLM_MODEL`
+- `PLOT_LLM_BASE_URL`
+- `PLOT_LLM_TIMEOUT_MS`
 
-本轮已扩展：
+PowerShell 示例：
 
-- 优先使用 `dist/` 作为静态前端目录
-- 若 `dist/index.html` 不存在，则回退到 `public/`
+```powershell
+$env:DASHSCOPE_API_KEY="你的百炼密钥"
+$env:DASHSCOPE_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+$env:DASHSCOPE_MODEL="qwen-plus-character"
+npm start
+```
 
-### `CampusPulseServer.java`
+## 11. 数据文件
 
-Java HTTP 服务入口，负责：
-
-- 路由分发
-- API 请求处理
-- 静态文件托管
-
-本轮已扩展：
-
-- 新增对 `.svg / .png / .jpg / .jpeg / .webp / .woff2` 的内容类型支持
-
-### `Domain.java`
-
-领域模型中心，主要定义：
-
-- `AgentProfile`
-- `VisitorRecord`
-- `SessionRecord`
-- `ConversationMessage`
-- `MemorySummary`
-- `RelationshipState`
-- `StoryEvent`
-- `ChoiceOption`
-- `StoryEventProgress`
-- `LlmRequest`
-- `LlmResponse`
-
-本轮与前端视觉重构直接相关的新增点：
-
-- `AgentProfile.portraitAsset`
-- `AgentProfile.coverAsset`
-- `AgentProfile.styleTags`
-- `AgentProfile.moodPalette`
-- `AgentVisualProfile`
-  - 根据角色 `id` 自动补全视觉资源地址与风格标签
-
-### `Services.java`
-
-主编排文件，当前仍承载：
-
-- `AgentConfigService`
-- `AnalyticsService`
-- `MemoryService`
-- `EventEngine`
-- `ChatOrchestrator`
-
-本轮与前端重构直接相关的接口变化：
-
-- `/api/agents` 现在额外返回：
-  - `portraitAsset`
-  - `coverAsset`
-  - `styleTags`
-  - `moodPalette`
-- `/api/session/state` 中的 `agent` 现在额外返回：
-  - `bio`
-  - `likes`
-  - `portraitAsset`
-  - `coverAsset`
-  - `styleTags`
-  - `moodPalette`
-
----
-
-## 当前运行链路
-
-### 前端链路
-
-1. `npm start`
-2. 执行 `npm run build:web`
-3. Vite 将前端构建到 `dist/`
-4. Java 服务启动并优先托管 `dist/`
-5. 浏览器访问 `http://localhost:3000`
-
-### 聊天链路
-
-1. 前端初始化访客：`POST /api/visitor/init`
-2. 拉取角色列表：`GET /api/agents`
-3. 开始或恢复会话：`POST /api/session/start` / `GET /api/session/state`
-4. 用户发送消息：`POST /api/chat/send`
-5. Presence 心跳：`POST /api/session/presence`
-6. 关键剧情选项：`POST /api/event/choose`
-7. 每 10 拍阶段总结：
-   - `POST /api/session/checkpoint`
-   - `POST /api/session/settle`
-
----
-
-## 本轮新增 / 修改记录
-
-### 前端重构
-
-- 新建 Vue 前端工程：
-  - `index.html`
-  - `src/main.ts`
-  - `src/App.vue`
-  - `src/components/*`
-  - `src/stores/*`
-  - `src/lib/*`
-  - `src/types.ts`
-- 新增 Vite / TypeScript 配置：
-  - `vite.config.ts`
-  - `tsconfig.json`
-- 接入：
-  - `Vue 3`
-  - `Pinia`
-  - `Tailwind CSS`
-  - `Motion for Vue`
-- 页面布局改为：
-  - Hero 主视觉
-  - 角色横向轨道
-  - 聊天主舞台
-  - 沉浸模式抽屉
-  - 阶段总结底部弹层
-
-### 角色视觉
-
-- 为 5 个角色补充本地原创 SVG 角色图
-- 后端角色接口补充视觉资源字段
-
-### 运行方式
-
-- `package.json` 新增：
-  - `build:web`
-  - `dev:web`
-  - `check:web`
-- `npm start` / `npm test` 现在会先构建前端
-
-### 文档
-
-- `PROJECT_STRUCTURE.md` 已重写为干净可维护版
-- 后续每次结构变化、入口调整、关键接口变化，都继续写入本文件
-
-### 本轮界面微调补充
-
-- `HeroSection.vue`
-  - 主攻略对象大图缩小
-  - Hero 改为更明显的自适应双栏比例
-- `ChatStage.vue`
-  - 聊天主舞台改为桌面端固定宽度
-  - 上方上下文提示卡放宽折行条件
-- `MessageStack.vue`
-  - 聊天记录区改为固定高度、内部滚动
-  - 旁白从绝对居中改为更贴近 AI 消息的对齐方式
-  - 聊天气泡与动作条宽度放宽，减少过早换行
-- `AgentRail.vue`
-  - 角色卡底部按钮统一用 `mt-auto` 顶到同一基线
-  - 修复顾遥卡片上“选她开场”位置不齐的问题
-
----
-
-## 后续建议关注点
-
-下一轮如果继续优化，优先建议：
-
-1. 把旧 `public/` 前端彻底下线或移入 `legacy/`
-2. 为角色图像补充更精细的 `thumb` 与移动端裁切版本
-3. 增加前端反馈表单、空状态动画、请求骨架屏
-4. 继续细化聊天页的节奏动效与输入区交互
-5. 为 `InsightDrawer` 增加更完整的记忆、剧情、analytics 细节展示
----
-
-## 2026-04-23 角色背景具体化
-
-- `java-server/src/main/java/com/campuspulse/Domain.java`
-  - 新增 `AgentBackstory` 结构化角色背景。
-  - 每个角色补充：年龄、年级、专业、出生地、当前城市、校园常去地点、爱好、生活节奏、边界细节、情绪模式、隐藏经历、剧情钩子。
-  - `AgentProfile` 新增 `backstory` 字段，并通过 `AgentBackstory.forAgent(agentId)` 自动挂载 5 个角色默认背景。
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `GET /api/agents` 公开返回 `backstory`。
-  - `GET /api/session/state` 的 `agent` 节点同步返回 `backstory`。
-  - 新增 `AgentPresentation.backstoryMap(...)`，统一序列化角色背景。
-- `java-server/src/main/java/com/campuspulse/ExpressiveLlmClient.java`
-  - 主聊天模型提示词新增“角色具体背景”上下文。
-  - 增加约束：背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报设定；隐藏经历只在关系推进、用户主动问起或剧情自然触发时露出。
-- `src/types.ts`
-  - 新增 `AgentBackstory` 前端类型。
-  - `AgentProfile` 新增可选 `backstory` 字段。
-- `src/components/AgentRail.vue`
-  - 角色卡增加年级、专业、出生地的轻量展示。
-- `java-server/src/test/java/com/campuspulse/SmokeTest.java`
-  - 新增回归测试：验证 5 个角色都暴露结构化背景，且会话状态中的角色信息也包含 `backstory`。
----
-
-## 2026-04-23 剧情导演智能体与场景优先级修复
-
-- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
-  - 新增 `PlotDirectorAgentService`，作为后台剧情导演智能体。
-  - 新增 `PlotDirectorAgentDecision`，结构化输出：`action`、`reason`、`sceneCue`、`shouldAdvance`。
-  - 剧情推进改为先由剧情导演判断：`hold_plot` / `transition_only` / `advance_plot` / `heartbeat_nudge`。
-  - 明确场景转移优先级：用户提出“去操场 / 回宿舍 / 去食堂 / 去图书馆”等时，先执行 `transition_only`，不抢跑剧情。
-  - 剧情推进节奏收紧：默认最早强制推进窗口从 4 轮调整到 7 轮，两次剧情推进至少间隔约 4 轮；短反馈和明确转场不触发剧情推进。
-  - 场景识别补充正常中文关键词，避免“去操场”无法从图书馆切换到操场。
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `POST /api/chat/send` 与 presence 主动消息返回新增 `plot_director_decision`，便于调试剧情为什么推进或阻塞。
-- `java-server/src/main/java/com/campuspulse/ExpressiveLlmClient.java`
-  - 对“哈哈哈/嘿嘿”等短反馈增加上下文承接逻辑：如果上一轮助手在唱歌、歌词或音乐上下文中，优先承接上一句，不误判成新的“有什么好笑事情要分享”。
-- `src/types.ts`
-  - 聊天响应类型新增 `plot_director_decision`。
-- `java-server/src/test/java/com/campuspulse/SmokeTest.java`
-  - 新增回归：第二轮不应过早 `plot_push`；明确“去操场”应先转场，不作为剧情推进。
-- `java-server/src/test/java/com/campuspulse/HumanizationRegressionTest.java`
-  - 新增回归：上一轮唱歌后用户只回复“哈哈哈”，回复必须仍承接唱歌/歌词上下文，不能误判成新分享。
-
----
-
-## 2026-04-23 剧情智能体接入 DashScope / OpenAI-Compatible 模型
-
-- `java-server/src/main/java/com/campuspulse/AppConfig.java`
-  - 新增剧情智能体专用配置：`plotLlmBaseUrl`、`plotLlmApiKey`、`plotLlmModel`、`plotLlmTimeout`。
-  - 主聊天模型的 OpenAI-compatible Base URL 兼容 `OPENAI_API_BASE`、`OPENAI_BASE_URL`、`OPENAI_BASE`，避免 base/key 不匹配。
-  - 支持环境变量优先级：
-    - Base URL：`PLOT_LLM_BASE_URL` / `DASHSCOPE_BASE_URL` / `DASHSCOPE_BASE` / `OPENAI_API_BASE` / `OPENAI_BASE_URL` / `OPENAI_BASE`
-    - API Key：`PLOT_LLM_API_KEY` / `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`
-    - Model：`PLOT_LLM_MODEL` / `DASHSCOPE_MODEL` / `OPENAI_MODEL`，未配置时默认 `qwen-plus`
-  - 若剧情模型没有显式配置 Base URL，会默认使用 `https://dashscope.aliyuncs.com/compatible-mode/v1`，避免 DashScope Key 误打到 Ark 默认地址。
-  - 保留原主聊天模型配置，剧情模型可以和主聊天模型分开。
-- `java-server/src/main/java/com/campuspulse/CampusPulseServer.java`
-  - 启动时把 `new PlotDirectorAgentService(config)` 注入 `ChatOrchestrator`，让正式服务使用远程剧情裁判。
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `ChatOrchestrator` 新增可注入 `PlotDirectorAgentService` 的构造函数。
-  - 测试环境默认仍可使用本地剧情裁判，避免回归测试依赖外部网络。
-- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
-  - `PlotDirectorAgentService` 升级为“本地硬门控 + 可选远程剧情智能体”。
-  - 正式服务优先通过 `scripts/plot-director-agent.mjs` 使用 Node `openai` SDK 调用 DashScope OpenAI-compatible 接口。
-  - 若 Node 桥接脚本不存在，则回退到 Java 内置 HTTP client；远程失败时再回退本地剧情裁判。
-  - 明确转场、短反应、剧情间隔过短、非用户/长聊窗口等情况仍由本地规则直接拦截，不交给模型乱推剧情。
-  - 远程调用使用 OpenAI-compatible `/chat/completions`，要求模型只返回 JSON：`action`、`reason`、`sceneCue`、`shouldAdvance`。
-  - 远程失败、返回非 JSON、动作非法或被安全规则阻塞时，自动回退本地剧情裁判。
-- `scripts/plot-director-agent.mjs`
-  - 新增剧情智能体 Node SDK 桥接脚本，使用 `openai` 包。
-  - 读取 `PLOT_LLM_*` / `DASHSCOPE_*` / `OPENAI_API_BASE` / `OPENAI_API_KEY` / `OPENAI_MODEL`。
-  - 从 stdin 接收 Java 传入的 chat completion payload，只向 stdout 输出模型返回的剧情 JSON 内容。
-
----
-
-## 2026-04-23 三智能体协作闭环优化
-
-- `java-server/src/main/java/com/campuspulse/Domain.java`
-  - 新增 `TurnContext`，作为主聊天智能体、好感评分智能体、剧情导演智能体共享的本轮上下文。
-  - `SessionRecord` 新增 `lastTurnContext`，方便 inspector 和回归测试观察本轮协作结果。
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `POST /api/chat/send` 返回新增 `turn_context`。
-  - `GET /api/session/state` 返回新增 `lastTurnContext`。
-  - `TurnContext` 汇总：用户意图、清晰度、用户情绪、好感 delta、行为标签、风险标签、场景位置、互动模式、剧情间隔、剧情信号、剧情导演动作与置信度。
-- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
-  - 剧情导演智能体输入新增 `turnContext`，让剧情模型能看到评分智能体对本轮的判断，而不是只看用户原话。
-  - 远程剧情 JSON schema 扩展：`confidence`、`riskIfAdvance`、`requiredUserSignal`。
-  - 剧情推进新增低置信度保护：远程模型若给出 `advance_plot` 但置信度低于 60，会自动降级为 `hold_plot`。
-  - `plot_director_decision` 调试字符串追加 `confidence / risk / need`，用于解释为什么推进或阻塞。
-- `java-server/src/test/java/com/campuspulse/ClosedLoopAgentTest.java`
-  - 新增并接入闭环回归：验证聊天、评分、剧情共享上下文可用。
-  - 覆盖：早期不抢剧情、明确转场优先、长上下文后剧情导演有明确决策、会话状态暴露三智能体协作字段。
-- `java-server/src/test/java/com/campuspulse/SmokeTest.java`
-  - 将 `ClosedLoopAgentTest.run(...)` 纳入 Java smoke test 主入口。
-
----
-
-## 2026-04-23 三智能体协作二次优化：剧情解释与宏评分
-
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - 在 `sendMessage` 主链路中确认顺序为：输入理解 -> 聊天微评分 -> 剧情导演判断 -> 剧情宏评分 -> 主聊天生成。
-  - 新增 `applyPlotMacroScore(...)`：当剧情导演真正推进一拍时，在普通聊天微评分之外追加中等权重的关系结算。
-  - 宏评分会更新 `closeness / trust / resonance / affectionScore / relationshipStage / relationshipFeedback`，并同步写回 `TurnContext`。
-  - 若本轮处于 `guarded` 张力状态或存在风险标签，则不会因为剧情推进额外加分，避免冲突场景被误当成甜蜜推进。
-- `src/components/PlotMiniPanel.vue`
-  - 重写剧情面板展示逻辑，优先显示 `plotDirectorAction`、`plotDirectorConfidence`、`plotWhyNow`、`plotRiskIfAdvance`、`requiredUserSignal`。
-  - 修复剧情面板中文乱码。
-  - 心跳状态改为次级说明，不再覆盖剧情推进解释，避免误导为“剧情因为心跳没有触发”。
-- `java-server/src/test/java/com/campuspulse/ClosedLoopAgentTest.java`
-  - 增加剧情推进后的宏评分回归：长上下文足够时允许推进剧情，并验证 `affection_delta.total` 明显高于普通微评分。
-  - 验证 `behavior_tags` 中会出现 `plot_macro_score`，证明评分智能体和剧情智能体的结果已经联动。
-- 验证命令：
-  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
-  - `npm run check:web`
-  - `npm run build:web`
-
----
-
-## 2026-04-23 前端中文观察模式与城市上下文修复
-
-- `src/App.vue`
-  - 城市输入改为本地草稿态 `cityDraft`，支持回车/按钮保存，并显示“保存中 / 保存城市”。
-  - 保存城市后继续通过 `/api/visitor/context` 同步时区与天气城市。
-  - 观察抽屉新增传入 `plotState / plotArcState / sceneState / timeContext / weatherContext / emotionState / turnContext`，便于查看完整运行状态。
-- `src/stores/session.ts`
-  - 新增 `VisitorContextUpdateResult` 类型消费。
-  - 修复城市保存后只更新 `visitorContext`、不刷新页面天气的问题：现在会立即写回 `timeContext` 和 `weatherContext`。
-- `src/components/ChatStage.vue`
-  - 将主要英文展示改为中文。
-  - 非沉浸模式新增更多检查信息：本轮智能体闭环、现实上下文、情绪与张力、结局倾向等。
-- `src/components/InsightDrawer.vue`
-  - 重写观察抽屉，统一中文展示。
-  - 新增关系、剧情门控、场景/时间/天气、记忆、本轮决策闭环、情绪张力、真实性审计、试玩数据 8 个信息组。
-- `src/components/PlotMiniPanel.vue`
-  - 统一改为中文展示：剧情与氛围、拍数、阶段、状态、剧情动作、置信度、风险、缺失用户信号、心跳状态。
-- `src/types.ts`
-  - 新增 `VisitorContextUpdateResult`。
-- `java-server/src/test/java/com/campuspulse/SmokeTest.java`
-  - 扩展城市上下文回归：保存城市后必须返回刷新后的 `timeContext` 和 `weatherContext.city`。
-- 验证命令：
-  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
-  - `npm run check:web`
-  - `npm run build:web`
-
----
-
-## 2026-04-23 上下文智能层
-
-- `java-server/src/main/java/com/campuspulse/Domain.java`
-  - 新增 `DialogueContinuityState`，用于保存短期情景工作记忆。
-  - 字段包括：`currentObjective`、`pendingUserOffer`、`acceptedPlan`、`lastAssistantQuestion`、`userAnsweredLastQuestion`、`sceneTransitionNeeded`、`nextBestMove`、`mustNotContradict`、`confidence`。
-  - `SessionRecord` 新增 `dialogueContinuityState`，用于跨轮保存当前行动链。
-  - `LlmRequest` 新增 `dialogueContinuityState`，主聊天模型每轮都能看到当前行动链摘要。
-  - `TurnContext` 新增 `continuityObjective / continuityAcceptedPlan / continuityNextBestMove / continuityGuards`，剧情导演智能体也能读取上下文智能层结果。
-- `java-server/src/main/java/com/campuspulse/RuntimeNarrativeServices.java`
-  - 新增 `DialogueContinuityService`。
-  - 每轮识别用户是否接受上一轮提议、是否产生共同目标、是否需要场景过渡、下一句必须承接什么、哪些事实不能违背。
-  - 重点修复“用户已同意一起去买热饮，下一轮却泛化成从哪开始逛”的断链问题。
-  - 剧情导演输入中的 `turnContext` 增加上下文智能层字段，避免剧情推进忽略当前行动链。
-- `java-server/src/main/java/com/campuspulse/Services.java`
-  - `POST /api/chat/send` 中在意图识别后更新 `DialogueContinuityState`。
-  - 主回复、presence 主动消息、会话状态与聊天响应均暴露上下文智能层字段。
-  - 新增 `dialogueContinuityMap(...)` 用于 API 序列化。
-- `java-server/src/main/java/com/campuspulse/ExpressiveLlmClient.java`
-  - 系统提示词新增“上下文智能层”段落。
-  - 明确要求优先遵守当前共同目标、已确认计划、下一句必须承接和禁止违背事实。
-  - Mock 回复也会在“已确认一起去买热饮”时优先生成热饮相关承接和转场。
-- `src/types.ts`
-  - 新增 `DialogueContinuityState` 类型。
-  - `SessionRecord` 与 presence 响应新增上下文智能层字段。
-- `src/components/ChatStage.vue`
-  - 观察模式新增“上下文智能层”卡片，展示共同目标、已确认计划、下一步承接、是否转场和置信度。
-- `src/components/InsightDrawer.vue`
-  - 观察抽屉新增“上下文智能层”分组，展示完整行动链与禁止违背事实。
-- `java-server/src/test/java/com/campuspulse/ClosedLoopAgentTest.java`
-  - 新增回归：用户提出给角色买热饮、随后接受一起去时，系统必须锁定“一起去买热饮”，并禁止回复泛化成“从哪开始逛”。
-- 验证命令：
-  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
-  - `npm run check:web`
-  - `npm run build:web`
-
----
-
-## 2026-04-23 项目体检与无关文件清理记录
-
-- 本轮检查命令：
-  - `git status --short`
-  - `git status --short --ignored`
-  - `rg --files`
-  - `rg -n "TODO|FIXME|console\.log|debugger|<<<<<<<|>>>>>>>|\uFFFD" src java-server server public scripts PROJECT_STRUCTURE.md`
-  - `npm run check:web`
-  - `powershell -ExecutionPolicy Bypass -File .\test-java.ps1`
-  - `npm run build:web`
-- 检查结果：
-  - 前端 TypeScript/Vue 类型检查通过。
-  - Java smoke 与闭环回归测试通过。
-  - 前端生产构建通过。
-  - 未发现 Git 冲突标记、`debugger`、明显乱码替换符。
-  - 扫描到的 `console.log` 只存在于服务启动日志和剧情智能体 Node 桥接脚本标准输出，属于正常用途。
-- 可安全清理项：
-  - `build/`：Java 编译、测试、运行时生成目录，可由 `test-java.ps1` 或启动脚本重新生成。
-  - `dist/`：Vite 前端构建产物，可由 `npm run build:web` 重新生成。
-- 不建议删除项：
-  - `node_modules/`：依赖目录，虽然可重装，但删除后需要重新 `npm install`。
-  - `data/runtime/state.bin` 与 `data/runtime/state.json`：本地会话与记忆状态，删除会丢失当前试玩数据。
-  - `scripts/plot-director-agent.mjs`：剧情智能体 OpenAI-compatible Node 桥接脚本，是当前三智能体协作链路的一部分。
-- 本轮清理状态：
-  - 已确认 `build/` 与 `dist/` 位于项目根目录且在 `.gitignore` 中。
-  - 删除命令被用户侧拒绝执行，因此本轮没有实际删除文件。
-
----
-
-## 2026-04-23 聊天页面宽度修复
-
-- `src/components/ChatStage.vue`
-  - 修复沉浸模式下聊天窗口仍沿用“聊天区 + 右侧观察栏”双栏栅格的问题。
-  - 沉浸模式现在使用 `mx-auto block w-full max-w-[1180px]`，让聊天主舞台居中并占用更合理的宽度。
-  - 观察模式仍保留双栏：`grid xl:grid-cols-[minmax(0,1fr),360px]`，右侧用于 inspector 信息。
-  - 聊天面板自身改为 `w-full`，避免被旧的 `xl:max-w-[980px]` 锁死。
-
----
-
-## 2026-04-23 聊天宽舞台与角色横向滚动
-
-- `src/components/ChatStage.vue`
-  - 沉浸模式聊天窗口进一步放宽为 `mx-auto block w-full`，不再使用 `max-w-[1180px]`。
-  - 当前聊天舞台会跟随外层页面容器宽度展开，和上方角色选择区视觉宽度保持一致。
-- `src/components/AgentRail.vue`
-  - 移除隐藏滚动条的 `no-scrollbar`，改为显示轻量横向滚动条。
-  - 角色卡从 `flex-1` 改为 `flex-[0_0_clamp(250px,19vw,292px)]`，避免窗口缩小时最后一个角色卡被挤压或显示不全。
-  - 增加 `snap-x snap-mandatory` 与 `snap-start`，横向滚动时更容易停在完整角色卡上。
-
----
-
-## 2026-04-23 Hero 区海报式重排
-
-- `src/components/HeroSection.vue`
-  - 将首页 Hero 从“左大标题 + 右下角角色卡”的松散布局，调整为“左侧心动入口 + 右侧主推角色海报”的两栏结构。
-  - 左侧文案改为更直接说明玩法：5 位校园角色、自然聊天、共同经历、关系剧情与 10 拍阶段总结。
-  - 主 CTA 强化为主要行动入口，辅助胶囊改为当前关系阶段或沉浸式夜聊说明，减少按钮感干扰。
-  - 新增 `Roles / Memory / Plot` 三个轻量信息点，补足首屏信息密度。
-  - 右侧角色视觉卡放大为真正主视觉，加入“当前主推”、角色背景信息和标签，减少大面积无效留白。
+```text
+data/runtime/state.bin
+data/runtime/state.json
+```
+
+- `state.bin` 是运行时主要持久化文件。
+- `state.json` 用于调试观察。
+- 这两个文件包含本地会话状态，不应作为普通清理项随手删除。
+
+如果必须重置本地试玩数据，先确认不需要保留当前会话。
+
+## 12. 构建产物与清理规则
+
+可以安全删除并重新生成：
+
+- `build/`
+- `dist/`
+
+不建议随手删除：
+
+- `node_modules/`
+- `data/runtime/state.bin`
+- `data/runtime/state.json`
+
+已经下线并删除的旧资产：
+
+- 旧 Node 后端。
+- 旧原生前端。
+- 旧 Node 测试。
+- 旧桥接脚本。
+- 旧 SVG 占位图。
+- 独立 replay / latency 探针。
+- 临时日志文件。
+
+## 13. 修改建议入口
+
+常见修改点：
+
+- 改角色设定：优先看 `Domain.java`。
+- 改主回复风格：优先看 `ExpressiveLlmClient.java`。
+- 改智能体协作顺序：优先看 `Services.java` 的 `ChatOrchestrator.sendMessage(...)`。
+- 改 Quick Judge 触发/等待：看 `RuntimeNarrativeServices.java` 的 `QuickJudgeService` 和 `src/stores/session.ts`。
+- 改场景移动判断：看 `SceneMoveIntentService`、`SceneDirectorService`、`PlotDirectorAgentService`。
+- 改聊天界面：看 `ChatStage.vue`、`MessageStack.vue`、`ComposerBar.vue`。
+- 改首页/选人页：看 `HeroSection.vue`、`AgentRail.vue`。
+
+## 14. 当前验证命令
+
+修改结构、接口或智能体链路后，至少跑：
+
+```bash
+npm run check:web
+npm run build:web
+.\test-java.ps1
+```
+
+如果改了前端交互，还应在浏览器里手动验证：
+
+- 首页选择角色是否同步 Hero 和聊天窗口。
+- 新角色“选她/他开场”和已有会话“继续聊”是否区分正确。
+- Quick Judge 面板是否能切换模式和等待时间。
+- `sceneText` 是否只承载场景转移，不和主回复重复。
+- `actionText` 是否融合进对话气泡正文。

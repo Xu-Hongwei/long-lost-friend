@@ -188,7 +188,6 @@ class AnalyticsService {
         }
 
         double retention7d = visitorCount == 0 ? 0 : round(returningVisitors * 100.0 / visitorCount);
-        double feedbackRate = sessionCount == 0 ? 0 : round(state.feedback.size() * 100.0 / sessionCount);
 
         List<Map<String, Object>> preference = new ArrayList<>();
         for (AgentProfile agent : agents) {
@@ -206,7 +205,6 @@ class AnalyticsService {
                 "avgTurns", avgTurns,
                 "avgSessionMinutes", avgMinutes,
                 "retention7d", retention7d,
-                "feedbackCompletionRate", feedbackRate,
                 "agentPreference", preference
         );
     }
@@ -1665,53 +1663,6 @@ class ChatOrchestrator {
     Map<String, Object> getSessionState(String sessionId) throws Exception {
         AppState state = repository.getState();
         return buildSessionPayload(state, sessionId);
-    }
-
-    List<Map<String, Object>> getSessionHistory(String sessionId) throws Exception {
-        AppState state = repository.getState();
-        state.sessions.stream()
-                .filter(session -> sessionId.equals(session.id))
-                .findFirst()
-                .orElseThrow(() -> ApiException.notFound("SESSION_NOT_FOUND", "SESSION_NOT_FOUND"));
-
-        List<Map<String, Object>> history = new ArrayList<>();
-        for (ConversationMessage message : state.messages.stream()
-                .filter(item -> sessionId.equals(item.sessionId))
-                .sorted(Comparator.comparing(item -> Instant.parse(item.createdAt)))
-                .toList()) {
-            history.add(messageMap(message));
-        }
-        return history;
-    }
-
-    Map<String, Object> submitFeedback(Map<String, Object> payload) throws Exception {
-        return repository.transact(state -> {
-            String sessionId = Json.asString(payload.get("sessionId"));
-            SessionRecord session = state.sessions.stream()
-                    .filter(item -> sessionId.equals(item.id))
-                    .findFirst()
-                    .orElseThrow(() -> ApiException.notFound("SESSION_NOT_FOUND", "SESSION_NOT_FOUND"));
-
-            UserFeedback feedback = new UserFeedback();
-            feedback.id = ids("feedback");
-            feedback.visitorId = Json.asString(payload.get("visitorId"));
-            feedback.sessionId = session.id;
-            feedback.agentId = Json.asString(payload.get("agentId"));
-            feedback.rating = Json.asInt(payload.get("rating"), 4);
-            feedback.likedPoint = Json.asString(payload.get("likedPoint"));
-            feedback.improvementPoint = Json.asString(payload.get("improvementPoint"));
-            feedback.continueIntent = payload.get("continueIntent") instanceof Boolean bool && bool;
-            feedback.createdAt = IsoTimes.now();
-            state.feedback.add(feedback);
-
-            analyticsService.recordEvent(state, "feedback_submit", Map.of(
-                    "visitorId", feedback.visitorId,
-                    "sessionId", feedback.sessionId,
-                    "agentId", feedback.agentId
-            ));
-
-            return Map.of("saved", true);
-        });
     }
 
     Map<String, Object> getAnalyticsOverview() throws Exception {
