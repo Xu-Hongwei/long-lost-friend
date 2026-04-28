@@ -24,7 +24,7 @@
 
 初期扫描时存在大量硬失败，典型问题是地点话题误判成移动、用户纠错时仍推进剧情、心跳不承接助手上一句、低投入敷衍被误加分。
 
-本轮最终结果：
+早期基线结果：
 
 ```text
 heartbeat                total= 90 pass= 67 warn= 23 fail=  0
@@ -33,6 +33,17 @@ quick_judge_trigger      total=120 pass= 81 warn= 39 fail=  0
 relationship_scoring     total=240 pass=148 warn= 92 fail=  0
 scene_move               total=180 pass=132 warn= 48 fail=  0
 turn_understanding       total=180 pass= 65 warn=115 fail=  0
+```
+
+经过 runner/数据契约修正和三轮真实规则补强后，当前回归结果：
+
+```text
+heartbeat                total= 90 pass= 79 warn= 11 fail=  0
+plot_signal              total=150 pass=121 warn= 29 fail=  0
+quick_judge_trigger      total=120 pass=109 warn= 11 fail=  0
+relationship_scoring     total=240 pass=240 warn=  0 fail=  0
+scene_move               total=180 pass=175 warn=  5 fail=  0
+turn_understanding       total=180 pass=145 warn= 35 fail=  0
 ```
 
 可复现命令：
@@ -56,8 +67,8 @@ build/local-rule-report.json
 当前 `warn` 主要来自：
 
 - `plot_signal`：很多样例希望更细分的 `minPlotSignal / preferAdvance`，但剧情推进本来受冷却、风险、场景移动和 `plotPressure` 共同影响。
-- `turn_understanding`：部分短句可同时解释为回答问题、接受计划、情绪分享或闲聊，不宜只用单标签压死。
-- `relationship_scoring`：部分 act 标签没有完全命中，但硬性 delta 方向已经正确。
+- `turn_understanding`：剩余 warning 主要集中在混合回复 exact 主类、广义问候后的“回答/闲聊”边界、以及追问是否机会型触发，不宜只用单标签压死。
+- `relationship_scoring`：当前样例已经全部通过，后续应优先看真实聊天导出，而不是继续扩关键词。
 - `heartbeat`：回复焦点的 `should` 更像风格期望，不应变成过硬规则。
 - `quick_judge_trigger`：部分 opportunistic/background 边界是策略问题，适合结合真实日志继续调。
 
@@ -68,8 +79,9 @@ build/local-rule-report.json
 1. 先把实际坏例子写进对应 jsonl。
 2. 判断它是硬边界还是软期望。
 3. 硬边界写入 `must / mustNot`，软期望写入 `should`。
-4. 跑 `.\run-local-rules.ps1` 看是否引入新失败。
-5. 只有当规则稳定、可解释、跨样例有效时，才同步到 `SCORING_RULES.md`。
+4. 跑 `python tools/dataset-mining/validate_local_rule_cases.py` 检查样例格式。
+5. 跑 `.\run-local-rules.ps1` 看是否引入新失败。
+6. 跑 `.\test-java.ps1` 确认 Java smoke test 仍然通过。
+7. 只有当规则稳定、可解释、跨样例有效时，才同步到 `SCORING_RULES.md`。
 
 不要为了清空 `warn` 继续堆关键词。更好的方向是增加结构化字段、候选分解释和真实 `bug-replay / human-labeled / adversarial / blind-eval` 数据。
-

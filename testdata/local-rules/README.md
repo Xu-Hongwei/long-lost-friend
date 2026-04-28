@@ -79,25 +79,67 @@
 
 数字类字段尽量写成趋势或范围，不写死绝对值。例如 `minPlotSignal`、`trustDeltaMin`、`closenessDeltaMax`。
 
-## 推荐工作流
+## 回归验证流程
 
-1. 从实际聊天问题或规则改动中提炼样例。
-2. 先把样例写进对应 jsonl 文件。
-3. 再改本地规则或提示词。
-4. 之后接入 runner，自动喂给本地模块检查。
-
-第一阶段只维护数据，不强制接入自动测试；现在已经有 Java runner 可以把这些样例自动喂给本地规则模块。
-
-格式与关键评分一致性校验：
+从项目根目录执行：
 
 ```powershell
 python tools/dataset-mining/validate_local_rule_cases.py
+.\run-local-rules.ps1
+.\test-java.ps1
 ```
 
-真实规则回归：
+三个命令分别对应：
+
+- `validate_local_rule_cases.py`：检查 JSONL 格式、数量和关键字段约束。
+- `run-local-rules.ps1`：编译 Java 本地模块，运行 `LocalRuleRunner`，把样例喂给真实规则代码。
+- `test-java.ps1`：跑 Java smoke test，确认基础编译和关键服务没有坏。
+
+`run-local-rules.ps1` 的详细报告会写入：
 
 ```powershell
-.\run-local-rules.ps1
+build/local-rule-report.json
 ```
 
-详细报告会写入 `build/local-rule-report.json`。
+只看某个模块时可以加 `--module`：
+
+```powershell
+.\run-local-rules.ps1 --module turn_understanding
+```
+
+推荐排查顺序：
+
+1. 先看有没有 `fail`。`fail` 来自 `must / mustNot`，优先当作 bug 或测试契约错误处理。
+2. 再看 `warn`。`warn` 来自 `should`，只是观察信号，不要求清零。
+3. 对照 `WARN_TRIAGE_2026-04-27.md` 判断剩余 warning 属于真实规则缺口、runner/数据契约问题，还是软标签差异。
+4. 改规则后重新跑三步命令，确认没有新增 `fail`，也没有让其他模块明显退化。
+
+PowerShell 快速查看 warning 分布：
+
+```powershell
+$r = Get-Content -Raw -Encoding UTF8 .\build\local-rule-report.json | ConvertFrom-Json
+$r.cases | Where-Object { $_.status -eq 'warn' } |
+  Group-Object module | Sort-Object Name |
+  ForEach-Object { '{0} {1}' -f $_.Name, $_.Count }
+```
+
+查看某个模块的 warning 家族：
+
+```powershell
+$r = Get-Content -Raw -Encoding UTF8 .\build\local-rule-report.json | ConvertFrom-Json
+$r.cases | Where-Object { $_.status -eq 'warn' -and $_.module -eq 'turn_understanding' } |
+  ForEach-Object { if ($_.id -match '^(.*)_\d+$') { $Matches[1] } else { $_.id } } |
+  Group-Object | Sort-Object Count -Descending |
+  Select-Object Count, Name
+```
+
+## 新增或修正规则的推荐工作流
+
+1. 从实际聊天问题、调试导出或规则改动中提炼样例。
+2. 先把样例写进对应 jsonl 文件，并判断写入 `must / should / mustNot` 哪一层。
+3. 跑 `python tools/dataset-mining/validate_local_rule_cases.py` 确认数据格式正确。
+4. 再改本地规则或提示词。
+5. 跑 `.\run-local-rules.ps1` 和 `.\test-java.ps1`，观察是否新增 `fail` 或跨模块退化。
+6. 只有规则稳定、可解释、跨样例有效时，才同步到 `SCORING_RULES.md`。
+
+不要为了清空 `warn` 继续堆宽关键词。更好的方向是增加结构化字段、候选分解释，或补充真实 `bug-replay / human-labeled / adversarial / blind-eval` 数据。

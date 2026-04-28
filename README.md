@@ -145,8 +145,9 @@ QuickJudge 的 `smart` 模式不是只靠高价值轮触发，而是三层触发
 
 - `testdata/local-rules/` 保存 960 条改写后的 CampusPulse 风格 JSONL 样例，覆盖场景移动、回应动作、QuickJudge 触发、剧情信号、心跳和关系评分。
 - `tools/dataset-mining/` 保存数据集挖掘和样例生成工具；原始公开数据集只应下载到被忽略的 `raw-datasets/`，不要提交原始语料。
-- 可以用 `python tools/dataset-mining/validate_local_rule_cases.py` 校验样例格式、数量分布和关键评分一致性。
-- 可以用 `.\run-local-rules.ps1` 编译并运行 Java 本地规则 runner，把样例喂给真实本地模块，输出 `pass / warn / fail`，报告写入 `build/local-rule-report.json`。
+- 回归验证最小流程：先运行 `python tools/dataset-mining/validate_local_rule_cases.py` 检查样例格式，再运行 `.\run-local-rules.ps1` 把样例喂给真实 Java 本地模块，最后运行 `.\test-java.ps1` 做 Java smoke test。
+- `.\run-local-rules.ps1` 会输出 `pass / warn / fail`，并把详细报告写入 `build/local-rule-report.json`；`fail` 优先修，`warn` 需要结合 `testdata/local-rules/WARN_TRIAGE_2026-04-27.md` 判断，不要求清零。
+- 更完整的回归验证说明见 `testdata/README.md` 和 `testdata/local-rules/README.md`。
 
 ## 目录
 
