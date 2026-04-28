@@ -141,11 +141,21 @@ QuickJudge 的 `smart` 模式不是只靠高价值轮触发，而是三层触发
 - 非沉浸模式可点击“导出调试数据”，导出当前会话的消息、最新智能体信号、Quick Judge 状态、剧情蓄力和关系评分摘要。
 - 后端接口为 `GET /api/session/export?session_id=...`，用于复盘“为什么这一轮推剧情/没推剧情”“为什么 Quick Judge 没采用”等问题。
 
+本地规则测试数据：
+
+- `testdata/local-rules/` 保存 960 条改写后的 CampusPulse 风格 JSONL 样例，覆盖场景移动、回应动作、QuickJudge 触发、剧情信号、心跳和关系评分。
+- `tools/dataset-mining/` 保存数据集挖掘和样例生成工具；原始公开数据集只应下载到被忽略的 `raw-datasets/`，不要提交原始语料。
+- 可以用 `python tools/dataset-mining/validate_local_rule_cases.py` 校验样例格式、数量分布和关键评分一致性。
+- 可以用 `.\run-local-rules.ps1` 编译并运行 Java 本地规则 runner，把样例喂给真实本地模块，输出 `pass / warn / fail`，报告写入 `build/local-rule-report.json`。
+
 ## 目录
 
 - `java-server/`：Java 后端源码
 - `src/`：Vue 前端源码
 - `static/`：Vite 公开静态资源，当前存放角色图像
+- `testdata/local-rules/`：本地规则测试样例库
+- `tools/dataset-mining/`：公开数据集启发的样例生成工具
 - `run-java.ps1`：编译并启动 Java 服务
+- `run-local-rules.ps1`：编译并运行本地规则 runner
 - `test-java.ps1`：编译并执行 Java smoke test
 - `SCORING_RULES.md`：关系评分、QuickJudge 触发分、剧情本轮信号/蓄力和剧情推进协作规则

@@ -88,13 +88,16 @@ totalDelta = closenessDelta + trustDelta + resonanceDelta
 | Act | 触发倾向 | 分数影响 | 标签 |
 | --- | --- | --- | --- |
 | `QUALITY_QUESTION` | 用户提出有方向的问题，如“为什么”“你觉得”“能不能讲讲”“推荐” | `closeness +1` | `rel_act:quality_question` |
-| `CONCRETE_CARE_ACTION` | 用户给出具体照顾或共同动作，如“我陪你”“一起去”“给你带”“先休息” | `closeness +1`, `trust +1` | `rel_act:concrete_care_action` |
-| `CONTINUITY_ANCHOR` | 用户承接记忆、场景或上下文，如“上次”“刚才”“已经在”“我们不是” | `resonance +1` | `rel_act:continuity_anchor` |
-| `BOUNDARY_RESPECT` | 用户尊重节奏，如“不急”“慢慢来”“不逼你”“如果你愿意” | `trust +1` | `rel_act:boundary_respect` |
-| `PACE_OR_CONTROL_PRESSURE` | 用户催促或控制，如“快点”“必须”“别废话”“你就该” | `trust -1` | `rel_act:pace_or_control_pressure` |
-| `LOW_EFFORT_DISMISSIVE` | 用户敷衍抽离，如“随便”“算了”“无所谓” | `closeness -1`, `resonance -1` | `rel_act:low_effort_dismissive` |
+| `CONCRETE_CARE_ACTION` | 用户给出具体照顾或共同动作，如“我陪你”“陪你坐一会儿”“给你带”“先休息”“陪你慢慢来” | `closeness +1`, `trust +1` | `rel_act:concrete_care_action` |
+| `CONTINUITY_ANCHOR` | 用户承接记忆、场景或上下文，如“上次”“刚才”“已经在”“我们不是”“你担心”“你喜欢靠窗” | `trust +1`, `resonance +1` | `rel_act:continuity_anchor` |
+| `BOUNDARY_RESPECT` | 用户尊重节奏，如“不急”“慢慢来”“不逼你”“不想说也没关系”“不用勉强” | `trust +1` | `rel_act:boundary_respect` |
+| `ROMANTIC_PROBE` | 用户害羞或含蓄回应好感，如“其实有一点”“有点吧”“不是讨厌”“会紧张” | 不直接加分，仅作为解释标签 | `rel_act:romantic_probe` |
+| `PACE_OR_CONTROL_PRESSURE` | 用户催促或控制，如“快点”“必须”“别废话”“跟我走就行”“你就说” | `trust -1` | `rel_act:pace_or_control_pressure` |
+| `LOW_EFFORT_DISMISSIVE` | 用户敷衍抽离，如“随便”“算了”“无所谓”“你开心就好”“懒得想”“想太多” | `closeness -1`, `resonance -1` | `rel_act:low_effort_dismissive` |
 
 这层不直接替代基础关键词，而是给本地评分增加一层更可解释的结构化判断。
+低投入敷衍不能因为“继续聊天”本身被误判为亲近；只有它同时包含具体照顾、认真回应或记忆承接时，才允许被其他正向 act 抵消。
+害羞短答不能因为字数短被当作低质量回复；如果它包含含蓄好感或紧张承认，应作为 `ROMANTIC_PROBE` 留给前端调试和后续评分观察。
 
 ## 4. 角色偏好评分
 
@@ -235,6 +238,22 @@ QuickJudge 之前会先经过 `TurnUnderstandingService`。这不是远程模型
 - `romantic_probe`
 - `small_talk`
 
+场景移动结构化边界：
+
+- `move_to / return_to` 必须有真实移动或返回意图，不能只靠地点名触发。
+- “你喜欢图书馆吗”“要是真去食堂”“只是聊到操场”这类句子应优先视为 `topic_only`。
+- “图书馆听起来不错，但我还没说要去”“先把话说完”“不是要换地方”这类带地点的边界句，在没有 active movement objective 时优先按 `topic_only / defer` 处理。
+- “有人跑过去”“路人经过”这类第三方观察不是用户移动意图，不应触发 `move_to`。
+- “已经到了”“现在就在这里”应优先视为 `arrived`，用于清理重复目标。
+- “先别去”“不去了”“不想动”“不用送”应优先视为 `cancel_move / stay / defer`，用于暂停当前移动目标。
+
+上一轮助手义务识别边界：
+
+- “要不要去食堂”“我们去图书馆看看吗”“要不换个地方”这类带问号的计划邀请，优先识别为 `accept_plan` 义务，而不是普通 `answer_question`。
+- `advice_seek` 优先进入 `answer_question`，避免“继续复习”“要不要参加”里的动作/否定词抢成场景移动或拒绝。
+- active objective 下，如果用户显式改到另一个地点，`scene_move` 仍可做主候选，但应保留 `counter_offer` 候选，方便 QuickJudge 或主回复理解“用户在改约目标”。
+- 记忆核对、连续性追问和暧昧探测属于高价值本地理解信号，通常应给 `QuickJudge` 一个 `opportunistic` 机会。
+
 ### 7.2 localConflicts
 
 `localConflicts` 是下游判断的唯一结构化冲突来源，不再对外保留旧的 `conflictFlags / understandingConflicts` 字段。
@@ -260,6 +279,7 @@ QuickJudge 之前会先经过 `TurnUnderstandingService`。这不是远程模型
 | `skip` | 不启动 | 无 |
 
 触发分只决定是否启动 QuickJudge，不直接改关系分。
+记忆和连续性检查也属于高价值轻判断来源，例如“你还记得吗”“我刚才问的是什么”“你是不是没听懂”。这类 `question_check` 应进入 `opportunistic`，但如果用户明确指出错误、质疑理解或要求先纠正，则升级为 `urgent`。
 
 ### 7.4 QuickJudge 的修正范围
 
@@ -296,6 +316,10 @@ QuickJudge 不直接修改 `closeness/trust/resonance`。它主要修正：
 ```text
 if user explicitly requests scene transition:
   transition_only，不推进剧情拍点
+else if localConflicts contains user_self_rescue or user_cancels_active_objective:
+  hold_plot
+else if sceneMoveKind is stay/cancel_move/arrived/topic_only:
+  hold_plot or transition_only
 else if user_turn and message is short reaction:
   hold_plot
 else if replySource is not user_turn or long_chat_heartbeat:
@@ -309,6 +333,8 @@ else:
 含义：
 
 - 显式换场优先交给场景移动，不等于剧情推进。
+- 用户纠错、质疑理解、要求先回答、取消目标或已经到达目标地点时，`plotPressure` 不能强行覆盖。
+- 地点话题、假设移动、停留和取消移动优先保护当前语义，不应被当成剧情推进机会。
 - 用户短句反应要先接话，不应突然推剧情。
 - 普通心跳和 presence 检测不应随便推剧情。
 - 距离上次剧情推进不足 4 个用户回合时默认冷却。

@@ -72,11 +72,19 @@ C:\Users\Administrator\Desktop\chat
 ├─ src/
 ├─ static/
 ├─ java-server/
+├─ testdata/
+├─ tools/
 ├─ data/runtime/
 ├─ dist/          # 前端构建产物，可删除后重新生成
 ├─ build/         # Java 编译/测试产物，可删除后重新生成
 └─ node_modules/  # npm 依赖，不建议随手删除
 ```
+
+新增测试数据与工具：
+
+- `testdata/local-rules/`：本地规则测试样例库，保存改写后的 CampusPulse 风格 JSONL 样例。
+- `tools/dataset-mining/`：从公开数据集标签/任务结构生成本地规则测试样例的辅助工具。
+- `raw-datasets/`：可选原始公开数据集下载目录，已加入 `.gitignore`，不应提交。
 
 当前不再使用的旧目录：
 

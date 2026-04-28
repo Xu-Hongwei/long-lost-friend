@@ -4,3 +4,5 @@ dist/
 node_modules/
 data/runtime/*.json
 data/runtime/*.bin
+raw-datasets/
+testdata/local-rules/derived-candidates/

@@ -8,7 +8,11 @@ class NarrativeRelationshipService extends RelationshipService {
     private final List<String> honestShareKeywords = List.of("其实", "心事", "担心", "害怕", "压力", "迷茫", "秘密", "最近");
     private final List<String> initiativeKeywords = List.of("一起", "下次", "以后", "想和你", "约", "计划", "见面");
     private final List<String> boundaryKeywords = List.of("慢一点", "尊重", "不想勉强", "按你的节奏", "如果你愿意");
-    private final List<String> dismissiveKeywords = List.of("随便", "算了", "无所谓", "爱回不回", "别烦");
+    private final List<String> dismissiveKeywords = List.of(
+            "随便", "算了", "无所谓", "爱回不回", "别烦", "想太多", "有什么好说",
+            "有什么好认真聊", "都一样", "你开心就好", "懒得想", "别问我了",
+            "没差", "你要这么想也行"
+    );
     private final List<String> offenseKeywords = List.of("闭嘴", "恶心", "滚", "烦死了", "没意思");
     private final List<String> memoryKeywords = List.of("上次", "之前", "还记得", "那天", "你说过", "答应过");
 
@@ -163,6 +167,7 @@ class NarrativeRelationshipService extends RelationshipService {
         CONCRETE_CARE_ACTION,
         CONTINUITY_ANCHOR,
         BOUNDARY_RESPECT,
+        ROMANTIC_PROBE,
         PACE_OR_CONTROL_PRESSURE,
         LOW_EFFORT_DISMISSIVE
     }
@@ -192,14 +197,19 @@ class NarrativeRelationshipService extends RelationshipService {
                     reasons.add("act:concrete_care_action +2\uff1a\u7ed9\u51fa\u5177\u4f53\u7167\u987e\u6216\u5171\u540c\u884c\u52a8\uff0c\u4fe1\u4efb\u548c\u4eb2\u8fd1\u90fd\u66f4\u7a33");
                 }
                 case CONTINUITY_ANCHOR -> {
+                    trust += 1;
                     resonance += 1;
                     addUnique(tags, "rel_act:continuity_anchor");
-                    reasons.add("act:continuity_anchor +1\uff1a\u627f\u63a5\u4e86\u8bb0\u5fc6\u3001\u573a\u666f\u6216\u4e0a\u4e0b\u6587\uff0c\u9ed8\u5951\u611f\u4e0a\u5347");
+                    reasons.add("act:continuity_anchor +2\uff1a\u627f\u63a5\u4e86\u8bb0\u5fc6\u3001\u573a\u666f\u6216\u4e0a\u4e0b\u6587\uff0c\u4fe1\u4efb\u548c\u9ed8\u5951\u90fd\u4f1a\u4e0a\u5347");
                 }
                 case BOUNDARY_RESPECT -> {
                     trust += 1;
                     addUnique(tags, "rel_act:boundary_respect");
                     reasons.add("act:boundary_respect +1\uff1a\u660e\u786e\u7ed9\u51fa\u8282\u594f\u548c\u8fb9\u754c\u7a7a\u95f4\uff0c\u4fe1\u4efb\u66f4\u5bb9\u6613\u589e\u957f");
+                }
+                case ROMANTIC_PROBE -> {
+                    addUnique(tags, "rel_act:romantic_probe");
+                    reasons.add("act:romantic_probe +0\uff1a\u5bb3\u7f9e\u6216\u542b\u84c4\u7684\u597d\u611f\u56de\u5e94\u4e0d\u5e94\u88ab\u5f53\u4f5c\u6577\u884d");
                 }
                 case PACE_OR_CONTROL_PRESSURE -> {
                     trust -= 1;
@@ -222,32 +232,53 @@ class NarrativeRelationshipService extends RelationshipService {
         String text = userMessage == null ? "" : userMessage;
         List<UserRelationalAct> acts = new ArrayList<>();
         if (containsAny(text, List.of(
-                "\u4e3a\u4ec0\u4e48", "\u4f60\u89c9\u5f97", "\u80fd\u4e0d\u80fd", "\u53ef\u4ee5\u8bb2", "\u8be6\u7ec6\u8bf4", "\u63a8\u8350"
+                "\u4e3a\u4ec0\u4e48", "\u4f60\u89c9\u5f97", "\u80fd\u4e0d\u80fd", "\u53ef\u4ee5\u8bb2", "\u8be6\u7ec6\u8bf4", "\u63a8\u8350",
+                "怎么关心你", "怎么陪你", "希望我怎么", "想听你说", "讲讲", "为什么会", "会不会", "你喜欢"
         ))) {
             acts.add(UserRelationalAct.QUALITY_QUESTION);
         }
         if (containsAny(text, List.of(
-                "\u6211\u966a\u4f60", "\u4e00\u8d77\u53bb", "\u6211\u6765", "\u7ed9\u4f60\u5e26", "\u9001\u4f60", "\u5148\u4f11\u606f", "\u522b\u786c\u6491", "\u8bf4\u5230\u505a\u5230"
+                "\u6211\u966a\u4f60", "\u4e00\u8d77\u53bb", "\u6211\u6765", "\u7ed9\u4f60\u5e26", "\u9001\u4f60", "\u5148\u4f11\u606f", "\u522b\u786c\u6491", "\u8bf4\u5230\u505a\u5230",
+                "陪你坐", "陪你按", "陪你慢慢", "我就陪", "给你空间", "在这儿陪", "陪你走", "陪你回", "带你去",
+                "给你带", "给你买", "帮你留意", "坐十分钟", "坐到", "多听一会", "走安静", "陪你走到",
+                "不会催", "边上经过", "不赶", "找个更", "不会一直追问", "给我拿", "我听着", "我就在附近",
+                "把伞往", "帮你把包", "旁边绕过去", "直接跟我说"
         ))) {
             acts.add(UserRelationalAct.CONCRETE_CARE_ACTION);
         }
         if (containsAny(text, List.of(
-                "\u4e0a\u6b21", "\u4e4b\u524d", "\u8fd8\u8bb0\u5f97", "\u521a\u624d", "\u6211\u4eec\u4e0d\u662f", "\u5df2\u7ecf\u5728"
+                "\u4e0a\u6b21", "\u4e4b\u524d", "\u8fd8\u8bb0\u5f97", "\u521a\u624d", "\u6211\u4eec\u4e0d\u662f", "\u5df2\u7ecf\u5728",
+                "你说", "你提到", "刚刚", "刚才说", "你刚才", "你说过", "不是说", "我记得", "我记住了",
+                "你不想", "你担心", "如果你累", "你累了", "靠窗的位置", "你喜欢靠窗"
         )) || referencesKnownMemory(text, memorySummary)) {
             acts.add(UserRelationalAct.CONTINUITY_ANCHOR);
         }
         if (containsAny(text, List.of(
-                "\u4e0d\u6025", "\u6162\u6162\u6765", "\u6309\u4f60\u7684\u8282\u594f", "\u4e0d\u903c\u4f60", "\u5982\u679c\u4f60\u613f\u610f"
+                "\u4e0d\u6025", "\u6162\u6162\u6765", "\u6309\u4f60\u7684\u8282\u594f", "\u4e0d\u903c\u4f60", "\u5982\u679c\u4f60\u613f\u610f",
+                "没关系", "可以先不", "先不聊", "不用马上", "不用急", "不用勉强", "不想说也没关系", "还没准备好",
+                "不会拉你", "可以拒绝", "不会因此", "先停", "讲多少", "安静一会", "不会替你",
+                "你说停", "普通聊天", "不用为了", "少问一点", "照顾你的感受", "不会越过", "不用逞强",
+                "不会硬拉", "不用现在回答", "不用马上回应", "不用马上回答", "慢一点", "沉默"
         ))) {
             acts.add(UserRelationalAct.BOUNDARY_RESPECT);
         }
         if (containsAny(text, List.of(
-                "\u5feb\u70b9", "\u5fc5\u987b", "\u522b\u5e9f\u8bdd", "\u600e\u4e48\u8fd8", "\u4f60\u5c31\u8be5"
+                "其实有一点", "有一点", "有点吧", "不太会说", "说不清", "不是讨厌", "会紧张", "我也说不清"
+        ))) {
+            acts.add(UserRelationalAct.ROMANTIC_PROBE);
+        }
+        if (containsAny(text, List.of(
+                "\u5feb\u70b9", "\u5fc5\u987b", "\u522b\u5e9f\u8bdd", "\u600e\u4e48\u8fd8", "\u4f60\u5c31\u8be5",
+                "跟我走就行", "就说", "别绕来绕去", "别想那么多", "别磨叽", "你就说", "照我说", "必须听我", "不用想",
+                "当你默认", "不用管自己", "听我的就好", "按我说的做", "就现在跟我走", "不想听理由", "直接答应",
+                "照做", "不回答我就不走", "没那么多耐心", "马上回答"
         ))) {
             acts.add(UserRelationalAct.PACE_OR_CONTROL_PRESSURE);
         }
         if (containsAny(text, List.of(
-                "\u968f\u4fbf", "\u7b97\u4e86", "\u65e0\u6240\u8c13", "\u7231\u56de\u4e0d\u56de"
+                "\u968f\u4fbf", "\u7b97\u4e86", "\u65e0\u6240\u8c13", "\u7231\u56de\u4e0d\u56de",
+                "想太多", "有什么好说", "有什么好认真聊", "都一样", "你开心就好",
+                "懒得想", "别问我了", "没差", "你要这么想也行"
         ))) {
             acts.add(UserRelationalAct.LOW_EFFORT_DISMISSIVE);
         }

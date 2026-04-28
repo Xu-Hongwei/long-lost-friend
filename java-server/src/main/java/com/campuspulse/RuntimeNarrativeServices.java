@@ -328,32 +328,50 @@ class SceneMoveIntentService {
             return SceneMoveIntent.none("empty");
         }
         if (isArrived(compact)) {
-            return new SceneMoveIntent("scene_status", "arrived", currentLocation(sceneState), currentInteraction(sceneState), false, false, 88, "user_says_already_arrived");
+            String target = targetFromText(compact, sceneState);
+            if (target.isBlank() || "聊天现场".equals(target) || "外面".equals(target)) {
+                target = currentLocation(sceneState);
+            }
+            return new SceneMoveIntent("scene_status", "arrived", target, currentInteraction(sceneState), false, false, 88, "user_says_already_arrived");
+        }
+        if (hasNegativeNoGo(compact) && isTopicOnlyGuard(compact) && !hasActiveMovementObjective(continuityState)) {
+            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 86, "negative_move_topic_only");
+        }
+        if (!hasActiveMovementObjective(continuityState) && isLocationBoundaryTopic(compact)) {
+            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 84, "location_boundary_topic_only");
         }
         if (isStayOrCancel(compact)) {
-            return new SceneMoveIntent("scene_status", isCancelMove(compact) ? "cancel_move" : "stay", currentLocation(sceneState), currentInteraction(sceneState), false, false, 90, "user_blocks_or_cancels_move");
+            String moveType = isCancelMove(compact) ? "cancel_move" : "stay";
+            String target = "cancel_move".equals(moveType) ? "" : currentLocation(sceneState);
+            return new SceneMoveIntent("scene_status", moveType, target, currentInteraction(sceneState), false, false, 90, "user_blocks_or_cancels_move");
         }
         String returnTarget = returnTarget(compact, sceneState);
         if (!returnTarget.isBlank()) {
             return new SceneMoveIntent("explicit_move", "return_to", returnTarget, interactionFor(returnTarget, compact), true, true, 88, "return_move_request");
         }
-        if (isSceneTopicQuestion(compact)) {
-            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 88, "scene_topic_question");
-        }
-        if (isAmbientReference(compact)) {
-            return new SceneMoveIntent("ambient_reference", "topic_only", "", "", false, false, 78, "ambient_reference");
-        }
         String explicitTarget = explicitTarget(compact);
         if (!explicitTarget.isBlank()) {
             return new SceneMoveIntent("explicit_move", "move_to", explicitTarget, interactionFor(explicitTarget, compact), true, true, 92, "explicit_move_request");
+        }
+        if (isSceneTopicQuestion(compact)) {
+            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 88, "scene_topic_question");
+        }
+        if (isSceneTopicStatement(compact)) {
+            return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 82, "scene_topic_statement");
+        }
+        if (isImplicitMove(compact) && hasAcceptedPlan(continuityState)) {
+            String target = targetFromObjective(continuityState.acceptedPlan, sceneState);
+            return new SceneMoveIntent("implicit_move", "move_to", target, interactionFor(target, compact), true, true, 80, "accepted_plan_continuation");
+        }
+        if (isThirdPersonMovementObservation(compact)) {
+            return SceneMoveIntent.none("observed_movement_not_user_request");
         }
         if (hasMoveVerb(compact)) {
             String target = targetFromText(compact, sceneState);
             return new SceneMoveIntent("explicit_move", "move_to", target, interactionFor(target, compact), true, true, 84, "move_verb_request");
         }
-        if (isImplicitMove(compact) && hasAcceptedPlan(continuityState)) {
-            String target = targetFromObjective(continuityState.acceptedPlan, sceneState);
-            return new SceneMoveIntent("implicit_move", "move_to", target, interactionFor(target, compact), true, true, 80, "accepted_plan_continuation");
+        if (isAmbientReference(compact)) {
+            return new SceneMoveIntent("ambient_reference", "topic_only", "", "", false, false, 78, "ambient_reference");
         }
         return SceneMoveIntent.none("no_move_intent");
     }
@@ -361,7 +379,8 @@ class SceneMoveIntentService {
     private boolean isArrived(String compact) {
         return containsAny(compact, List.of(
                 "\u5df2\u7ecf\u5230\u4e86", "\u6211\u4eec\u5230\u4e86", "\u90fd\u5230\u4e86", "\u5230\u4e86",
-                "\u5df2\u7ecf\u5728"
+                "\u5df2\u7ecf\u5728", "已经到", "已经走到", "都到", "走到", "现在就在", "我们现在就在",
+                "别再写路上", "已经走过来", "已经在"
         ));
     }
 
@@ -369,14 +388,28 @@ class SceneMoveIntentService {
         return containsAny(compact, List.of(
                 "\u4e0d\u53bb\u4e86", "\u5148\u4e0d\u53bb", "\u522b\u53bb\u4e86", "\u4e0d\u7528\u53bb", "\u522b\u8d70",
                 "\u5148\u522b\u8d70", "\u4e0d\u6362\u5730\u65b9", "\u522b\u6362\u5730\u65b9", "\u7559\u5728\u8fd9",
-                "\u5c31\u5728\u8fd9", "\u5148\u5750\u4f1a", "\u5750\u4e0b\u5427"
-        ));
+                "\u5c31\u5728\u8fd9", "\u5148\u5750\u4f1a", "\u5750\u4e0b\u5427",
+                "先别去", "别去", "不去了", "不用过去", "先别过去", "别过去", "不想过去",
+                "不太想往", "下次再去", "再去吧", "不出去", "先不出去了", "不想走", "不走了",
+                "多待一下", "在这里多待", "先停在这", "先留在这", "不用送", "不用送我回", "别送",
+                "再待一下", "想再待", "下次吧", "不想出校", "不出校"
+        )) || hasNegativeNoGo(compact);
     }
 
     private boolean isCancelMove(String compact) {
         return containsAny(compact, List.of(
-                "\u4e0d\u53bb\u4e86", "\u5148\u4e0d\u53bb", "\u522b\u53bb\u4e86", "\u4e0d\u7528\u53bb", "\u7b97\u4e86"
-        ));
+                "\u4e0d\u53bb\u4e86", "\u5148\u4e0d\u53bb", "\u522b\u53bb\u4e86", "\u4e0d\u7528\u53bb", "\u7b97\u4e86",
+                "先别去", "别去", "不去了", "不用过去", "先别过去", "别过去", "不想过去",
+                "不太想往", "下次再去", "再去吧", "不出去", "先不出去了", "不想走", "不走了",
+                "不用送", "不用送我回", "别送", "下次吧", "不想出校", "不出校"
+        )) || hasNegativeNoGo(compact);
+    }
+
+    private boolean hasNegativeNoGo(String compact) {
+        return compact.contains("不去")
+                && !compact.contains("要不去")
+                && !compact.contains("要不要去")
+                && !targetPlaceMention(compact).isBlank();
     }
 
     private String returnTarget(String compact, SceneState sceneState) {
@@ -406,10 +439,41 @@ class SceneMoveIntentService {
         if (!containsAny(compact, List.of("吗", "?", "？", "喜欢", "讨厌", "觉得", "怎么样", "适合", "会不会", "有没有", "为什么"))) {
             return false;
         }
+        if (!isTopicOnlyGuard(compact) && (hasMoveVerb(compact) || !explicitTarget(compact).isBlank())) {
+            return false;
+        }
         return containsAny(compact, List.of(
                 "淋雨", "雨天", "下雨", "天气", "晴天", "刮风", "风", "冷", "热",
-                "奶茶", "咖啡", "热饮", "图书馆", "操场", "食堂", "宿舍", "电影", "歌"
+                "奶茶", "咖啡", "热饮", "图书馆", "操场", "食堂", "宿舍", "宿舍楼下",
+                "湖边", "热饮摊", "社团教室", "教学楼", "走廊", "夜市", "篮球场", "校门口",
+                "地点", "地方", "话题", "电影", "歌"
         ));
+    }
+
+    private boolean isSceneTopicStatement(String compact) {
+        if (hasStrongMoveCue(compact)) {
+            return false;
+        }
+        if (containsAny(compact, List.of("只是随口说说", "只是说说", "只是想想", "只聊天", "如果只聊天", "不是真的", "不一定要"))) {
+            return true;
+        }
+        return containsAny(compact, List.of("那边", "地方", "地点", "市区", "灯光"))
+                && containsAny(compact, List.of("安静", "适合", "放松", "紧张", "介意", "舒服", "话题"));
+    }
+
+    private boolean isLocationBoundaryTopic(String compact) {
+        return !targetPlaceMention(compact).isBlank()
+                && containsAny(compact, List.of(
+                "还没说要去", "没说要去", "不是要去", "不代表现在", "不代表要去", "不是要换地方",
+                "只是想到", "只是问问", "只是聊", "先别动", "先把话说完", "还想待会儿", "还想待会",
+                "先不去了", "先别过去", "不想出校", "我不是要换地方"
+        ));
+    }
+
+    private boolean isThirdPersonMovementObservation(String compact) {
+        return containsAny(compact, List.of("有人", "同学", "路人", "他们", "她们", "他", "她"))
+                && containsAny(compact, List.of("跑过去", "走过去", "经过", "路过"))
+                && !containsAny(compact, List.of("我们", "我想", "一起", "要不", "走吧", "过去看看"));
     }
 
     private boolean isAmbientReference(String compact) {
@@ -418,18 +482,64 @@ class SceneMoveIntentService {
     }
 
     private String explicitTarget(String compact) {
+        if (containsAny(compact, List.of(
+                "没说要去", "不是要去", "不是真的去", "不是真的过去", "不是真的出发",
+                "只是问问", "只是聊", "只是聊到", "只是想到", "只是话题", "不代表现在",
+                "不一定要过去", "会喜欢别人约你", "别人约你", "要是真去", "如果只是", "如果地点"
+        ))
+                || isTopicOnlyGuard(compact)) {
+            return "";
+        }
+        if (containsAny(compact, List.of("热饮", "奶茶", "咖啡")) && containsAny(compact, List.of("买", "去买", "带", "拿"))) {
+            return "热饮摊附近";
+        }
+        if (containsAny(compact, List.of("往回走", "一起往回", "边走边说", "路上说", "路上聊", "一起走", "回去的路上"))) {
+            return "回去的路上";
+        }
+        String mentioned = targetPlaceMention(compact);
+        if (!mentioned.isBlank() && (hasMoveCueForTarget(compact)
+                || compact.contains("去" + mentioned)
+                || compact.contains("到" + mentioned)
+                || compact.contains("往" + mentioned))) {
+            return mentioned;
+        }
         if (containsAny(compact, List.of("去操场", "到操场", "操场走走", "操场散步"))) return "操场";
         if (containsAny(compact, List.of("去食堂", "到食堂", "去吃饭", "去打饭"))) return "食堂";
         if (containsAny(compact, List.of("去图书馆", "到图书馆", "去自习", "去复习"))) return "图书馆";
-        if (containsAny(compact, List.of("回宿舍", "去宿舍", "送你回宿舍", "送她回宿舍", "送他回宿舍", "宿舍楼下"))) return "宿舍";
+        if (containsAny(compact, List.of("回宿舍", "去宿舍", "送你回宿舍", "送她回宿舍", "送他回宿舍"))) return "宿舍";
         if (containsAny(compact, List.of("一起走", "边走边说", "路上说", "路上聊", "送你回", "送她回", "送他回"))) return "回去的路上";
-        if (containsAny(compact, List.of("去外面", "出去走", "换个地方", "出去看看", "去看看小雨", "看看小雨"))) return "外面";
-        if (containsAny(compact, List.of("去市区", "出校", "校外"))) return "市区";
+        if (containsAny(compact, List.of("去外面", "出去走", "换个地方", "出去看看", "出去看", "去看看小雨", "看看小雨"))) return "外面";
+        if (containsAny(compact, List.of("去市区", "出校", "去校外", "到校外"))) return "市区";
         return "";
     }
 
+    private boolean isTopicOnlyGuard(String compact) {
+        return containsAny(compact, List.of(
+                "说到", "想到", "会想到", "你觉得", "觉得", "适合", "会不会", "有没有", "为什么",
+                "喜欢", "讨厌", "只聊天", "只是聊", "只是聊到", "只是话题", "只是想想", "不一定要"
+        )) && !hasStrongMoveCue(compact);
+    }
+
+    private boolean hasStrongMoveCue(String compact) {
+        if (containsAny(compact, List.of(
+                "不是真的过去", "不是真的出发", "不一定要过去", "只是话题", "只是聊到", "如果只是"
+        )) || compact.contains("不去") && !compact.contains("要不去") && !compact.contains("要不要去")) {
+            return false;
+        }
+        return containsAny(compact, List.of(
+                "我们去", "一起去", "先去", "要不去", "想去", "我想去", "去看看", "去外面",
+                "去市区", "去校外", "去图书馆", "去操场", "去食堂", "去宿舍", "去湖边", "去夜市",
+                "去篮球场", "去校门口", "去社团教室", "过去", "走吧", "出发", "换个地方", "换到",
+                "换去", "边走边说", "一起走", "出去看", "去买", "买杯", "送你回", "送她回", "送他回"
+        ));
+    }
+
     private boolean hasMoveVerb(String compact) {
-        return containsAny(compact, List.of("我们去", "一起去", "去看看", "过去", "走吧", "出发", "换个地方", "边走边说", "一起走"));
+        return containsAny(compact, List.of(
+                "我们去", "一起去", "先去", "要不去", "想去", "我想去", "去看看", "过去",
+                "走吧", "出发", "换个地方", "换到", "边走边说", "一起走", "往", "待一会",
+                "自习", "复习", "出去看", "去买", "买杯", "过去看看"
+        ));
     }
 
     private boolean isImplicitMove(String compact) {
@@ -440,9 +550,24 @@ class SceneMoveIntentService {
         return continuityState != null && continuityState.acceptedPlan != null && !continuityState.acceptedPlan.isBlank();
     }
 
+    private boolean hasActiveMovementObjective(DialogueContinuityState continuityState) {
+        return continuityState != null
+                && (!isBlank(continuityState.acceptedPlan)
+                || !isBlank(continuityState.currentObjective)
+                || continuityState.sceneTransitionNeeded);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
     private String targetFromObjective(String objective, SceneState sceneState) {
         String compact = objective == null ? "" : objective.replaceAll("\\s+", "");
         String target = explicitTarget(compact);
+        if (!target.isBlank()) {
+            return target;
+        }
+        target = targetPlaceMention(compact);
         if (!target.isBlank()) {
             return target;
         }
@@ -455,13 +580,46 @@ class SceneMoveIntentService {
         if (!target.isBlank()) {
             return target;
         }
+        target = targetPlaceMention(compact);
+        if (!target.isBlank()) {
+            return target;
+        }
         return sceneState == null || sceneState.location == null || sceneState.location.isBlank() ? "外面" : sceneState.location;
+    }
+
+    private boolean hasMoveCueForTarget(String compact) {
+        return hasStrongMoveCue(compact) || containsAny(compact, List.of(
+                "换到", "换去", "过去", "走到", "往", "出发", "自习", "复习",
+                "逛逛", "坐一会"
+        ));
+    }
+
+    private String targetPlaceMention(String compact) {
+        if (containsAny(compact, List.of("热饮摊附近", "热饮摊"))) return "热饮摊附近";
+        if (containsAny(compact, List.of("宿舍楼下"))) return "宿舍楼下";
+        if (containsAny(compact, List.of("教学楼走廊"))) return "教学楼走廊";
+        if (containsAny(compact, List.of("社团教室"))) return "社团教室";
+        if (containsAny(compact, List.of("篮球场"))) return "篮球场";
+        if (containsAny(compact, List.of("校门口"))) return "校门口";
+        if (containsAny(compact, List.of("回去的路上"))) return "回去的路上";
+        if (containsAny(compact, List.of("图书馆"))) return "图书馆";
+        if (containsAny(compact, List.of("操场"))) return "操场";
+        if (containsAny(compact, List.of("食堂"))) return "食堂";
+        if (containsAny(compact, List.of("湖边"))) return "湖边";
+        if (containsAny(compact, List.of("夜市"))) return "夜市";
+        if (containsAny(compact, List.of("宿舍"))) return "宿舍";
+        if (containsAny(compact, List.of("教学楼"))) return "教学楼";
+        if (containsAny(compact, List.of("市区", "校外"))) return "市区";
+        if (containsAny(compact, List.of("外面", "外边"))) return "外面";
+        return "";
     }
 
     private String interactionFor(String targetLocation, String compact) {
         if (containsAny(compact, List.of("发消息", "回消息", "聊天框", "手机", "屏幕那头"))) return "online_chat";
         if (containsAny(compact, List.of("打电话", "通话", "电话里"))) return "phone_call";
-        if ("回去的路上".equals(targetLocation) || containsAny(compact, List.of("一起走", "边走边说", "路上", "送你回", "送她回", "送他回"))) return "mixed_transition";
+        if ("回去的路上".equals(targetLocation) || containsAny(compact, List.of(
+                "一起走", "边走边说", "边走边聊", "路上", "送你回", "送她回", "送他回", "过去看看"
+        ))) return "mixed_transition";
         return "face_to_face";
     }
 
@@ -495,16 +653,16 @@ class TurnUnderstandingService {
         List<UserReplyActCandidate> candidates = new ArrayList<>();
 
         addCandidate(candidates, "clarify", repairScore(compact, intentState), List.of("user_correction_or_meta_repair"));
-        addCandidate(candidates, "answer_question", answerQuestionScore(compact, obligationType), List.of("last_assistant_question"));
+        addCandidate(candidates, "answer_question", answerQuestionScore(compact, obligationType, intentState), List.of("last_assistant_question"));
         addCandidate(candidates, "accept_plan", acceptPlanScore(compact, obligationType, continuityState), List.of("soft_acceptance_or_active_plan"));
         addCandidate(candidates, "reject", rejectScore(compact), List.of("reject_or_cancel_signal"));
         addCandidate(candidates, "defer", deferScore(compact), List.of("defer_or_later_signal"));
-        addCandidate(candidates, "counter_offer", counterOfferScore(compact), List.of("alternative_offer_signal"));
+        addCandidate(candidates, "counter_offer", counterOfferScore(compact, continuityState, moveIntent), List.of("alternative_offer_signal"));
         addCandidate(candidates, "scene_move", moveIntent.shouldMove ? 3 + moveIntent.confidence / 18 : 0, List.of("scene_move:" + moveIntent.reason));
         addCandidate(candidates, "scene_stay", stayScore(compact), List.of("stay_or_no_transition_signal"));
         addCandidate(candidates, "topic_only", moveIntent.isSceneTopic() ? 8 : 0, List.of("scene_topic_not_movement"));
         addCandidate(candidates, "emotion_share", "emotion_share".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 7 : 0, List.of("local_intent_emotion_share"));
-        addCandidate(candidates, "romantic_probe", "romantic_probe".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 7 : 0, List.of("local_intent_romantic_probe"));
+        addCandidate(candidates, "romantic_probe", "romantic_probe".equals(intentState == null ? "" : blank(intentState.primaryIntent)) ? 10 : 0, List.of("local_intent_romantic_probe"));
         addCandidate(candidates, "small_talk", ("small_talk".equals(intentState == null ? "" : blank(intentState.primaryIntent))
                 || "light_chat".equals(intentState == null ? "" : blank(intentState.primaryIntent))) ? 4 : 0, List.of("local_intent_light_chat"));
 
@@ -552,14 +710,19 @@ class TurnUnderstandingService {
         if (containsAny(compact, List.of(
                 "\u4f60\u6ca1\u56de\u7b54\u6211", "\u7b54\u975e\u6240\u95ee", "\u6211\u95ee\u7684\u662f", "\u522b\u8f6c\u79fb\u8bdd\u9898",
                 "\u4f60\u5728\u8bf4\u4ec0\u4e48", "\u4f60\u53c8\u91cd\u590d", "\u4e0d\u662f\u8fd9\u4e2a\u95ee\u9898", "\u4f60\u662f\u4e0d\u662f\u5fd8\u4e86",
-                "\u4e0d\u662f\u8fd9\u4e2a\u610f\u601d", "\u4f60\u7406\u89e3\u9519", "\u4e0d\u5bf9", "\u6211\u4eec\u4e0d\u662f", "\u5df2\u7ecf\u5728"
+                "\u4e0d\u662f\u8fd9\u4e2a\u610f\u601d", "\u4f60\u7406\u89e3\u9519", "\u4e0d\u5bf9", "\u6211\u4eec\u4e0d\u662f", "\u5df2\u7ecf\u5728",
+                "说清楚", "问清楚", "没跟上", "不是生气", "不是去哪里的问题", "你怎么想",
+                "不想变成剧情推进", "剧情推进", "别猜", "自己说"
         ))) {
-            score += 8;
+            score += 10;
         }
         return score;
     }
 
-    private int answerQuestionScore(String compact, String obligation) {
+    private int answerQuestionScore(String compact, String obligation, IntentState intentState) {
+        if ("advice_seek".equals(intentState == null ? "" : blank(intentState.primaryIntent))) {
+            return 9;
+        }
         if (!"answer_question".equals(obligation)) {
             return 0;
         }
@@ -584,17 +747,35 @@ class TurnUnderstandingService {
     }
 
     private int rejectScore(String compact) {
+        if (containsAny(compact, List.of("不是不想", "不想变成剧情推进", "不想被当成剧情推进"))) {
+            return 0;
+        }
         return containsAny(compact, List.of(
-                "\u4e0d\u7528", "\u4e0d\u8981", "\u4e0d\u60f3", "\u7b97\u4e86", "\u522b\u8fd9\u6837", "\u522b\u53bb", "\u4e0d\u53bb\u4e86", "\u4e0d\u7528\u4e86"
+                "\u4e0d\u7528", "\u4e0d\u8981", "\u4e0d\u60f3", "\u7b97\u4e86", "\u522b\u8fd9\u6837", "\u522b\u53bb", "\u4e0d\u53bb\u4e86", "\u4e0d\u7528\u4e86",
+                "自己决定", "别猜", "不想被安排"
         )) ? 8 : 0;
     }
 
     private int deferScore(String compact) {
-        return containsAny(compact, List.of("\u7b49\u4e0b", "\u7b49\u4e00\u4e0b", "\u665a\u70b9", "\u5148\u4e0d", "\u8fc7\u4f1a\u513f", "\u4e0b\u6b21\u5427")) ? 7 : 0;
+        if (compact.contains("先别猜")) {
+            return 0;
+        }
+        return containsAny(compact, List.of(
+                "\u7b49\u4e0b", "\u7b49\u4e00\u4e0b", "\u665a\u70b9", "\u5148\u4e0d", "\u8fc7\u4f1a\u513f", "\u4e0b\u6b21\u5427",
+                "先别", "等一下", "还没准备好", "没准备好", "不想动", "先把话说清楚", "先说清楚", "想回去"
+        )) ? 10 : 0;
     }
 
-    private int counterOfferScore(String compact) {
-        return containsAny(compact, List.of("\u8981\u4e0d", "\u4e0d\u5982", "\u8fd8\u662f", "\u6362\u4e2a", "\u6211\u4eec\u53bb", "\u53bb\u522b\u7684")) ? 7 : 0;
+    private int counterOfferScore(String compact, DialogueContinuityState continuityState, SceneMoveIntent moveIntent) {
+        int score = containsAny(compact, List.of("\u8981\u4e0d", "\u4e0d\u5982", "\u8fd8\u662f", "\u6362\u4e2a", "\u6211\u4eec\u53bb", "\u53bb\u522b\u7684")) ? 7 : 0;
+        if (hasActivePlan(continuityState)
+                && moveIntent != null
+                && moveIntent.shouldMove
+                && !blank(moveIntent.targetLocation).isBlank()
+                && !targetMatchesActiveObjective(moveIntent.targetLocation, continuityState)) {
+            score = Math.max(score, 6);
+        }
+        return score;
     }
 
     private int stayScore(String compact) {
@@ -691,10 +872,43 @@ class TurnUnderstandingService {
         if (conflicts != null && !conflicts.isEmpty()) {
             return "opportunistic";
         }
+        if (isHighValueUnderstandingAct(primaryAct, compact)) {
+            return "opportunistic";
+        }
         if (confidence < 68) {
             return compact.length() <= 120 ? "background" : "skip";
         }
         return "skip";
+    }
+
+    private boolean isHighValueUnderstandingAct(String primaryAct, String compact) {
+        if ("romantic_probe".equals(primaryAct)) {
+            return true;
+        }
+        if (containsAny(compact, List.of(
+                "还记得", "记得我", "上次", "之前说", "刚才为什么", "你刚才为什么", "你刚才那句", "你刚刚那句",
+                "你刚才说到一半", "刚刚那句", "还算数", "答应过", "我问的是", "喜不喜欢", "担心我",
+                "在意我", "喜欢我", "怎么想", "真心的吗", "难懂", "有听进去"
+        ))) {
+            return true;
+        }
+        return "answer_question".equals(primaryAct) && containsAny(compact, List.of("为什么", "怎么会", "是不是", "会不会"));
+    }
+
+    private boolean hasActivePlan(DialogueContinuityState continuityState) {
+        return continuityState != null && (!blank(continuityState.acceptedPlan).isBlank()
+                || !blank(continuityState.currentObjective).isBlank()
+                || continuityState.sceneTransitionNeeded);
+    }
+
+    private boolean targetMatchesActiveObjective(String target, DialogueContinuityState continuityState) {
+        String compactTarget = compact(target);
+        if (compactTarget.isBlank() || continuityState == null) {
+            return false;
+        }
+        String accepted = compact(continuityState.acceptedPlan);
+        String objective = compact(continuityState.currentObjective);
+        return accepted.contains(compactTarget) || objective.contains(compactTarget);
     }
 
     private boolean hasConflict(List<LocalConflict> conflicts, String type) {
@@ -714,6 +928,24 @@ class TurnUnderstandingService {
         String compact = compact(last);
         if (compact.isBlank()) {
             return assistantObligation("none", "", 0, List.of(), "no_recent_assistant");
+        }
+        if (isBroadCheckInQuestion(compact)) {
+            return assistantObligation(
+                    "small_talk_followup",
+                    last,
+                    35,
+                    List.of("small_talk", "emotion_share", "answer_question"),
+                    "last_assistant_broad_checkin"
+            );
+        }
+        if (isPlanOfferQuestion(compact)) {
+            return assistantObligation(
+                    "accept_plan",
+                    last,
+                    76,
+                    List.of("accept_plan", "reject", "defer", "counter_offer"),
+                    "last_assistant_plan_offer_question"
+            );
         }
         if (containsAny(compact, List.of("?", "\uff1f", "\u5417", "\u5462", "\u8981\u4e0d\u8981", "\u6709\u6ca1\u6709", "\u559c\u6b22", "\u89c9\u5f97"))) {
             return assistantObligation(
@@ -743,6 +975,29 @@ class TurnUnderstandingService {
             );
         }
         return assistantObligation("none", last, 0, List.of(), "no_explicit_obligation");
+    }
+
+    private boolean isBroadCheckInQuestion(String compact) {
+        if (!containsAny(compact, List.of("?", "？", "吗", "怎么样", "还好吗", "还好吧"))) {
+            return false;
+        }
+        if (isPlanOfferQuestion(compact)) {
+            return false;
+        }
+        return containsAny(compact, List.of(
+                "你今天怎么样", "今天怎么样", "你现在怎么样", "还好吗", "还好吧",
+                "感觉怎么样", "心情怎么样", "累不累", "饿不饿", "冷不冷", "热不热"
+        ));
+    }
+
+    private boolean isPlanOfferQuestion(String compact) {
+        if (!containsAny(compact, List.of("?", "？", "吗", "要不要", "要不", "要不要去", "去不去"))) {
+            return false;
+        }
+        return containsAny(compact, List.of(
+                "我们去", "一起去", "要不要去", "要不去", "去食堂", "去操场", "去图书馆", "去湖边",
+                "去外面", "去那边", "过去看看", "去看看", "走走", "送你回", "陪你去", "换个地方"
+        ));
     }
 
     private AssistantObligation assistantObligation(
@@ -1747,7 +2002,11 @@ class DialogueContinuityService {
                 "\u90a3\u6211\u4eec\u5c31", "\u6211\u4eec\u5c31", "\u90a3\u5c31", "\u8fc7\u53bb\u770b\u770b",
                 "\u53bb\u770b\u770b", "\u8d70\u8fc7\u53bb", "\u5f80\u90a3\u8fb9", "\u8fb9\u8d70\u8fb9",
                 "\u5148\u53bb", "\u8d70\u5230", "\u5230\u4e86", "\u5750\u4e0b", "\u6211\u4eec\u8fc7\u53bb",
-                "\u4e00\u8d77\u8fc7\u53bb", "\u5c31\u8fc7\u53bb"
+                "\u4e00\u8d77\u8fc7\u53bb", "\u5c31\u8fc7\u53bb",
+                "递给你", "别烫到", "陪你慢慢走", "慢慢走", "先停一下", "就在旁边",
+                "换个安静的位置", "换个安静", "先把话说完", "不会急着带你走",
+                "送你到", "宿舍楼下", "路上慢慢说", "慢一点过去", "可以慢一点过去",
+                "不想动也没关系", "在这儿待着", "陪你在这儿"
         ));
     }
 
@@ -3626,11 +3885,22 @@ class QuickJudgeService {
             score += 4;
             reasons.add("question_during_transition:+4");
         }
+        if ("question_check".equals(localIntent.primaryIntent) && isContinuityOrMemoryQuestion(compact)) {
+            score += hasActiveContinuity ? 3 : 2;
+            reasons.add("question_check_continuity_or_memory:+" + (hasActiveContinuity ? 3 : 2));
+        }
         if (!"none".equals(blank(localIntent.secondaryIntent)) && !"".equals(blank(localIntent.secondaryIntent))) {
             score += 1;
             reasons.add("secondary_intent:" + blank(localIntent.secondaryIntent) + ":+1");
         }
         return new TriggerExplanation(score, reasons, suppressed);
+    }
+
+    private boolean isContinuityOrMemoryQuestion(String compact) {
+        return containsAny(compact, List.of(
+                "还记得", "记得", "上次", "之前", "前面", "刚才", "说到一半", "还没说完",
+                "听懂", "理解", "算数", "问的问题", "我问", "你说过", "答应过"
+        ));
     }
 
     private boolean isUserSelfRescue(String compact, IntentState localIntent, DialogueContinuityState localContinuity) {
@@ -4158,7 +4428,7 @@ class PlotDirectorAgentService {
             TurnContext turnContext
     ) {
         String text = userMessage == null ? "" : userMessage.trim();
-        PlotDirectorAgentDecision guard = guardDecision(text, replySource, gap, explicitTransition);
+        PlotDirectorAgentDecision guard = guardDecision(text, replySource, gap, explicitTransition, turnContext);
         if (guard != null) {
             return guard;
         }
@@ -4195,7 +4465,7 @@ class PlotDirectorAgentService {
         }
     }
 
-    private PlotDirectorAgentDecision guardDecision(String text, String replySource, int gap, boolean explicitTransition) {
+    private PlotDirectorAgentDecision guardDecision(String text, String replySource, int gap, boolean explicitTransition, TurnContext turnContext) {
         if (explicitTransition) {
             return new PlotDirectorAgentDecision(
                     "transition_only",
@@ -4203,6 +4473,14 @@ class PlotDirectorAgentService {
                     "user_requested_scene_transition",
                     transitionCue(text),
                     transitionLine(text),
+                    false
+            );
+        }
+        if ("user_turn".equals(replySource) && shouldHoldForUserRepairOrBoundary(text, turnContext)) {
+            return new PlotDirectorAgentDecision(
+                    "hold_plot",
+                    "director_prefers_current_conversation",
+                    "",
                     false
             );
         }
@@ -4221,6 +4499,39 @@ class PlotDirectorAgentService {
             return new PlotDirectorAgentDecision("hold_plot", "plot_gap_too_short", "", false);
         }
         return null;
+    }
+
+    private boolean shouldHoldForUserRepairOrBoundary(String text, TurnContext turnContext) {
+        String compact = text == null ? "" : text.replaceAll("\\s+", "");
+        if (turnContext != null) {
+            if ("meta_repair".equals(turnContext.primaryIntent == null ? "" : turnContext.primaryIntent)) {
+                return true;
+            }
+            if (hasLocalConflict(turnContext, "user_self_rescue")
+                    || hasLocalConflict(turnContext, "user_cancels_active_objective")
+                    || hasLocalConflict(turnContext, "scene_target_already_current")) {
+                return true;
+            }
+        }
+        return containsAny(compact, List.of(
+                "等一下", "等下", "先别", "别急", "我还没说完", "先回答", "没回答我",
+                "答非所问", "理解错", "不是那个意思", "不是要推进", "不是说现在就去",
+                "只是想问清楚", "问清楚", "说清楚", "刚才的问题", "别重复", "别突然",
+                "别急着给结论", "我有点跟不上", "别把气氛写得那么重", "不想变成剧情推进",
+                "已经到了", "已经在"
+        ));
+    }
+
+    private boolean hasLocalConflict(TurnContext turnContext, String type) {
+        if (turnContext == null || turnContext.localConflicts == null || type == null) {
+            return false;
+        }
+        for (LocalConflict conflict : turnContext.localConflicts) {
+            if (conflict != null && type.equals(conflict.type)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private PlotDirectorAgentDecision localDecision(
