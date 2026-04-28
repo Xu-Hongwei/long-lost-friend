@@ -1324,6 +1324,7 @@ class SessionRecord implements Serializable {
     PendingRepairCue pendingRepairCue;
     RelationshipScoreCalibration pendingRelationshipCalibration;
     String pendingRelationshipCalibrationAt;
+    String plotPressureMode;
 }
 
 class AnalyticsEvent implements Serializable {

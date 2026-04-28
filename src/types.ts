@@ -414,6 +414,7 @@ export interface SessionRecord {
   lastQuickJudgeStatus?: QuickJudgeStatus;
   pendingRelationshipCalibration?: RelationshipScoreCalibration;
   pendingRelationshipCalibrationAt?: string;
+  plotPressureMode?: "relaxed" | "strict";
   visitorContext: VisitorContext;
   timeContext: TimeContext;
   weatherContext: WeatherContext;

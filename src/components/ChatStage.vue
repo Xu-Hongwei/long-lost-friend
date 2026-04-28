@@ -7,10 +7,15 @@ import PlotMiniPanel from "./PlotMiniPanel.vue";
 import { formatDateTime, getEndingCandidateLabel, getOnlineLabel } from "../lib/labels";
 
 type QuickJudgeMode = "off" | "smart" | "always";
+type PlotPressureMode = "relaxed" | "strict";
 const quickJudgeModes: Array<{ value: QuickJudgeMode; label: string }> = [
   { value: "smart", label: "智能巡检" },
   { value: "always", label: "每轮" },
   { value: "off", label: "关闭" }
+];
+const plotPressureModes: Array<{ value: PlotPressureMode; label: string }> = [
+  { value: "relaxed", label: "轻松" },
+  { value: "strict", label: "困难" }
 ];
 
 defineProps<{
@@ -24,6 +29,7 @@ defineProps<{
   quickJudgeMode: QuickJudgeMode;
   quickJudgeEnabled: boolean;
   quickJudgeWaitSeconds: number;
+  plotPressureMode: PlotPressureMode;
 }>();
 
 const emits = defineEmits<{
@@ -32,6 +38,7 @@ const emits = defineEmits<{
   choose: [choiceId: string];
   setQuickJudgeMode: [mode: QuickJudgeMode];
   setQuickJudgeWaitSeconds: [value: number];
+  setPlotPressureMode: [mode: PlotPressureMode];
   exportDebugData: [];
   toggleDrawer: [drawer: "relationship" | "memory" | "plot" | "analytics"];
 }>();
@@ -251,6 +258,30 @@ function interactionModeLabel(mode?: string) {
           <div class="flex justify-between gap-4"><span class="text-white/42">本轮信号</span><span>{{ session?.lastTurnContext?.plotSignal ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情蓄力</span><span>{{ session?.lastTurnContext?.plotPressure ?? session?.plotArcState?.plotPressure ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情间隔</span><span>{{ session?.lastTurnContext?.plotGap ?? 0 }}</span></div>
+        </div>
+        <div class="mt-4 rounded-2xl border border-white/10 bg-black/12 p-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <span class="text-xs text-white/54">剧情节奏</span>
+            <div class="flex rounded-full border border-white/10 bg-black/16 p-1 text-xs">
+              <button
+                v-for="mode in plotPressureModes"
+                :key="mode.value"
+                type="button"
+                class="rounded-full px-3 py-1.5 transition"
+                :class="plotPressureMode === mode.value
+                  ? 'bg-amber-200/18 text-amber-50'
+                  : 'text-white/48 hover:bg-white/8 hover:text-white/74'"
+                @click="emits('setPlotPressureMode', mode.value)"
+              >
+                {{ mode.label }}
+              </button>
+            </div>
+          </div>
+          <p class="mt-3 text-xs leading-5 text-white/46">
+            {{ plotPressureMode === "relaxed"
+              ? "轻松模式不做剧情蓄力减分；普通闲聊也会 +1，让关系和剧情更容易自然往前走。"
+              : "困难模式保留严格衰减；低信号、显式转场或被结构化规则压住时，剧情蓄力可能下降。" }}
+          </p>
         </div>
       </section>
 

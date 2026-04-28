@@ -18,10 +18,12 @@ const CITY_KEY = "campus-agent-preferred-city";
 const QUICK_JUDGE_ENABLED_KEY = "campus-agent-quick-judge-enabled";
 const QUICK_JUDGE_MODE_KEY = "campus-agent-quick-judge-mode";
 const QUICK_JUDGE_WAIT_SECONDS_KEY = "campus-agent-quick-judge-wait-seconds";
+const PLOT_PRESSURE_MODE_KEY = "campus-agent-plot-pressure-mode";
 const QUICK_JUDGE_MIN_SECONDS = 0.06;
 const QUICK_JUDGE_MAX_SECONDS = 5;
 const QUICK_JUDGE_DEFAULT_SECONDS = 0.3;
 export type QuickJudgeMode = "off" | "smart" | "always";
+export type PlotPressureMode = "relaxed" | "strict";
 
 function normalizeQuickJudgeWaitSeconds(value: unknown) {
   const numeric = Number(value);
@@ -39,6 +41,10 @@ function initialQuickJudgeMode(): QuickJudgeMode {
   return localStorage.getItem(QUICK_JUDGE_ENABLED_KEY) === "false" ? "off" : "smart";
 }
 
+function initialPlotPressureMode(): PlotPressureMode {
+  return localStorage.getItem(PLOT_PRESSURE_MODE_KEY) === "strict" ? "strict" : "relaxed";
+}
+
 export const useSessionStore = defineStore("session", () => {
   const booting = ref(true);
   const busy = ref(false);
@@ -51,6 +57,7 @@ export const useSessionStore = defineStore("session", () => {
   const errorMessage = ref("");
   const quickJudgeMode = ref<QuickJudgeMode>(initialQuickJudgeMode());
   const quickJudgeWaitSeconds = ref(normalizeQuickJudgeWaitSeconds(localStorage.getItem(QUICK_JUDGE_WAIT_SECONDS_KEY)));
+  const plotPressureMode = ref<PlotPressureMode>(initialPlotPressureMode());
   const quickJudgeEnabled = computed(() => quickJudgeMode.value !== "off");
 
   const selectedAgent = computed(() => {
@@ -197,7 +204,8 @@ export const useSessionStore = defineStore("session", () => {
           agent_id: currentSession.value.agent.id,
           user_message: message,
           quick_judge_mode: quickJudgeMode.value,
-          quick_judge_wait_seconds: quickJudgeWaitSeconds.value
+          quick_judge_wait_seconds: quickJudgeWaitSeconds.value,
+          plot_pressure_mode: plotPressureMode.value
         })
       });
       await hydrateSession(currentSession.value.sessionId);
@@ -216,6 +224,14 @@ export const useSessionStore = defineStore("session", () => {
   function setQuickJudgeWaitSeconds(value: number) {
     quickJudgeWaitSeconds.value = normalizeQuickJudgeWaitSeconds(value);
     localStorage.setItem(QUICK_JUDGE_WAIT_SECONDS_KEY, String(quickJudgeWaitSeconds.value));
+  }
+
+  function setPlotPressureMode(mode: PlotPressureMode) {
+    plotPressureMode.value = mode === "strict" ? "strict" : "relaxed";
+    localStorage.setItem(PLOT_PRESSURE_MODE_KEY, plotPressureMode.value);
+    if (currentSession.value) {
+      currentSession.value.plotPressureMode = plotPressureMode.value;
+    }
   }
 
   async function submitChoice(choiceId: string) {
@@ -297,11 +313,13 @@ export const useSessionStore = defineStore("session", () => {
         is_typing: payload.isTyping,
         draft_length: payload.draftLength,
         last_input_at: payload.lastInputAt,
-        client_time: new Date().toISOString()
+        client_time: new Date().toISOString(),
+        plot_pressure_mode: plotPressureMode.value
       })
     });
 
     if (currentSession.value) {
+      currentSession.value.plotPressureMode = plotPressureMode.value;
       currentSession.value.presenceState = {
         ...(result.presenceState || {}),
         triggerReason: result.trigger_reason,
@@ -363,6 +381,7 @@ export const useSessionStore = defineStore("session", () => {
     quickJudgeMode,
     quickJudgeEnabled,
     quickJudgeWaitSeconds,
+    plotPressureMode,
     selectedAgent,
     preferredCity,
     pendingChoices,
@@ -376,6 +395,7 @@ export const useSessionStore = defineStore("session", () => {
     sendMessage,
     setQuickJudgeMode,
     setQuickJudgeWaitSeconds,
+    setPlotPressureMode,
     submitChoice,
     continueCheckpoint,
     settleCheckpoint,

@@ -1761,12 +1761,14 @@ class ChatOrchestrator {
             boolean quickJudgeEnabled = !"off".equals(quickJudgeMode);
             boolean quickJudgeForceAll = "always".equals(quickJudgeMode);
             Long quickJudgeWaitMs = quickJudgeWaitMsFromSeconds(payload.get("quickJudgeWaitSeconds"));
+            String plotPressureMode = plotPressureMode(payload.get("plotPressureMode"));
             String nowIso = IsoTimes.now();
             Instant now = Instant.parse(nowIso);
 
             SessionRecord session = findSession(state, sessionId);
             validateSessionOwner(session, visitorId, now);
             ensureSessionState(session);
+            session.plotPressureMode = plotPressureMode;
             VisitorRecord visitor = requireVisitor(state, visitorId);
 
             if (session.pendingChoiceEventId != null && !session.pendingChoiceEventId.isBlank()) {
@@ -2335,12 +2337,14 @@ class ChatOrchestrator {
             int draftLength = Json.asInt(payload.get("draftLength"), 0);
             String lastInputAt = Json.asString(payload.get("lastInputAt"));
             String clientTime = Json.asString(payload.get("clientTime"));
+            String plotPressureMode = plotPressureMode(payload.get("plotPressureMode"));
             String nowIso = clientTime == null || clientTime.isBlank() ? IsoTimes.now() : clientTime;
             Instant now = Instant.parse(nowIso);
 
             SessionRecord session = findSession(state, sessionId);
             validateSessionOwner(session, visitorId, now);
             ensureSessionState(session);
+            session.plotPressureMode = plotPressureMode;
             VisitorRecord visitor = requireVisitor(state, visitorId);
 
             PresenceResult presenceResult = presenceHeartbeatService.ingest(
@@ -2923,6 +2927,7 @@ class ChatOrchestrator {
         payload.put("pendingRepairCue", pendingRepairCueMap(session.pendingRepairCue));
         payload.put("pendingRelationshipCalibration", relationshipCalibrationMap(session.pendingRelationshipCalibration));
         payload.put("pendingRelationshipCalibrationAt", blankTo(session.pendingRelationshipCalibrationAt, ""));
+        payload.put("plotPressureMode", plotPressureMode(session.plotPressureMode));
         payload.put("visitorContext", Map.of(
                 "timezone", visitor.timezone == null ? "" : visitor.timezone,
                 "preferredCity", visitor.preferredCity == null ? "" : visitor.preferredCity
@@ -2958,6 +2963,7 @@ class ChatOrchestrator {
         summary.put("plotAction", blankTo(Json.asString(turnContext.get("plotDirectorAction")), ""));
         summary.put("plotSignal", Json.asInt(turnContext.get("plotSignal"), 0));
         summary.put("plotPressure", Json.asInt(turnContext.get("plotPressure"), 0));
+        summary.put("plotPressureMode", blankTo(Json.asString(sessionPayload.get("plotPressureMode")), "strict"));
         summary.put("runStatus", blankTo(Json.asString(plotArc.get("runStatus")), ""));
         return summary;
     }
@@ -3008,6 +3014,7 @@ class ChatOrchestrator {
         snapshot.put("quickJudge", sessionPayload.getOrDefault("lastQuickJudgeStatus", Map.of()));
         snapshot.put("relationship", sessionPayload.getOrDefault("relationshipState", Map.of()));
         snapshot.put("pendingRelationshipCalibration", sessionPayload.getOrDefault("pendingRelationshipCalibration", Map.of()));
+        snapshot.put("plotPressureMode", sessionPayload.getOrDefault("plotPressureMode", "strict"));
         snapshot.put("plotState", sessionPayload.getOrDefault("plotState", Map.of()));
         snapshot.put("plotArcState", sessionPayload.getOrDefault("plotArcState", Map.of()));
         snapshot.put("plotGate", sessionPayload.getOrDefault("lastPlotGateDecision", Map.of()));
@@ -3078,6 +3085,7 @@ class ChatOrchestrator {
         session.presenceState = presenceHeartbeatService.normalizePresence(session.presenceState, session.createdAt);
         session.tensionState = boundaryResponseService.normalize(session.tensionState, session.createdAt);
         session.dialogueContinuityState = dialogueContinuityService.normalize(session.dialogueContinuityState, session.createdAt);
+        session.plotPressureMode = plotPressureMode(session.plotPressureMode);
     }
 
     private QuickJudgeDecision consumePendingQuickJudgeCorrection(SessionRecord session) {
@@ -4534,6 +4542,14 @@ class ChatOrchestrator {
         }
         boolean forceAll = payload.containsKey("quickJudgeForceAll") && Json.asBoolean(payload.get("quickJudgeForceAll"));
         return forceAll ? "always" : "smart";
+    }
+
+    private String plotPressureMode(Object value) {
+        String mode = Json.asString(value).trim().toLowerCase();
+        if ("relaxed".equals(mode) || "easy".equals(mode) || "simple".equals(mode)) {
+            return "relaxed";
+        }
+        return "strict";
     }
 
     private Long quickJudgeWaitMsFromSeconds(Object value) {

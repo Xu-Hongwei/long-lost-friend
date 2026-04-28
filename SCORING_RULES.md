@@ -368,6 +368,12 @@ else:
 - 剧情成功推进后，`plotSignal`、`plotPressure`、`plotGap` 和信号拆分都会被消费并归零。
 - 心跳重建 `TurnContext` 时会继承上一轮剧情信号，避免主动消息把调试面板数字误清零。
 
+前端可切换剧情节奏模式：
+
+- `relaxed / 轻松模式`：不做剧情蓄力减分；普通闲聊、轻松回应、情绪分享等低风险日常轮即使 `plotSignal <= 0`，也会让 `plotPressure +1`，让关系和剧情在自然聊天里缓慢蓄力。
+- `strict / 困难模式`：保留严格衰减；显式转场、结构化判断压住推进，或本轮信号不足时，`plotPressure` 可能下降。
+- 无论哪种模式，剧情真正推进成功后都会消费蓄力并归零；`meta_repair`、风险轮、本地冲突和高优先级义务不会被当成普通聊天奖励。
+
 ### 8.4 TurnContext 对 PlotSignal 的修正
 
 `adjustSignalWithTurnContext(...)` 会结合关系评分和结构化理解再修正一次：

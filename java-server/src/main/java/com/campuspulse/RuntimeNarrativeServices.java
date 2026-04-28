@@ -5077,7 +5077,14 @@ class PlotDirectorService {
         boolean explicitTransition = moveIntent.isExplicitMove();
         int signal = explicitTransition ? 0 : sceneSignal(userMessage, memorySummary, emotionState, weatherContext, timeContext, replySource, moveIntent);
         signal = adjustSignalWithTurnContext(signal, turnContext, currentTurn, current.forcePlotAtTurn);
-        int plotPressure = evolvePlotPressure(current.plotPressure, signal, moveIntent, explicitTransition);
+        int plotPressure = evolvePlotPressure(
+                current.plotPressure,
+                signal,
+                moveIntent,
+                explicitTransition,
+                turnContext,
+                session.plotPressureMode
+        );
         enrichTurnContext(turnContext, moveIntent);
         enrichTurnContext(turnContext, gap, signal, plotPressure, replySource, nowIso);
         enrichPlotSignalBreakdown(
@@ -5280,8 +5287,25 @@ class PlotDirectorService {
         return Math.max(0, adjusted);
     }
 
-    private int evolvePlotPressure(int previousPressure, int signal, SceneMoveIntent moveIntent, boolean explicitTransition) {
+    private int evolvePlotPressure(
+            int previousPressure,
+            int signal,
+            SceneMoveIntent moveIntent,
+            boolean explicitTransition,
+            TurnContext turnContext,
+            String plotPressureMode
+    ) {
         int pressure = Math.max(0, previousPressure);
+        if (isRelaxedPlotPressureMode(plotPressureMode)) {
+            if (explicitTransition || moveIntent != null && moveIntent.blocksPlotAdvance()) {
+                return pressure;
+            }
+            if (signal <= 0) {
+                return isOrdinaryRelaxedChat(turnContext) ? Math.min(10, pressure + 1) : pressure;
+            }
+            int gain = Math.max(1, signal - 2);
+            return Math.min(10, Math.max(signal, pressure + gain));
+        }
         if (explicitTransition || moveIntent != null && moveIntent.blocksPlotAdvance()) {
             return Math.max(0, pressure - 1);
         }
@@ -5290,6 +5314,41 @@ class PlotDirectorService {
         }
         int gain = Math.max(1, signal - 2);
         return Math.min(10, Math.max(signal, pressure + gain));
+    }
+
+    private boolean isRelaxedPlotPressureMode(String mode) {
+        String value = mode == null ? "" : mode.trim().toLowerCase();
+        return "relaxed".equals(value) || "easy".equals(value) || "simple".equals(value);
+    }
+
+    private boolean isOrdinaryRelaxedChat(TurnContext turnContext) {
+        if (turnContext == null) {
+            return true;
+        }
+        if (turnContext.riskFlags != null && !turnContext.riskFlags.isEmpty()) {
+            return false;
+        }
+        if (turnContext.localConflicts != null && !turnContext.localConflicts.isEmpty()) {
+            return false;
+        }
+        String intent = normalized(turnContext.primaryIntent);
+        String replyAct = normalized(turnContext.userReplyAct);
+        if (List.of("meta_repair", "advice_seek", "question_check").contains(intent)) {
+            return false;
+        }
+        if (List.of("reject", "defer", "clarify", "counter_offer", "topic_only", "scene_stay").contains(replyAct)) {
+            return false;
+        }
+        if (turnContext.assistantObligation != null && turnContext.assistantObligation.priority >= 4) {
+            return false;
+        }
+        return List.of("small_talk", "light_chat", "emotion_share").contains(intent)
+                || List.of("answer_question", "accept_plan", "continue_topic").contains(replyAct)
+                || intent.isBlank() && replyAct.isBlank();
+    }
+
+    private String normalized(String value) {
+        return value == null ? "" : value.trim().toLowerCase();
     }
 
     private String directorDetail(PlotDirectorAgentDecision decision) {

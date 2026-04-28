@@ -141,11 +141,13 @@ onMounted(async () => {
             :quick-judge-mode="sessionStore.quickJudgeMode"
             :quick-judge-enabled="sessionStore.quickJudgeEnabled"
             :quick-judge-wait-seconds="sessionStore.quickJudgeWaitSeconds"
+            :plot-pressure-mode="sessionStore.plotPressureMode"
             @update:draft="chatStore.setDraft"
             @send="chatStore.send"
             @choose="sessionStore.submitChoice"
             @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
             @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
+            @set-plot-pressure-mode="sessionStore.setPlotPressureMode"
             @export-debug-data="sessionStore.exportDebugData"
             @toggleDrawer="uiStore.toggleDrawer"
           />

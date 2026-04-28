@@ -145,7 +145,8 @@ public class CampusPulseServer {
                     "quickJudgeMode", Json.asString(body.get("quick_judge_mode")),
                     "quickJudgeEnabled", body.containsKey("quick_judge_enabled") ? Json.asBoolean(body.get("quick_judge_enabled")) : true,
                     "quickJudgeForceAll", body.containsKey("quick_judge_force_all") && Json.asBoolean(body.get("quick_judge_force_all")),
-                    "quickJudgeWaitSeconds", body.containsKey("quick_judge_wait_seconds") ? body.get("quick_judge_wait_seconds") : ""
+                    "quickJudgeWaitSeconds", body.containsKey("quick_judge_wait_seconds") ? body.get("quick_judge_wait_seconds") : "",
+                    "plotPressureMode", Json.asString(body.get("plot_pressure_mode"))
             ))));
         }
 
@@ -159,7 +160,8 @@ public class CampusPulseServer {
                     "isTyping", body.get("is_typing") instanceof Boolean bool && bool,
                     "draftLength", Json.asInt(body.get("draft_length"), 0),
                     "lastInputAt", Json.asString(body.get("last_input_at")),
-                    "clientTime", Json.asString(body.get("client_time"))
+                    "clientTime", Json.asString(body.get("client_time")),
+                    "plotPressureMode", Json.asString(body.get("plot_pressure_mode"))
             ))));
         }
 
