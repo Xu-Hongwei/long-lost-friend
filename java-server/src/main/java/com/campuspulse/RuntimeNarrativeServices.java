@@ -97,6 +97,7 @@ class PlotDecision {
     final String sceneFrame;
     final String sceneText;
     final String plotDirectorReason;
+    final Map<String, Object> plotDirectorInput;
 
     PlotDecision(
             PlotState nextPlotState,
@@ -108,6 +109,20 @@ class PlotDecision {
             String sceneText,
             String plotDirectorReason
     ) {
+        this(nextPlotState, nextPlotArcState, nextSceneState, advanced, replySource, sceneFrame, sceneText, plotDirectorReason, Map.of());
+    }
+
+    PlotDecision(
+            PlotState nextPlotState,
+            PlotArcState nextPlotArcState,
+            SceneState nextSceneState,
+            boolean advanced,
+            String replySource,
+            String sceneFrame,
+            String sceneText,
+            String plotDirectorReason,
+            Map<String, Object> plotDirectorInput
+    ) {
         this.nextPlotState = nextPlotState;
         this.nextPlotArcState = nextPlotArcState;
         this.nextSceneState = nextSceneState;
@@ -116,6 +131,7 @@ class PlotDecision {
         this.sceneFrame = sceneFrame;
         this.sceneText = sceneText;
         this.plotDirectorReason = plotDirectorReason;
+        this.plotDirectorInput = plotDirectorInput == null ? Map.of() : plotDirectorInput;
     }
 
     PlotDecision(
@@ -145,6 +161,7 @@ class PlotDirectorAgentDecision {
     final int confidence;
     final String riskIfAdvance;
     final String requiredUserSignal;
+    final Map<String, Object> directorInput;
 
     PlotDirectorAgentDecision(String action, String reason, String sceneCue, boolean shouldAdvance) {
         this(action, reason, reason, sceneCue, "", shouldAdvance, defaultConfidence(action, shouldAdvance), "", "");
@@ -169,6 +186,21 @@ class PlotDirectorAgentDecision {
             String riskIfAdvance,
             String requiredUserSignal
     ) {
+        this(action, reason, whyNow, sceneCue, transitionLine, shouldAdvance, confidence, riskIfAdvance, requiredUserSignal, Map.of());
+    }
+
+    PlotDirectorAgentDecision(
+            String action,
+            String reason,
+            String whyNow,
+            String sceneCue,
+            String transitionLine,
+            boolean shouldAdvance,
+            int confidence,
+            String riskIfAdvance,
+            String requiredUserSignal,
+            Map<String, Object> directorInput
+    ) {
         this.action = action;
         this.reason = reason;
         this.whyNow = whyNow == null || whyNow.isBlank() ? reason : whyNow;
@@ -178,6 +210,22 @@ class PlotDirectorAgentDecision {
         this.confidence = Math.max(0, Math.min(100, confidence));
         this.riskIfAdvance = riskIfAdvance == null ? "" : riskIfAdvance;
         this.requiredUserSignal = requiredUserSignal == null ? "" : requiredUserSignal;
+        this.directorInput = directorInput == null ? Map.of() : directorInput;
+    }
+
+    PlotDirectorAgentDecision withDirectorInput(Map<String, Object> directorInput) {
+        return new PlotDirectorAgentDecision(
+                action,
+                reason,
+                whyNow,
+                sceneCue,
+                transitionLine,
+                shouldAdvance,
+                confidence,
+                riskIfAdvance,
+                requiredUserSignal,
+                directorInput
+        );
     }
 
     private static int defaultConfidence(String action, boolean shouldAdvance) {
@@ -320,14 +368,294 @@ class SceneMoveIntent {
     }
 }
 
+class SceneActionFrame {
+    final boolean changeSceneNow;
+    final String target;
+    final String commitment;
+    final String objective;
+    final int confidence;
+    final String reason;
+
+    SceneActionFrame(
+            boolean changeSceneNow,
+            String target,
+            String commitment,
+            String objective,
+            int confidence,
+            String reason
+    ) {
+        this.changeSceneNow = changeSceneNow;
+        this.target = target == null ? "" : target;
+        this.commitment = commitment == null ? "none" : commitment;
+        this.objective = objective == null ? "" : objective;
+        this.confidence = Math.max(0, Math.min(100, confidence));
+        this.reason = reason == null ? "" : reason;
+    }
+
+    boolean hasCommitment() {
+        return !"none".equals(commitment);
+    }
+}
+
+class LocalSignalCandidate {
+    final String type;
+    final String value;
+    final String evidence;
+    final int confidence;
+
+    LocalSignalCandidate(String type, String value, String evidence, int confidence) {
+        this.type = type == null ? "" : type;
+        this.value = value == null ? "" : value;
+        this.evidence = evidence == null ? "" : evidence;
+        this.confidence = Math.max(0, Math.min(100, confidence));
+    }
+}
+
+class LocalSignalProfile {
+    final String text;
+    final String compact;
+    final List<LocalSignalCandidate> candidates;
+
+    LocalSignalProfile(String text, String compact, List<LocalSignalCandidate> candidates) {
+        this.text = text == null ? "" : text;
+        this.compact = compact == null ? "" : compact;
+        this.candidates = candidates == null ? List.of() : candidates;
+    }
+
+    boolean has(String type) {
+        return first(type) != null;
+    }
+
+    boolean hasAny(String... types) {
+        if (types == null) {
+            return false;
+        }
+        for (String type : types) {
+            if (has(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    LocalSignalCandidate first(String type) {
+        if (type == null) {
+            return null;
+        }
+        for (LocalSignalCandidate candidate : candidates) {
+            if (candidate != null && type.equals(candidate.type)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    String firstValue(String type) {
+        LocalSignalCandidate candidate = first(type);
+        return candidate == null ? "" : candidate.value;
+    }
+
+    String primaryPlace() {
+        return firstValue("known_place");
+    }
+
+    int confidence(String type, int fallback) {
+        LocalSignalCandidate candidate = first(type);
+        return candidate == null ? fallback : candidate.confidence;
+    }
+
+    List<String> eventKeywords(String target, String scene, int limit) {
+        List<String> result = new ArrayList<>();
+        addKeyword(result, target, limit);
+        addKeyword(result, scene, limit);
+        for (LocalSignalCandidate candidate : candidates) {
+            if (result.size() >= limit) {
+                break;
+            }
+            if (candidate == null || candidate.value.isBlank()) {
+                continue;
+            }
+            if (List.of(
+                    "known_place",
+                    "free_destination",
+                    "romantic_signal",
+                    "emotional_signal",
+                    "memory_signal",
+                    "companionship_signal",
+                    "future_plan"
+            ).contains(candidate.type)) {
+                addKeyword(result, candidate.value, limit);
+            }
+        }
+        for (int index = 0; index < compact.length() - 1 && result.size() < limit; index += 2) {
+            addKeyword(result, compact.substring(index, Math.min(index + 4, compact.length())), limit);
+        }
+        return result;
+    }
+
+    private void addKeyword(List<String> values, String value, int limit) {
+        String keyword = value == null ? "" : value.trim();
+        if (keyword.length() < 2 || values.contains(keyword) || values.size() >= limit) {
+            return;
+        }
+        values.add(keyword);
+    }
+}
+
+class LocalSignalExtractor {
+    LocalSignalProfile analyze(String userMessage) {
+        String text = userMessage == null ? "" : userMessage.trim();
+        String compact = text.replaceAll("\\s+", "");
+        List<LocalSignalCandidate> candidates = new ArrayList<>();
+        addPlaceSignals(compact, candidates);
+        addCueSignals(compact, candidates);
+        return new LocalSignalProfile(text, compact, candidates);
+    }
+
+    private void addPlaceSignals(String compact, List<LocalSignalCandidate> candidates) {
+        addIfContains(compact, candidates, "known_place", "热饮摊附近", 90, "热饮摊附近", "热饮摊");
+        addIfContains(compact, candidates, "known_place", "宿舍楼下", 90, "宿舍楼下");
+        addIfContains(compact, candidates, "known_place", "教学楼走廊", 88, "教学楼走廊", "走廊");
+        addIfContains(compact, candidates, "known_place", "社团教室", 88, "社团教室");
+        addIfContains(compact, candidates, "known_place", "篮球场", 88, "篮球场");
+        addIfContains(compact, candidates, "known_place", "校门口", 88, "校门口");
+        addIfContains(compact, candidates, "known_place", "回去的路上", 86, "回去的路上");
+        addIfContains(compact, candidates, "known_place", "图书馆", 86, "图书馆");
+        addIfContains(compact, candidates, "known_place", "操场", 86, "操场");
+        addIfContains(compact, candidates, "known_place", "食堂", 86, "食堂");
+        addIfContains(compact, candidates, "known_place", "湖边", 84, "湖边");
+        addIfContains(compact, candidates, "known_place", "夜市", 84, "夜市");
+        addIfContains(compact, candidates, "known_place", "宿舍", 82, "宿舍");
+        addIfContains(compact, candidates, "known_place", "教学楼", 82, "教学楼");
+        addIfContains(compact, candidates, "known_place", "市区", 82, "市区", "校外");
+        addIfContains(compact, candidates, "known_place", "外面", 72, "外面", "外边");
+        String freeTarget = freeDestinationTarget(compact);
+        if (!freeTarget.isBlank()) {
+            addUnique(candidates, new LocalSignalCandidate("free_destination", freeTarget, freeTarget, 74));
+        }
+    }
+
+    private void addCueSignals(String compact, List<LocalSignalCandidate> candidates) {
+        addIfContains(compact, candidates, "arrival", "arrived", 90,
+                "已经到了", "我们到了", "都到了", "到了", "已经在", "已经到", "已经走到",
+                "都到", "走到", "现在就在", "我们现在就在", "别再写路上", "已经走过来");
+        addIfContains(compact, candidates, "stay_or_cancel", "stay_or_cancel", 90,
+                "不去了", "先不去", "别去了", "不用去", "别走", "先别走", "不换地方",
+                "别换地方", "留在这", "就在这", "先坐会", "坐下吧", "先别去", "别去",
+                "不用过去", "先别过去", "别过去", "不想过去", "不太想往", "下次再去",
+                "再去吧", "不出去", "先不出去了", "不想走", "不走了", "多待一下",
+                "在这里多待", "先停在这", "先留在这", "不用送", "不用送我回", "别送",
+                "再待一下", "想再待", "下次吧", "不想出校", "不出校");
+        addIfContains(compact, candidates, "scene_move_cue", "current_move", 86,
+                "我们去", "一起去", "先去", "要不去", "想去", "我想去", "去看看",
+                "过去", "走吧", "出发", "换个地方", "换到", "边走边说", "一起走",
+                "往", "自习", "复习", "出去看", "去买", "买杯", "过去看看",
+                "去市区", "去校外", "出校", "去湖边", "去夜市", "去篮球场", "去校门口",
+                "去社团教室", "送你回", "送她回", "送他回");
+        addIfContains(compact, candidates, "plan_proposal", "proposal", 82,
+                "我们去", "一起去", "不如一起去", "要不要一起去", "那我们去", "那就去",
+                "出去玩", "去玩", "旅行", "旅游", "行程", "约定", "说好");
+        addIfContains(compact, candidates, "future_plan", "future_plan", 84,
+                "明天", "周末", "放假", "以后", "下次", "改天", "过几天", "多呆几天",
+                "到时候", "计划", "安排", "行程", "旅行", "旅游", "约定", "说好");
+        addIfContains(compact, candidates, "topic_guard", "topic_only", 84,
+                "说到", "想到", "会想到", "你觉得", "觉得", "适合", "会不会", "有没有",
+                "为什么", "喜欢", "讨厌", "只聊天", "只是聊", "只是聊到", "只是话题",
+                "只是想想", "不一定要", "只是问问", "只是随口说说", "不代表现在");
+        addIfContains(compact, candidates, "meta_repair", "meta_repair", 92,
+                "bug", "错误", "不对", "重复", "你在说什么", "听不懂", "修正",
+                "你没懂", "没懂我", "不是这个意思", "你回复", "怎么突然");
+        addIfContains(compact, candidates, "romantic_signal", "喜欢", 78,
+                "喜欢", "想你", "心动", "有好感", "在意", "以后", "一直");
+        addIfContains(compact, candidates, "emotional_signal", "心事", 78,
+                "心事", "压力", "害怕", "难过", "失眠", "秘密", "委屈", "低落", "崩溃");
+        addIfContains(compact, candidates, "memory_signal", "记得", 76,
+                "记得", "还记得", "上次", "之前", "答应过", "后来");
+        addIfContains(compact, candidates, "companionship_signal", "一起", 76,
+                "一起", "陪我", "陪你", "约定", "说好", "认真");
+        addIfContains(compact, candidates, "info_question", "info_question", 72,
+                "为什么", "什么原因", "理论", "原理", "解释", "讲讲", "是什么意思",
+                "什么书", "哪本书", "看什么", "读什么");
+    }
+
+    private void addIfContains(String compact, List<LocalSignalCandidate> candidates, String type, String value, int confidence, String... cues) {
+        if (compact == null || compact.isBlank() || cues == null) {
+            return;
+        }
+        for (String cue : cues) {
+            if (cue != null && !cue.isBlank() && compact.contains(cue)) {
+                addUnique(candidates, new LocalSignalCandidate(type, value, cue, confidence));
+                return;
+            }
+        }
+    }
+
+    private void addUnique(List<LocalSignalCandidate> candidates, LocalSignalCandidate next) {
+        for (LocalSignalCandidate existing : candidates) {
+            if (existing != null
+                    && existing.type.equals(next.type)
+                    && existing.value.equals(next.value)) {
+                return;
+            }
+        }
+        candidates.add(next);
+    }
+
+    private String freeDestinationTarget(String compact) {
+        for (String prefix : List.of("那就去", "就去", "我们去", "一起去", "去")) {
+            int index = compact.indexOf(prefix);
+            if (index < 0) {
+                continue;
+            }
+            String value = compact.substring(index + prefix.length());
+            value = trimDestinationSuffix(value);
+            if (!value.isBlank() && !isGenericDestination(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private String trimDestinationSuffix(String value) {
+        String result = value == null ? "" : value;
+        for (String suffix : List.of("怎么样", "可以吗", "好吗", "好不好", "吧", "吗", "呢", "玩几天", "玩", "逛逛", "看看", "一下", "几天")) {
+            int index = result.indexOf(suffix);
+            if (index >= 0) {
+                result = result.substring(0, index);
+            }
+        }
+        return result.replaceAll("[，。！？、,.!?]", "").trim();
+    }
+
+    private boolean isGenericDestination(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", "");
+        return compact.isBlank() || containsAny(compact, List.of("玩", "哪里", "地方", "外面", "那边", "几天", "一下"));
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
 class SceneMoveIntentService {
+    private final LocalSignalExtractor localSignalExtractor = new LocalSignalExtractor();
+
     SceneMoveIntent classify(String userMessage, DialogueContinuityState continuityState, SceneState sceneState) {
         String text = userMessage == null ? "" : userMessage.trim();
         String compact = text.replaceAll("\\s+", "");
+        LocalSignalProfile signals = localSignalExtractor.analyze(text);
         if (compact.isBlank()) {
             return SceneMoveIntent.none("empty");
         }
-        if (isArrived(compact)) {
+        if (signals.has("arrival")) {
             String target = targetFromText(compact, sceneState);
             if (target.isBlank() || "聊天现场".equals(target) || "外面".equals(target)) {
                 target = currentLocation(sceneState);
@@ -340,10 +668,14 @@ class SceneMoveIntentService {
         if (!hasActiveMovementObjective(continuityState) && isLocationBoundaryTopic(compact)) {
             return new SceneMoveIntent("scene_topic", "topic_only", "", "", false, false, 84, "location_boundary_topic_only");
         }
-        if (isStayOrCancel(compact)) {
+        if (signals.has("stay_or_cancel")) {
             String moveType = isCancelMove(compact) ? "cancel_move" : "stay";
             String target = "cancel_move".equals(moveType) ? "" : currentLocation(sceneState);
             return new SceneMoveIntent("scene_status", moveType, target, currentInteraction(sceneState), false, false, 90, "user_blocks_or_cancels_move");
+        }
+        SceneActionFrame frame = inferSceneActionFrame(signals);
+        if (frame.hasCommitment() && !frame.changeSceneNow) {
+            return new SceneMoveIntent("no_scene_change", "no_change", frame.target, "", false, false, frame.confidence, frame.reason);
         }
         String returnTarget = returnTarget(compact, sceneState);
         if (!returnTarget.isBlank()) {
@@ -368,12 +700,31 @@ class SceneMoveIntentService {
         }
         if (hasMoveVerb(compact)) {
             String target = targetFromText(compact, sceneState);
+            if (target.isBlank()) {
+                return new SceneMoveIntent("no_scene_change", "no_change", freeDestinationTarget(compact), "", false, false, 76, "move_word_without_current_scene_target");
+            }
             return new SceneMoveIntent("explicit_move", "move_to", target, interactionFor(target, compact), true, true, 84, "move_verb_request");
         }
         if (isAmbientReference(compact)) {
             return new SceneMoveIntent("ambient_reference", "topic_only", "", "", false, false, 78, "ambient_reference");
         }
         return SceneMoveIntent.none("no_move_intent");
+    }
+
+    private SceneActionFrame inferSceneActionFrame(LocalSignalProfile signals) {
+        String target = signals.primaryPlace();
+        String freeTarget = signals.firstValue("free_destination");
+        if (!signals.has("plan_proposal")) {
+            return new SceneActionFrame(false, "", "none", "", 0, "");
+        }
+        boolean concreteLocalTarget = !target.isBlank() && !"外面".equals(target);
+        boolean futurePlan = signals.has("future_plan") || !concreteLocalTarget && signals.hasAny("free_destination", "plan_proposal");
+        if (futurePlan || !concreteLocalTarget) {
+            String objectiveTarget = freeTarget.isBlank() ? target : freeTarget;
+            String objective = objectiveTarget.isBlank() ? "一起安排之后出去玩。" : "一起安排去" + objectiveTarget + "。";
+            return new SceneActionFrame(false, objectiveTarget, "proposal", objective, 82, "future_or_unspecified_plan");
+        }
+        return new SceneActionFrame(true, target, "proposal", "一起去" + target + "。", 88, "concrete_current_scene_move");
     }
 
     private boolean isArrived(String compact) {
@@ -526,20 +877,12 @@ class SceneMoveIntentService {
         )) || compact.contains("不去") && !compact.contains("要不去") && !compact.contains("要不要去")) {
             return false;
         }
-        return containsAny(compact, List.of(
-                "我们去", "一起去", "先去", "要不去", "想去", "我想去", "去看看", "去外面",
-                "去市区", "去校外", "去图书馆", "去操场", "去食堂", "去宿舍", "去湖边", "去夜市",
-                "去篮球场", "去校门口", "去社团教室", "过去", "走吧", "出发", "换个地方", "换到",
-                "换去", "边走边说", "一起走", "出去看", "去买", "买杯", "送你回", "送她回", "送他回"
-        ));
+        return localSignalExtractor.analyze(compact).has("scene_move_cue");
     }
 
     private boolean hasMoveVerb(String compact) {
-        return containsAny(compact, List.of(
-                "我们去", "一起去", "先去", "要不去", "想去", "我想去", "去看看", "过去",
-                "走吧", "出发", "换个地方", "换到", "边走边说", "一起走", "往", "待一会",
-                "自习", "复习", "出去看", "去买", "买杯", "过去看看"
-        ));
+        return localSignalExtractor.analyze(compact).has("scene_move_cue")
+                || containsAny(compact, List.of("待一会"));
     }
 
     private boolean isImplicitMove(String compact) {
@@ -572,7 +915,7 @@ class SceneMoveIntentService {
             return target;
         }
         if (containsAny(compact, List.of("热饮", "奶茶", "咖啡"))) return "热饮摊附近";
-        return sceneState == null || sceneState.location == null || sceneState.location.isBlank() ? "聊天现场" : sceneState.location;
+        return "";
     }
 
     private String targetFromText(String compact, SceneState sceneState) {
@@ -584,7 +927,7 @@ class SceneMoveIntentService {
         if (!target.isBlank()) {
             return target;
         }
-        return sceneState == null || sceneState.location == null || sceneState.location.isBlank() ? "外面" : sceneState.location;
+        return "";
     }
 
     private boolean hasMoveCueForTarget(String compact) {
@@ -595,23 +938,42 @@ class SceneMoveIntentService {
     }
 
     private String targetPlaceMention(String compact) {
-        if (containsAny(compact, List.of("热饮摊附近", "热饮摊"))) return "热饮摊附近";
-        if (containsAny(compact, List.of("宿舍楼下"))) return "宿舍楼下";
-        if (containsAny(compact, List.of("教学楼走廊"))) return "教学楼走廊";
-        if (containsAny(compact, List.of("社团教室"))) return "社团教室";
-        if (containsAny(compact, List.of("篮球场"))) return "篮球场";
-        if (containsAny(compact, List.of("校门口"))) return "校门口";
-        if (containsAny(compact, List.of("回去的路上"))) return "回去的路上";
-        if (containsAny(compact, List.of("图书馆"))) return "图书馆";
-        if (containsAny(compact, List.of("操场"))) return "操场";
-        if (containsAny(compact, List.of("食堂"))) return "食堂";
-        if (containsAny(compact, List.of("湖边"))) return "湖边";
-        if (containsAny(compact, List.of("夜市"))) return "夜市";
-        if (containsAny(compact, List.of("宿舍"))) return "宿舍";
-        if (containsAny(compact, List.of("教学楼"))) return "教学楼";
-        if (containsAny(compact, List.of("市区", "校外"))) return "市区";
-        if (containsAny(compact, List.of("外面", "外边"))) return "外面";
+        return localSignalExtractor.analyze(compact).primaryPlace();
+    }
+
+    private String freeDestinationTarget(String compact) {
+        for (String prefix : List.of("那就去", "就去", "我们去", "一起去", "去")) {
+            int index = compact.indexOf(prefix);
+            if (index < 0) {
+                continue;
+            }
+            String value = compact.substring(index + prefix.length());
+            value = trimDestinationSuffix(value);
+            if (!value.isBlank() && !isGenericDestination(value)) {
+                return value;
+            }
+        }
         return "";
+    }
+
+    private String trimDestinationSuffix(String value) {
+        String result = value == null ? "" : value;
+        for (String suffix : List.of("怎么样", "可以吗", "好吗", "好不好", "吧", "吗", "呢", "玩几天", "玩", "逛逛", "看看", "一下", "几天")) {
+            int index = result.indexOf(suffix);
+            if (index >= 0) {
+                result = result.substring(0, index);
+            }
+        }
+        return result.replaceAll("[，。！？、,.!?]", "").trim();
+    }
+
+    private boolean isGenericDestination(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", "");
+        return compact.isBlank() || containsAny(compact, List.of("玩", "哪里", "地方", "外面", "那边", "几天", "一下"));
+    }
+
+    private boolean hasFuturePlanningCue(String compact) {
+        return localSignalExtractor.analyze(compact).has("future_plan");
     }
 
     private String interactionFor(String targetLocation, String compact) {
@@ -636,6 +998,7 @@ class SceneMoveIntentService {
 
 class TurnUnderstandingService {
     private final SceneMoveIntentService sceneMoveIntentService = new SceneMoveIntentService();
+    private final LocalSignalExtractor localSignalExtractor = new LocalSignalExtractor();
 
     TurnUnderstandingState understand(
             String userMessage,
@@ -647,13 +1010,16 @@ class TurnUnderstandingService {
     ) {
         String text = userMessage == null ? "" : userMessage.trim();
         String compact = compact(text);
+        LocalSignalProfile signals = localSignalExtractor.analyze(text);
         SceneMoveIntent moveIntent = sceneMoveIntentService.classify(text, continuityState, sceneState);
         AssistantObligation assistantObligation = detectAssistantObligation(recentContext);
+        ReferentAnchor referentAnchor = detectReferentAnchor(compact, recentContext);
         String obligationType = assistantObligation == null ? "none" : blank(assistantObligation.type);
         List<UserReplyActCandidate> candidates = new ArrayList<>();
 
         addCandidate(candidates, "clarify", repairScore(compact, intentState), List.of("user_correction_or_meta_repair"));
         addCandidate(candidates, "answer_question", answerQuestionScore(compact, obligationType, intentState), List.of("last_assistant_question"));
+        addCandidate(candidates, "answer_question", referentAnchor.followup ? 8 : 0, List.of("referential_followup:" + referentAnchor.source));
         addCandidate(candidates, "accept_plan", acceptPlanScore(compact, obligationType, continuityState), List.of("soft_acceptance_or_active_plan"));
         addCandidate(candidates, "reject", rejectScore(compact), List.of("reject_or_cancel_signal"));
         addCandidate(candidates, "defer", deferScore(compact), List.of("defer_or_later_signal"));
@@ -676,6 +1042,21 @@ class TurnUnderstandingService {
         List<LocalConflict> localConflicts = detectLocalConflicts(compact, obligationType, continuityState, sceneState, moveIntent, top, second);
         int confidence = confidence(top.score, second, localConflicts);
         String tier = recommendedTier(top.act, confidence, localConflicts, compact);
+        List<TurnMissionCandidate> missionCandidates = inferTurnMissionCandidates(
+                top.act,
+                confidence,
+                localConflicts,
+                assistantObligation,
+                referentAnchor,
+                moveIntent,
+                signals,
+                intentState,
+                continuityState
+        );
+        TurnMissionCandidate mission = missionCandidates.isEmpty()
+                ? missionCandidate("continue_chat", "no_stronger_local_mission", Math.max(40, confidence), false)
+                : missionCandidates.get(0);
+        List<String> localGuards = inferLocalGuards(top.act, localConflicts, referentAnchor, moveIntent, signals, missionCandidates, intentState);
 
         TurnUnderstandingState state = new TurnUnderstandingState();
         state.primaryAct = top.act;
@@ -685,12 +1066,218 @@ class TurnUnderstandingService {
         state.assistantObligation = assistantObligation;
         state.recommendedQuickJudgeTier = tier;
         state.shouldAskQuickJudge = !"skip".equals(tier);
+        state.turnMission = mission.mission;
+        state.turnMissionReason = mission.reason;
+        state.turnMissionPriority = mission.confidence;
+        state.turnMissionCandidates = missionCandidates;
+        state.localGuards = localGuards;
+        state.referentialFollowup = referentAnchor.followup;
+        state.referentSource = referentAnchor.source;
+        state.referentAnchor = referentAnchor.anchor;
+        state.referentReason = referentAnchor.reason;
         state.sceneMoveKind = moveIntent.moveType;
         state.sceneMoveTarget = moveIntent.targetLocation;
         state.sceneMoveReason = moveIntent.reason;
         state.sceneMoveConfidence = moveIntent.confidence;
         state.updatedAt = nowIso;
         return state;
+    }
+
+    private List<TurnMissionCandidate> inferTurnMissionCandidates(
+            String primaryAct,
+            int confidence,
+            List<LocalConflict> localConflicts,
+            AssistantObligation obligation,
+            ReferentAnchor referentAnchor,
+            SceneMoveIntent moveIntent,
+            LocalSignalProfile signals,
+            IntentState intentState,
+            DialogueContinuityState continuityState
+    ) {
+        List<TurnMissionCandidate> candidates = new ArrayList<>();
+        String act = blank(primaryAct);
+        String intent = intentState == null ? "" : blank(intentState.primaryIntent);
+        boolean planSignal = signals != null && (signals.has("plan_proposal") || signals.has("future_plan"));
+        if ("clarify".equals(act) || "meta_repair".equals(intent)) {
+            addMission(candidates, "repair_context", "user_is_correcting_or_questioning_context", 96, true);
+        }
+        if (moveIntent != null && (moveIntent.isExplicitMove() || moveIntent.isImplicitMove())) {
+            addMission(candidates, "resolve_scene_move", "user_is_moving_or_confirming_a_location", 86, false);
+        }
+        if (planSignal) {
+            addMission(candidates, "continue_shared_plan", "user_is_proposing_or_refining_a_plan", 86, false);
+        }
+        if (List.of("accept_plan", "counter_offer", "scene_move").contains(act)
+                || "scene_push".equals(intent)) {
+            addMission(candidates, "continue_shared_plan", "shared_plan_or_offer_is_active", 80, false);
+        }
+        boolean explicitAnswerNeed = (referentAnchor != null && referentAnchor.followup)
+                || "question_check".equals(intent)
+                || "advice_seek".equals(intent)
+                || signals != null && signals.has("info_question");
+        if ("answer_question".equals(act) && explicitAnswerNeed && !planSignal) {
+            int answerConfidence = referentAnchor != null && referentAnchor.followup ? 98 : 94;
+            addMission(candidates, "answer_user_question", "user_is_waiting_for_an_answer", answerConfidence, true);
+        }
+        if ("answer_question".equals(act) && !planSignal) {
+            addMission(candidates, "answer_user_question", "answer_question_wins_over_stale_context", 92, true);
+        }
+        if (localConflicts != null && hasHardLocalConflict(localConflicts)) {
+            addMission(candidates, "repair_context", "local_conflict_first", 88, true);
+        }
+        if (obligation != null && obligation.priority >= 4) {
+            addMission(candidates, "satisfy_assistant_obligation", "assistant_left_a_high_priority_obligation", 85, true);
+        }
+        if ("romantic_probe".equals(intent) || "emotion_share".equals(intent)) {
+            addMission(candidates, "deepen_relationship", "user_is_opening_emotional_or_romantic_space", 74, false);
+        }
+        if ("small_talk".equals(act) || "light_chat".equals(intent) || "small_talk".equals(intent)) {
+            addMission(candidates, "gentle_chat", "low_risk_daily_chat", Math.max(45, confidence), false);
+        }
+        if (continuityState != null && !blank(continuityState.acceptedPlan).isBlank()) {
+            addMission(candidates, "continue_shared_plan", "stale_shared_plan_context", 45, false);
+        }
+        if (candidates.isEmpty()) {
+            addMission(candidates, "continue_chat", "no_stronger_local_mission", Math.max(40, confidence), false);
+        }
+        candidates.sort((left, right) -> Integer.compare(right.confidence, left.confidence));
+        return candidates.size() > 5 ? new ArrayList<>(candidates.subList(0, 5)) : candidates;
+    }
+
+    private List<String> inferLocalGuards(
+            String primaryAct,
+            List<LocalConflict> localConflicts,
+            ReferentAnchor referentAnchor,
+            SceneMoveIntent moveIntent,
+            LocalSignalProfile signals,
+            List<TurnMissionCandidate> missionCandidates,
+            IntentState intentState
+    ) {
+        List<String> guards = new ArrayList<>();
+        String act = blank(primaryAct);
+        String intent = intentState == null ? "" : blank(intentState.primaryIntent);
+        boolean planSignal = signals != null && (signals.has("plan_proposal") || signals.has("future_plan"));
+        boolean explicitAnswerNeed = (referentAnchor != null && referentAnchor.followup)
+                || "question_check".equals(intent)
+                || "advice_seek".equals(intent)
+                || signals != null && signals.has("info_question")
+                || "answer_question".equals(act);
+        if ("answer_question".equals(act) && explicitAnswerNeed && !planSignal) {
+            addGuard(guards, "answer_current_question_before_plot");
+        }
+        if (hasMissionCandidate(missionCandidates, "answer_user_question", 75)
+                && hasMissionCandidate(missionCandidates, "continue_shared_plan", 40)
+                && !planSignal) {
+            addGuard(guards, "do_not_replace_current_topic_with_old_plan");
+        }
+        if (localConflicts != null && hasHardLocalConflict(localConflicts)) {
+            addGuard(guards, "resolve_local_conflict_before_plot");
+        }
+        String moveType = moveIntent == null ? "" : blank(moveIntent.moveType);
+        if (List.of("stay", "cancel_move", "arrived", "topic_only").contains(moveType)) {
+            addGuard(guards, "do_not_force_scene_transition");
+        }
+        return guards;
+    }
+
+    private boolean hasMissionCandidate(List<TurnMissionCandidate> candidates, String mission, int minConfidence) {
+        if (candidates == null) {
+            return false;
+        }
+        for (TurnMissionCandidate candidate : candidates) {
+            if (candidate != null && mission.equals(candidate.mission) && candidate.confidence >= minConfidence) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void addMission(List<TurnMissionCandidate> candidates, String mission, String reason, int confidence, boolean guardCandidate) {
+        if (candidates == null || mission == null || mission.isBlank()) {
+            return;
+        }
+        for (TurnMissionCandidate existing : candidates) {
+            if (existing != null && mission.equals(existing.mission)) {
+                if (confidence > existing.confidence) {
+                    existing.confidence = Math.max(0, Math.min(100, confidence));
+                    existing.reason = blank(reason);
+                    existing.guardCandidate = existing.guardCandidate || guardCandidate;
+                }
+                return;
+            }
+        }
+        candidates.add(missionCandidate(mission, reason, confidence, guardCandidate));
+    }
+
+    private TurnMissionCandidate missionCandidate(String mission, String reason, int confidence, boolean guardCandidate) {
+        TurnMissionCandidate candidate = new TurnMissionCandidate();
+        candidate.mission = blank(mission);
+        candidate.reason = blank(reason);
+        candidate.confidence = Math.max(0, Math.min(100, confidence));
+        candidate.guardCandidate = guardCandidate;
+        return candidate;
+    }
+
+    private void addGuard(List<String> guards, String guard) {
+        if (guards != null && guard != null && !guard.isBlank() && !guards.contains(guard)) {
+            guards.add(guard);
+        }
+    }
+
+    private boolean hasHardLocalConflict(List<LocalConflict> conflicts) {
+        if (conflicts == null) {
+            return false;
+        }
+        for (LocalConflict conflict : conflicts) {
+            if (conflict == null) {
+                continue;
+            }
+            String severity = blank(conflict.severity);
+            String type = blank(conflict.type);
+            if ("high".equals(severity) || "critical".equals(severity)) {
+                return true;
+            }
+            if (List.of("objective_conflict", "scene_move_conflict", "duplicate_reply").contains(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private ReferentAnchor detectReferentAnchor(String compact, List<ConversationSnippet> recentContext) {
+        String lastAssistant = lastAssistantText(recentContext);
+        if (compact == null || compact.isBlank() || lastAssistant.isBlank()) {
+            return ReferentAnchor.none();
+        }
+        boolean deictic = containsAny(compact, List.of(
+                "这", "这个", "这种", "这句", "这段", "这部分", "那", "那个", "那句", "刚才", "刚刚", "前面", "上面", "你说的", "你刚才", "你刚刚"
+        ));
+        boolean followupVerb = containsAny(compact, List.of(
+                "为什么", "原因", "怎么回事", "讲讲", "说说", "展开", "具体", "更深", "深层", "理论", "例子", "意思", "解释"
+        ));
+        boolean shortBareFollowup = compact.length() <= 14 && containsAny(compact, List.of("为什么", "什么原因", "讲讲", "展开讲", "具体呢", "然后呢"));
+        if ((!deictic || !followupVerb) && !shortBareFollowup) {
+            return ReferentAnchor.none();
+        }
+        if (looksLikeFreshStandaloneQuestion(compact)) {
+            return ReferentAnchor.none();
+        }
+        return new ReferentAnchor(
+                true,
+                "last_assistant",
+                truncate(lastAssistant, 140),
+                deictic ? "deictic_followup" : "short_bare_followup"
+        );
+    }
+
+    private boolean looksLikeFreshStandaloneQuestion(String compact) {
+        if (compact == null || compact.isBlank()) {
+            return false;
+        }
+        if (containsAny(compact, List.of("今天", "现在", "最近", "新闻", "天气", "温度", "几点", "日期", "搜索", "查一下"))) {
+            return true;
+        }
+        return compact.startsWith("什么是") || compact.startsWith("介绍一下") || compact.startsWith("帮我查");
     }
 
     private void addCandidate(List<UserReplyActCandidate> candidates, String act, int score, List<String> evidence) {
@@ -717,6 +1304,24 @@ class TurnUnderstandingService {
             score += 10;
         }
         return score;
+    }
+
+    private static final class ReferentAnchor {
+        final boolean followup;
+        final String source;
+        final String anchor;
+        final String reason;
+
+        ReferentAnchor(boolean followup, String source, String anchor, String reason) {
+            this.followup = followup;
+            this.source = source == null ? "" : source;
+            this.anchor = anchor == null ? "" : anchor;
+            this.reason = reason == null ? "" : reason;
+        }
+
+        static ReferentAnchor none() {
+            return new ReferentAnchor(false, "", "", "");
+        }
     }
 
     private int answerQuestionScore(String compact, String obligation, IntentState intentState) {
@@ -1133,14 +1738,15 @@ class QuickJudgeTask {
     final int triggerScore;
     final List<String> triggerReasons;
     final List<String> suppressedReasons;
+    final int sourceTurn;
     final AtomicLong completedAtNanos = new AtomicLong(0L);
 
     QuickJudgeTask(CompletableFuture<QuickJudgeDecision> future, long startedAtNanos) {
-        this(future, startedAtNanos, "opportunistic", "", 0, List.of(), List.of());
+        this(future, startedAtNanos, "opportunistic", "", 0, List.of(), List.of(), 0);
     }
 
     QuickJudgeTask(CompletableFuture<QuickJudgeDecision> future, long startedAtNanos, String triggerTier, String triggerReason) {
-        this(future, startedAtNanos, triggerTier, triggerReason, 0, List.of(), List.of());
+        this(future, startedAtNanos, triggerTier, triggerReason, 0, List.of(), List.of(), 0);
     }
 
     QuickJudgeTask(
@@ -1152,6 +1758,19 @@ class QuickJudgeTask {
             List<String> triggerReasons,
             List<String> suppressedReasons
     ) {
+        this(future, startedAtNanos, triggerTier, triggerReason, triggerScore, triggerReasons, suppressedReasons, 0);
+    }
+
+    QuickJudgeTask(
+            CompletableFuture<QuickJudgeDecision> future,
+            long startedAtNanos,
+            String triggerTier,
+            String triggerReason,
+            int triggerScore,
+            List<String> triggerReasons,
+            List<String> suppressedReasons,
+            int sourceTurn
+    ) {
         this.future = future;
         this.startedAtNanos = startedAtNanos;
         this.triggerTier = triggerTier == null ? "" : triggerTier;
@@ -1159,6 +1778,7 @@ class QuickJudgeTask {
         this.triggerScore = triggerScore;
         this.triggerReasons = triggerReasons == null ? List.of() : List.copyOf(triggerReasons);
         this.suppressedReasons = suppressedReasons == null ? List.of() : List.copyOf(suppressedReasons);
+        this.sourceTurn = sourceTurn;
     }
 }
 
@@ -1471,6 +2091,9 @@ class IntentInferenceService {
 
         int metaRepairScore = keywordScore(text, META_REPAIR_KEYWORDS)
                 + (startsWithAny(compact, List.of("不是", "我说的是", "别误会")) ? 2 : 0);
+        if (looksLikeReplyConfusion(compact, recentContext)) {
+            metaRepairScore += 2;
+        }
         int romanticProbeScore = keywordScore(text, ROMANTIC_PROBE_KEYWORDS)
                 + (containsAny(text, List.of("喜欢", "心动", "有好感")) && containsQuestion(text) ? 1 : 0);
         int scenePushScore = keywordScore(text, SCENE_PUSH_KEYWORDS)
@@ -1534,6 +2157,24 @@ class IntentInferenceService {
             return "plan_anchor";
         }
         return "none";
+    }
+
+    private boolean looksLikeReplyConfusion(String compact, List<ConversationSnippet> recentContext) {
+        if (compact.isBlank()
+                || containsAny(compact, List.of("天气", "温度", "下雨", "风景", "风", "路况"))
+                || !containsAny(compact, List.of("这是什么情况", "什么情况", "啥情况", "怎么回事", "你在说什么", "你说什么"))) {
+            return false;
+        }
+        if (recentContext == null || recentContext.isEmpty()) {
+            return false;
+        }
+        for (int index = recentContext.size() - 1; index >= 0; index--) {
+            ConversationSnippet snippet = recentContext.get(index);
+            if (snippet != null && "assistant".equals(snippet.role) && snippet.text != null && !snippet.text.isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String detectEmotion(String text, RelationalTensionState tensionState) {
@@ -1805,13 +2446,17 @@ class DialogueContinuityService {
         if (movingIntent && compact.contains("图书馆")) return "一起去图书馆。";
         if (movingIntent && compact.contains("宿舍")) return "送对方回宿舍。";
         if (movingIntent && compact.contains("市区")) return "一起去市区。";
-        if (compact.contains("走吧") || compact.contains("一起走") || compact.contains("一起去")) return "一起往前走。";
+        if (compact.contains("走吧") || compact.contains("一起走") || compact.contains("边走边说") || compact.contains("路上聊")) return "一起往前走。";
         return "";
     }
 
     private String detectOfferedObjective(String compact, String context) {
         if (containsAny(compact, List.of("我去给你买", "给你买", "帮你买", "去买一杯", "买一杯", "给你带一杯"))) {
             return referencesDrinkContext(context) ? "一起去买热饮。" : "承接用户提出的具体小行动。";
+        }
+        String futurePlan = inferFuturePlanObjective(compact);
+        if (!futurePlan.isBlank()) {
+            return futurePlan;
         }
         if (containsAny(compact, List.of("我陪你去", "带你去", "不如一起去", "那我们去", "要不要一起去"))) {
             String objective = inferSceneObjective(compact);
@@ -2020,6 +2665,58 @@ class DialogueContinuityService {
             }
         }
         return "";
+    }
+
+    private String inferFuturePlanObjective(String compact) {
+        if (!looksLikeFuturePlan(compact)) {
+            return "";
+        }
+        String target = freeDestinationTarget(compact);
+        if (!target.isBlank()) {
+            return "一起安排去" + target + "。";
+        }
+        return "一起安排之后出去玩。";
+    }
+
+    private boolean looksLikeFuturePlan(String compact) {
+        boolean planCue = containsAny(compact, List.of(
+                "多呆几天", "放假", "明天", "周末", "以后", "下次", "改天", "过几天",
+                "出去玩", "去玩", "旅行", "旅游", "行程", "约定", "说好"
+        ));
+        boolean togetherCue = containsAny(compact, List.of("我们", "一起", "陪你", "陪我", "那就去", "就去"));
+        boolean genericTrip = containsAny(compact, List.of("一起去玩", "我们去玩", "出去玩", "那就去"));
+        return (planCue && togetherCue) || genericTrip;
+    }
+
+    private String freeDestinationTarget(String compact) {
+        for (String prefix : List.of("那就去", "就去", "我们去", "一起去", "去")) {
+            int index = compact.indexOf(prefix);
+            if (index < 0) {
+                continue;
+            }
+            String value = compact.substring(index + prefix.length());
+            value = trimDestinationSuffix(value);
+            if (!value.isBlank() && !isGenericDestination(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private String trimDestinationSuffix(String value) {
+        String result = value == null ? "" : value;
+        for (String suffix : List.of("怎么样", "可以吗", "好吗", "好不好", "吧", "吗", "呢", "玩几天", "玩", "逛逛", "看看", "一下", "几天")) {
+            int index = result.indexOf(suffix);
+            if (index >= 0) {
+                result = result.substring(0, index);
+            }
+        }
+        return result.replaceAll("[，。！？、,.!?]", "").trim();
+    }
+
+    private boolean isGenericDestination(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", "");
+        return compact.isBlank() || containsAny(compact, List.of("玩", "哪里", "地方", "外面", "那边", "几天", "一下"));
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -2445,7 +3142,8 @@ class RealityGuardService {
                 reply.tokenUsage,
                 reply.errorCode,
                 reply.fallbackUsed,
-                reply.provider
+                reply.provider,
+                reply.promptSlotsUsed
         );
         return new RealityGuardResult(repaired, audit, sceneAudit);
     }
@@ -2923,6 +3621,31 @@ class EnhancedSocialMemoryService extends SocialMemoryService {
     }
 
     @Override
+    MemorySummary settleOpenLoopsAfterAssistant(
+            MemorySummary summary,
+            String userMessage,
+            String assistantReply,
+            TurnContext turnContext,
+            DialogueContinuityState continuity,
+            String nowIso
+    ) {
+        MemorySummary next = normalizeSummary(summary, nowIso);
+        if (assistantReply == null || assistantReply.isBlank()) {
+            return next;
+        }
+        boolean userAskedQuestion = hasQuestion(userMessage);
+        boolean userAnsweredAssistant = continuity != null && continuity.userAnsweredLastQuestion;
+        if (userAskedQuestion) {
+            resolveQuestionLoop(next, userMessage, nowIso);
+            pruneLegacyQuestionLoops(next, userMessage);
+        }
+        if (userAnsweredAssistant) {
+            pruneAssistantOwnedQuestion(next, continuity.lastAssistantQuestion);
+        }
+        return next;
+    }
+
+    @Override
     MemoryUsePlan planMemoryUse(MemorySummary summary, String userMessage, String replySource, String sceneFrame) {
         MemorySummary normalized = normalizeSummary(summary, IsoTimes.now());
         MemoryUsePlan plan = super.planMemoryUse(normalized, userMessage, replySource, sceneFrame);
@@ -3056,6 +3779,55 @@ class EnhancedSocialMemoryService extends SocialMemoryService {
         while (summary.openLoopItems.size() > 10) {
             summary.openLoopItems.remove(summary.openLoopItems.size() - 1);
         }
+    }
+
+    private void resolveQuestionLoop(MemorySummary summary, String userMessage, String nowIso) {
+        String id = "question:" + compact(userMessage);
+        for (OpenLoopItem item : summary.openLoopItems) {
+            if (item == null || item.resolved || !"question".equals(item.sourceType)) {
+                continue;
+            }
+            if (id.equals(item.id) || compact(item.id).contains(compact(userMessage))) {
+                item.resolved = true;
+                item.updatedAt = nowIso;
+            }
+        }
+    }
+
+    private void pruneLegacyQuestionLoops(MemorySummary summary, String userMessage) {
+        String source = compact(userMessage);
+        summary.openLoops.removeIf(value -> looksLikeQuestionLoop(value, source));
+        summary.temporaryMemories.removeIf(value -> looksLikeQuestionLoop(value, source));
+        summary.callbackCandidates.removeIf(value -> looksLikeQuestionLoop(value, source));
+    }
+
+    private void pruneAssistantOwnedQuestion(MemorySummary summary, String lastAssistantQuestion) {
+        if (lastAssistantQuestion == null || lastAssistantQuestion.isBlank()) {
+            return;
+        }
+        String source = compact(lastAssistantQuestion);
+        summary.assistantOwnedThreads.removeIf(value -> looksLikeQuestionLoop(value, source));
+        summary.callbackCandidates.removeIf(value -> looksLikeQuestionLoop(value, source));
+    }
+
+    private boolean looksLikeQuestionLoop(String value, String source) {
+        String text = compact(value);
+        if (text.isBlank()) {
+            return false;
+        }
+        if (source != null && source.length() >= 6) {
+            String prefix = source.substring(0, Math.min(12, source.length()));
+            if (text.contains(prefix)) {
+                return true;
+            }
+        }
+        return (text.contains("\u95ee\u9898") && (text.contains("\u6536\u5c3e") || text.contains("\u5f85\u56de\u5e94")))
+                || text.contains("\u8fd8\u6709\u4e00\u4e2a\u95ee\u9898")
+                || text.contains("\u6ca1\u6709\u5b8c\u5168\u6536\u5c3e");
+    }
+
+    private boolean hasQuestion(String value) {
+        return value != null && (value.contains("?") || value.contains("\uff1f"));
     }
 
     private String extractFact(String userMessage, List<String> markers) {
@@ -3305,7 +4077,8 @@ class QuickJudgeService {
                     trigger.reason,
                     trigger.score,
                     trigger.reasons,
-                    trigger.suppressedReasons
+                    trigger.suppressedReasons,
+                    currentTurn
             );
             task.completedAtNanos.set(startedAtNanos);
             return task;
@@ -3334,7 +4107,8 @@ class QuickJudgeService {
                 trigger.reason,
                 trigger.score,
                 trigger.reasons,
-                trigger.suppressedReasons
+                trigger.suppressedReasons,
+                currentTurn
         );
         future.whenComplete((decision, error) -> task.completedAtNanos.compareAndSet(0L, System.nanoTime()));
         return task;
@@ -3620,6 +4394,7 @@ class QuickJudgeService {
                 "callbackCandidates", limitList(memorySummary == null ? null : memorySummary.callbackCandidates, 3)
         ));
         input.put("rules", List.of(
+                "Treat turnMissionCandidates as local options, not absolute truth; use localGuards as hard continuity constraints.",
                 "Prefer the local intent unless the message clearly mixes action and emotion.",
                 "Do not invent a new location, objective, or memory.",
                 "Only set sharedObjective when the user is accepting, offering, or refining a concrete joint action.",
@@ -3653,6 +4428,15 @@ class QuickJudgeService {
         result.put("assistantObligation", assistantObligationMap(state.assistantObligation));
         result.put("recommendedQuickJudgeTier", safe(state.recommendedQuickJudgeTier));
         result.put("shouldAskQuickJudge", state.shouldAskQuickJudge);
+        result.put("turnMission", safe(state.turnMission));
+        result.put("turnMissionReason", safe(state.turnMissionReason));
+        result.put("turnMissionPriority", state.turnMissionPriority);
+        result.put("turnMissionCandidates", turnMissionCandidateMaps(state.turnMissionCandidates));
+        result.put("localGuards", state.localGuards == null ? List.of() : state.localGuards);
+        result.put("referentialFollowup", state.referentialFollowup);
+        result.put("referentSource", safe(state.referentSource));
+        result.put("referentAnchor", safe(state.referentAnchor));
+        result.put("referentReason", safe(state.referentReason));
         result.put("sceneMoveKind", safe(state.sceneMoveKind));
         result.put("sceneMoveTarget", safe(state.sceneMoveTarget));
         result.put("sceneMoveReason", safe(state.sceneMoveReason));
@@ -3660,6 +4444,25 @@ class QuickJudgeService {
         result.put("localConflicts", localConflictMaps(state.localConflicts));
         result.put("candidates", candidates);
         return result;
+    }
+
+    private List<Map<String, Object>> turnMissionCandidateMaps(List<TurnMissionCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (TurnMissionCandidate candidate : candidates) {
+            if (candidate == null || safe(candidate.mission).isBlank()) {
+                continue;
+            }
+            items.add(Map.of(
+                    "mission", safe(candidate.mission),
+                    "reason", safe(candidate.reason),
+                    "confidence", candidate.confidence,
+                    "guardCandidate", candidate.guardCandidate
+            ));
+        }
+        return items;
     }
 
     private Map<String, Object> assistantObligationMap(AssistantObligation obligation) {
@@ -4433,7 +5236,7 @@ class PlotDirectorAgentService {
             return guard;
         }
 
-        PlotDirectorAgentDecision local = localDecision(text, replySource, currentTurn, gap, forcePlotAtTurn, signal, plotPressure);
+        PlotDirectorAgentDecision local = localDecision(text, replySource, currentTurn, gap, forcePlotAtTurn, signal, plotPressure, turnContext);
         if (!remoteEnabled()) {
             return local;
         }
@@ -4452,7 +5255,7 @@ class PlotDirectorAgentService {
                     memorySummary,
                     turnContext
             );
-            return sanitizeRemoteDecision(remote, local, replySource, gap, signal);
+            return sanitizeRemoteDecision(remote, local, replySource, gap, signal, turnContext);
         } catch (Exception ex) {
             return new PlotDirectorAgentDecision(
                     local.action,
@@ -4471,8 +5274,8 @@ class PlotDirectorAgentService {
                     "transition_only",
                     "user_requested_scene_transition",
                     "user_requested_scene_transition",
-                    transitionCue(text),
-                    transitionLine(text),
+                    transitionCue(turnContext),
+                    transitionLine(turnContext),
                     false
             );
         }
@@ -4541,14 +5344,28 @@ class PlotDirectorAgentService {
             int gap,
             int forcePlotAtTurn,
             int signal,
-            int plotPressure
+            int plotPressure,
+            TurnContext turnContext
     ) {
+        if (shouldHoldRemoteAdvanceForAnswerTurn(turnContext, signal, gap)) {
+            return new PlotDirectorAgentDecision(
+                    "hold_plot",
+                    "local_blocked_by_turn_mission",
+                    "本轮任务要求先回答或修正当前上下文。",
+                    "",
+                    "",
+                    false,
+                    88,
+                    "推进会打断本轮任务。",
+                    "finish_current_turn_mission"
+            );
+        }
         if (currentTurn >= forcePlotAtTurn && gap >= 5 && (signal >= 2 || plotPressure >= 4)) {
             return new PlotDirectorAgentDecision(
                     "advance_plot",
                     "force_window_with_context_signal",
                     "\u5267\u60c5\u53ea\u987a\u7740\u521a\u624d\u7684\u8bdd\u5f80\u524d\u534a\u6b65\uff0c\u4e0d\u8df3\u5f00\u5f53\u524d\u7528\u6237\u610f\u601d\u3002",
-                    transitionLine(text),
+                    transitionLine(turnContext),
                     true
             );
         }
@@ -4557,7 +5374,7 @@ class PlotDirectorAgentService {
                     "advance_plot",
                     "accumulated_plot_pressure_ready",
                     "\u524d\u51e0\u8f6e\u7684\u6c14\u6c1b\u5df2\u7ecf\u84c4\u5230\u53ef\u4ee5\u81ea\u7136\u5f80\u524d\u8d70\u4e00\u62cd\u3002",
-                    transitionLine(text),
+                    transitionLine(turnContext),
                     true
             );
         }
@@ -4566,7 +5383,7 @@ class PlotDirectorAgentService {
                     "advance_plot",
                     "steady_plot_pressure_ready",
                     "\u5267\u60c5\u84c4\u529b\u5df2\u7ecf\u8db3\u591f\uff0c\u53ef\u4ee5\u5728\u4e0d\u62a2\u8bdd\u7684\u60c5\u51b5\u4e0b\u63a8\u8fdb\u534a\u6b65\u3002",
-                    transitionLine(text),
+                    transitionLine(turnContext),
                     true
             );
         }
@@ -4575,7 +5392,7 @@ class PlotDirectorAgentService {
                     "advance_plot",
                     "strong_context_signal",
                     "\u628a\u5f53\u524d\u8bdd\u9898\u81ea\u7136\u53d8\u6210\u4e00\u4e2a\u5c0f\u8282\u62cd\uff0c\u800c\u4e0d\u662f\u5207\u8d70\u8bdd\u9898\u3002",
-                    transitionLine(text),
+                    transitionLine(turnContext),
                     true
             );
         }
@@ -4604,6 +5421,19 @@ class PlotDirectorAgentService {
             MemorySummary memorySummary,
             TurnContext turnContext
     ) throws IOException {
+        Map<String, Object> directorInput = buildDirectorInput(
+                userMessage,
+                replySource,
+                currentTurn,
+                gap,
+                forcePlotAtTurn,
+                signal,
+                plotPressure,
+                emotionState,
+                relationshipState,
+                memorySummary,
+                turnContext
+        );
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("model", model);
         payload.put("temperature", 0.2);
@@ -4614,23 +5444,11 @@ class PlotDirectorAgentService {
                 ),
                 Map.of(
                         "role", "user",
-                        "content", Json.stringify(buildDirectorInput(
-                                userMessage,
-                                replySource,
-                                currentTurn,
-                                gap,
-                                forcePlotAtTurn,
-                                signal,
-                                plotPressure,
-                                emotionState,
-                                relationshipState,
-                                memorySummary,
-                                turnContext
-                        ))
+                        "content", Json.stringify(directorInput)
                 )
         ));
 
-        return callHttpDirector(payload);
+        return callHttpDirector(payload).withDirectorInput(directorInput);
     }
 
     private PlotDirectorAgentDecision callHttpDirector(Map<String, Object> payload) throws IOException {
@@ -4715,12 +5533,24 @@ class PlotDirectorAgentService {
                 "continuity", turnContext == null ? 0 : turnContext.plotContinuitySignal,
                 "risk", turnContext == null ? 0 : turnContext.plotRiskSignal
         ));
+        turnContextPayload.put("plotPressureBuckets", Map.of(
+                "relationship", turnContext == null ? 0 : turnContext.plotRelationshipPressure,
+                "scene", turnContext == null ? 0 : turnContext.plotScenePressure,
+                "openLoop", turnContext == null ? 0 : turnContext.plotOpenLoopPressure,
+                "event", turnContext == null ? 0 : turnContext.plotEventPressure,
+                "silence", turnContext == null ? 0 : turnContext.plotSilencePressure
+        ));
         turnContextPayload.put("sceneLocation", turnContext == null ? "" : safe(turnContext.sceneLocation));
         turnContextPayload.put("interactionMode", turnContext == null ? "" : safe(turnContext.interactionMode));
         turnContextPayload.put("userReplyAct", turnContext == null ? "" : safe(turnContext.userReplyAct));
         turnContextPayload.put("userReplyActConfidence", turnContext == null ? 0 : turnContext.userReplyActConfidence);
         turnContextPayload.put("assistantObligation", turnContext == null ? Map.of() : assistantObligationMap(turnContext.assistantObligation));
         turnContextPayload.put("localConflicts", turnContext == null ? List.of() : localConflictMaps(turnContext.localConflicts));
+        turnContextPayload.put("turnMission", turnContext == null ? "" : safe(turnContext.turnMission));
+        turnContextPayload.put("turnMissionReason", turnContext == null ? "" : safe(turnContext.turnMissionReason));
+        turnContextPayload.put("turnMissionPriority", turnContext == null ? 0 : turnContext.turnMissionPriority);
+        turnContextPayload.put("turnMissionCandidates", turnContext == null ? List.of() : turnMissionCandidateMaps(turnContext.turnMissionCandidates));
+        turnContextPayload.put("localGuards", turnContext == null || turnContext.localGuards == null ? List.of() : turnContext.localGuards);
         turnContextPayload.put("sceneMoveKind", turnContext == null ? "" : safe(turnContext.sceneMoveKind));
         turnContextPayload.put("continuityObjective", turnContext == null ? "" : safe(turnContext.continuityObjective));
         turnContextPayload.put("continuityAcceptedPlan", turnContext == null ? "" : safe(turnContext.continuityAcceptedPlan));
@@ -4747,6 +5577,8 @@ class PlotDirectorAgentService {
                 "callbackCandidates", limitList(memorySummary == null ? null : memorySummary.callbackCandidates, 3)
         ));
         input.put("rules", List.of(
+                "Treat turnMissionCandidates as local options, not absolute truth. Use them to understand competing interpretations.",
+                "localGuards are hard continuity and fact constraints. If a guard says answer or repair first, do not advance plot unless the user also gives a fresh concrete plot signal.",
                 "If the user is only reacting briefly, do not advance plot.",
                 "If contextSignal is weak, hold plot.",
                 "A plot beat must continue the current chat, not replace it.",
@@ -4782,13 +5614,28 @@ class PlotDirectorAgentService {
             PlotDirectorAgentDecision local,
             String replySource,
             int gap,
-            int signal
+            int signal,
+            TurnContext turnContext
     ) {
         if (remote == null) {
             return local;
         }
+        if ("advance_plot".equals(remote.action) && shouldHoldRemoteAdvanceForAnswerTurn(turnContext, signal, gap)) {
+            return new PlotDirectorAgentDecision(
+                    "hold_plot",
+                    "remote_blocked_by_answer_turn",
+                    "用户正在追问上一句内容，应先完成解释，不把剧情压力转成推进。",
+                    "",
+                    "",
+                    false,
+                    remote.confidence,
+                    "推进会打断用户正在等待的回答。",
+                    "wait_for_user_initiated_plot_signal",
+                    remote.directorInput
+            );
+        }
         if ("advance_plot".equals(remote.action) && (gap < 4 || signal < 2)) {
-            return new PlotDirectorAgentDecision("hold_plot", "remote_blocked_by_gap_or_signal", "", false);
+            return new PlotDirectorAgentDecision("hold_plot", "remote_blocked_by_gap_or_signal", "", false).withDirectorInput(remote.directorInput);
         }
         if ("advance_plot".equals(remote.action) && remote.confidence < 60) {
             return new PlotDirectorAgentDecision(
@@ -4800,11 +5647,12 @@ class PlotDirectorAgentService {
                     false,
                     remote.confidence,
                     remote.riskIfAdvance,
-                    remote.requiredUserSignal
+                    remote.requiredUserSignal,
+                    remote.directorInput
             );
         }
         if ("heartbeat_nudge".equals(remote.action) && (!"long_chat_heartbeat".equals(replySource) || gap < 6)) {
-            return new PlotDirectorAgentDecision("hold_plot", "remote_heartbeat_blocked", "", false);
+            return new PlotDirectorAgentDecision("hold_plot", "remote_heartbeat_blocked", "", false).withDirectorInput(remote.directorInput);
         }
         boolean shouldAdvance = "advance_plot".equals(remote.action) || "heartbeat_nudge".equals(remote.action);
         return new PlotDirectorAgentDecision(
@@ -4816,8 +5664,67 @@ class PlotDirectorAgentService {
                 shouldAdvance && remote.shouldAdvance,
                 remote.confidence,
                 remote.riskIfAdvance,
-                remote.requiredUserSignal
+                remote.requiredUserSignal,
+                remote.directorInput
         );
+    }
+
+    private boolean shouldHoldRemoteAdvanceForAnswerTurn(TurnContext turnContext, int signal, int gap) {
+        if (turnContext == null) {
+            return false;
+        }
+        if (hasGuard(turnContext, "answer_current_question_before_plot")
+                || hasGuard(turnContext, "resolve_local_conflict_before_plot")
+                || hasGuard(turnContext, "do_not_replace_current_topic_with_old_plan")) {
+            return signal < 4;
+        }
+        if (hasGuard(turnContext, "do_not_force_scene_transition") && signal < 3) {
+            return true;
+        }
+        String intent = safe(turnContext.primaryIntent);
+        String act = safe(turnContext.userReplyAct);
+        if (turnContext.referentialFollowup && "answer_question".equals(act)) {
+            return true;
+        }
+        if ("question_check".equals(intent) && "answer_question".equals(act) && signal < 4) {
+            return true;
+        }
+        boolean currentPlanSignal = List.of("accept_plan", "counter_offer", "scene_move").contains(act)
+                || "scene_push".equals(intent)
+                || !safe(turnContext.sceneMoveTarget).isBlank();
+        boolean relationshipIntent = "romantic_probe".equals(intent)
+                || "emotion_share".equals(intent)
+                || "scene_push".equals(intent);
+        if (relationshipIntent || currentPlanSignal) {
+            return false;
+        }
+        return "advice_seek".equals(intent) && signal < 4 && gap < 7;
+    }
+
+    private boolean hasGuard(TurnContext turnContext, String guard) {
+        return turnContext != null
+                && turnContext.localGuards != null
+                && guard != null
+                && turnContext.localGuards.contains(guard);
+    }
+
+    private List<Map<String, Object>> turnMissionCandidateMaps(List<TurnMissionCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (TurnMissionCandidate candidate : candidates) {
+            if (candidate == null || safe(candidate.mission).isBlank()) {
+                continue;
+            }
+            items.add(Map.of(
+                    "mission", safe(candidate.mission),
+                    "reason", safe(candidate.reason),
+                    "confidence", candidate.confidence,
+                    "guardCandidate", candidate.guardCandidate
+            ));
+        }
+        return items;
     }
 
     private int defaultRemoteConfidence(String action, boolean shouldAdvance) {
@@ -4845,43 +5752,58 @@ class PlotDirectorAgentService {
                 || compact.contains("\u7136\u540e\u5462");
     }
 
-    private String transitionCue(String text) {
-        if (text.contains("\u64cd\u573a")) {
-            return "\u573a\u666f\u5148\u987a\u7740\u4f60\u7684\u63d0\u8bae\u8f6c\u5230\u64cd\u573a\u8fb9\uff0c\u5267\u60c5\u6682\u65f6\u4e0d\u62a2\u8dd1\u3002";
-        }
-        if (text.contains("\u5bbf\u820d")) {
-            return "\u573a\u666f\u5148\u8f6c\u5230\u56de\u5bbf\u820d\u7684\u8def\u4e0a\uff0c\u8ba9\u79fb\u52a8\u8fc7\u7a0b\u81ea\u7136\u63a5\u4e0a\u3002";
-        }
-        if (text.contains("\u98df\u5802")) {
-            return "\u573a\u666f\u5148\u8f6c\u5230\u53bb\u98df\u5802\u7684\u8def\u4e0a\uff0c\u8bdd\u9898\u8ddf\u7740\u6362\u6210\u66f4\u65e5\u5e38\u7684\u8282\u594f\u3002";
-        }
-        if (text.contains("\u56fe\u4e66\u9986")) {
-            return "\u573a\u666f\u5148\u8f6c\u56de\u56fe\u4e66\u9986\u9644\u8fd1\uff0c\u628a\u5b89\u9759\u7684\u6c1b\u56f4\u63a5\u4f4f\u3002";
-        }
-        return "\u573a\u666f\u5148\u6309\u7528\u6237\u63d0\u51fa\u7684\u65b9\u5411\u79fb\u52a8\uff0c\u5267\u60c5\u4fdd\u6301\u7b49\u5f85\u3002";
-    }
-
-    private String transitionLine(String text) {
-        String compact = text == null ? "" : text.replaceAll("\\s+", "");
-        if (compact.isBlank()) {
+    private String transitionCue(TurnContext turnContext) {
+        SceneTransitionCandidate candidate = sceneTransitionCandidate(turnContext);
+        if (!candidate.shouldTransition) {
             return "";
         }
-        if (containsAny(compact, List.of("\u56fe\u4e66\u9986", "\u81ea\u4e60"))) {
-            return "\u6211\u4eec\u987a\u7740\u8fd9\u53e5\u8bdd\u5f80\u56fe\u4e66\u9986\u90a3\u8fb9\u8d70\uff0c\u8fde\u811a\u6b65\u90fd\u4e0d\u81ea\u89c9\u653e\u8f7b\u4e86\u4e00\u70b9\u3002";
+        String target = candidate.target.isBlank() ? "\u7528\u6237\u63d0\u51fa\u7684\u65b9\u5411" : candidate.target;
+        return "\u573a\u666f\u79fb\u52a8\u5019\u9009\uff1a\u76ee\u6807=" + target
+                + "\uff1b\u7c7b\u578b=" + candidate.kind
+                + "\uff1b\u53ea\u5199\u8f7b\u8f6c\u573a\uff0c\u4e0d\u8981\u501f\u673a\u63a8\u8fdb\u65b0\u5267\u60c5\u3002";
+    }
+
+    private String transitionLine(TurnContext turnContext) {
+        SceneTransitionCandidate candidate = sceneTransitionCandidate(turnContext);
+        if (!candidate.shouldTransition) {
+            return "";
         }
-        if (containsAny(compact, List.of("\u98df\u5802", "\u6253\u996d", "\u5403\u996d"))) {
-            return "\u6211\u4eec\u4ece\u539f\u5730\u6162\u6162\u8d70\u5411\u98df\u5802\u90a3\u8fb9\uff0c\u521a\u624d\u7684\u8bdd\u4e5f\u8ddf\u7740\u843d\u8fdb\u4e86\u66f4\u65e5\u5e38\u7684\u8282\u594f\u91cc\u3002";
+        if (candidate.target.isBlank()) {
+            return "\u4f60\u4eec\u987a\u7740\u521a\u624d\u8bf4\u597d\u7684\u65b9\u5411\u5f80\u524d\u8d70\uff0c\u8bdd\u9898\u4e5f\u88ab\u8f7b\u8f7b\u5e26\u5230\u65b0\u7684\u573a\u666f\u91cc\u3002";
         }
-        if (containsAny(compact, List.of("\u64cd\u573a", "\u591c\u8dd1", "\u6563\u6b65"))) {
-            return "\u6211\u4eec\u987a\u7740\u8fd9\u4e2a\u8bdd\u5934\u5f80\u5916\u8d70\uff0c\u98ce\u4ece\u7a7a\u65f7\u7684\u5730\u65b9\u62c2\u8fc7\u6765\uff0c\u521a\u624d\u7684\u6c14\u6c1b\u4e5f\u88ab\u4e00\u8d77\u5e26\u4e86\u51fa\u53bb\u3002";
+        return "\u4f60\u4eec\u987a\u7740\u521a\u624d\u8bf4\u597d\u7684\u65b9\u5411\u5f80" + candidate.target
+                + "\u8d70\u53bb\uff0c\u811a\u6b65\u653e\u6162\u4e86\u4e00\u70b9\uff0c\u8bdd\u9898\u4e5f\u81ea\u7136\u63a5\u4e86\u4e0b\u53bb\u3002";
+    }
+
+    private SceneTransitionCandidate sceneTransitionCandidate(TurnContext turnContext) {
+        if (turnContext == null) {
+            return SceneTransitionCandidate.none();
         }
-        if (containsAny(compact, List.of("\u5bbf\u820d", "\u56de\u5bbf\u820d"))) {
-            return "\u6211\u4eec\u987a\u7740\u53bb\u5bbf\u820d\u7684\u65b9\u5411\u6162\u6162\u8d70\u8fc7\u53bb\uff0c\u8fde\u539f\u672c\u505c\u5728\u539f\u5730\u7684\u90a3\u70b9\u5fc3\u7eea\uff0c\u4e5f\u8ddf\u7740\u6709\u4e86\u7740\u843d\u3002";
+        String kind = safe(turnContext.sceneMoveKind);
+        if (!"move_to".equals(kind) && !"mixed_transition".equals(kind)) {
+            return SceneTransitionCandidate.none();
         }
-        if (containsAny(compact, List.of("\u8def\u4e0a", "\u4e00\u8d77\u8d70", "\u9001\u4f60\u56de", "\u9001\u5979\u56de"))) {
-            return "\u6211\u4eec\u4e00\u8fb9\u5f80\u524d\u8d70\uff0c\u4e00\u8fb9\u628a\u521a\u624d\u8fd8\u6ca1\u8bf4\u5b8c\u7684\u90a3\u70b9\u8bdd\u6162\u6162\u63a5\u4e0b\u53bb\u3002";
+        if (hasLocalConflict(turnContext, "scene_target_already_current")
+                || hasLocalConflict(turnContext, "user_cancels_active_objective")) {
+            return SceneTransitionCandidate.none();
         }
-        return "";
+        return new SceneTransitionCandidate(true, kind, safe(turnContext.sceneMoveTarget));
+    }
+
+    private static final class SceneTransitionCandidate {
+        final boolean shouldTransition;
+        final String kind;
+        final String target;
+
+        SceneTransitionCandidate(boolean shouldTransition, String kind, String target) {
+            this.shouldTransition = shouldTransition;
+            this.kind = kind == null ? "" : kind;
+            this.target = target == null ? "" : target;
+        }
+
+        static SceneTransitionCandidate none() {
+            return new SceneTransitionCandidate(false, "", "");
+        }
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -5073,10 +5995,13 @@ class PlotDirectorService {
         PlotState next = clonePlot(current);
         int currentTurn = "user_turn".equals(replySource) ? session.userTurnCount + 1 : session.userTurnCount;
         int gap = Math.max(0, currentTurn - current.lastPlotTurn);
-        SceneMoveIntent moveIntent = sceneMoveIntentService.classify(userMessage, session.dialogueContinuityState, session.sceneState);
+        DialogueContinuityState moveContinuity = continuityForMoveIntent(turnContext, session.dialogueContinuityState, nowIso);
+        SceneMoveIntent moveIntent = sceneMoveIntentService.classify(userMessage, moveContinuity, session.sceneState);
         boolean explicitTransition = moveIntent.isExplicitMove();
         int signal = explicitTransition ? 0 : sceneSignal(userMessage, memorySummary, emotionState, weatherContext, timeContext, replySource, moveIntent);
-        signal = adjustSignalWithTurnContext(signal, turnContext, currentTurn, current.forcePlotAtTurn);
+        if (!explicitTransition) {
+            signal = adjustSignalWithTurnContext(signal, turnContext, currentTurn, current.forcePlotAtTurn);
+        }
         int plotPressure = evolvePlotPressure(
                 current.plotPressure,
                 signal,
@@ -5090,6 +6015,7 @@ class PlotDirectorService {
         enrichPlotSignalBreakdown(
                 turnContext,
                 signal,
+                plotPressure,
                 userMessage,
                 memorySummary,
                 emotionState,
@@ -5129,7 +6055,7 @@ class PlotDirectorService {
             pushUniqueLimited(next.openThreads, openThread(userMessage, memorySummary, next.phase) + " / " + directorDecision.reason, 6);
             next.updatedAt = nowIso;
             consumePlotSignal(turnContext, nowIso);
-            return new PlotDecision(next, null, null, true, "plot_push", next.sceneFrame, directorSceneText, detail);
+            return new PlotDecision(next, null, null, true, "plot_push", next.sceneFrame, directorSceneText, detail, directorDecision.directorInput);
         }
 
         next.sceneFrame = "transition_only".equals(directorDecision.action)
@@ -5137,7 +6063,7 @@ class PlotDirectorService {
                 : buildAmbientScene(current.sceneFrame, emotionState, timeContext, weatherContext);
         next.plotPressure = plotPressure;
         next.updatedAt = nowIso;
-        return new PlotDecision(next, null, null, false, replySource, next.sceneFrame, directorSceneText, detail);
+        return new PlotDecision(next, null, null, false, replySource, next.sceneFrame, directorSceneText, detail, directorDecision.directorInput);
     }
 
     private void enrichTurnContext(TurnContext turnContext, int gap, int signal, int plotPressure, String replySource, String nowIso) {
@@ -5147,13 +6073,50 @@ class PlotDirectorService {
         turnContext.plotGap = gap;
         turnContext.plotSignal = signal;
         turnContext.plotPressure = plotPressure;
+        turnContext.plotDecisionGap = gap;
+        turnContext.plotDecisionSignal = signal;
+        turnContext.plotDecisionPressure = plotPressure;
         turnContext.replySource = replySource;
         turnContext.updatedAt = nowIso;
+    }
+
+    private DialogueContinuityState continuityForMoveIntent(TurnContext turnContext, DialogueContinuityState fallback, String nowIso) {
+        if (turnContext == null) {
+            return fallback;
+        }
+        DialogueContinuityState next = new DialogueContinuityState();
+        if (fallback != null) {
+            next.currentObjective = fallback.currentObjective;
+            next.pendingUserOffer = fallback.pendingUserOffer;
+            next.acceptedPlan = fallback.acceptedPlan;
+            next.lastAssistantQuestion = fallback.lastAssistantQuestion;
+            next.userAnsweredLastQuestion = fallback.userAnsweredLastQuestion;
+            next.sceneTransitionNeeded = fallback.sceneTransitionNeeded;
+            next.nextBestMove = fallback.nextBestMove;
+            next.mustNotContradict = fallback.mustNotContradict == null ? new ArrayList<>() : new ArrayList<>(fallback.mustNotContradict);
+            next.confidence = fallback.confidence;
+        }
+        if (turnContext.continuityObjective != null) {
+            next.currentObjective = turnContext.continuityObjective;
+        }
+        if (turnContext.continuityAcceptedPlan != null) {
+            next.acceptedPlan = turnContext.continuityAcceptedPlan;
+        }
+        if (turnContext.continuityNextBestMove != null) {
+            next.nextBestMove = turnContext.continuityNextBestMove;
+        }
+        next.sceneTransitionNeeded = turnContext.sceneTransitionNeeded;
+        if (turnContext.continuityGuards != null && !turnContext.continuityGuards.isEmpty()) {
+            next.mustNotContradict = new ArrayList<>(turnContext.continuityGuards);
+        }
+        next.updatedAt = nowIso;
+        return next;
     }
 
     private void enrichPlotSignalBreakdown(
             TurnContext turnContext,
             int totalSignal,
+            int plotPressure,
             String userMessage,
             MemorySummary memorySummary,
             EmotionState emotionState,
@@ -5163,6 +6126,19 @@ class PlotDirectorService {
             int forcePlotAtTurn
     ) {
         if (turnContext == null) {
+            return;
+        }
+        if (moveIntent != null && moveIntent.isExplicitMove()) {
+            turnContext.plotSceneSignal = 0;
+            turnContext.plotRelationshipSignal = 0;
+            turnContext.plotEventSignal = 0;
+            turnContext.plotContinuitySignal = 0;
+            turnContext.plotRiskSignal = 0;
+            turnContext.plotRelationshipPressure = 0;
+            turnContext.plotScenePressure = 0;
+            turnContext.plotOpenLoopPressure = 0;
+            turnContext.plotEventPressure = 0;
+            turnContext.plotSilencePressure = 0;
             return;
         }
         String text = userMessage == null ? "" : userMessage;
@@ -5216,6 +6192,39 @@ class PlotDirectorService {
         turnContext.plotEventSignal = Math.max(0, event);
         turnContext.plotContinuitySignal = Math.max(0, continuity);
         turnContext.plotRiskSignal = Math.max(0, risk);
+        enrichPlotPressureBuckets(
+                turnContext,
+                plotPressure,
+                gapPressure(turnContext.plotGap, currentTurn, forcePlotAtTurn),
+                memorySummary == null || memorySummary.openLoops == null ? 0 : memorySummary.openLoops.size(),
+                replySource
+        );
+    }
+
+    private void enrichPlotPressureBuckets(
+            TurnContext turnContext,
+            int plotPressure,
+            int gapPressure,
+            int openLoopCount,
+            String replySource
+    ) {
+        if (turnContext == null) {
+            return;
+        }
+        int available = Math.max(0, plotPressure);
+        turnContext.plotRelationshipPressure = Math.min(available, Math.max(0, turnContext.plotRelationshipSignal));
+        turnContext.plotScenePressure = Math.min(available, Math.max(0, turnContext.plotSceneSignal + turnContext.plotContinuitySignal));
+        turnContext.plotOpenLoopPressure = Math.min(available, Math.min(3, Math.max(0, openLoopCount)));
+        turnContext.plotEventPressure = Math.min(available, Math.max(0, turnContext.plotEventSignal));
+        int heartbeatBoost = "long_chat_heartbeat".equals(replySource) ? 1 : 0;
+        turnContext.plotSilencePressure = Math.min(available, Math.max(0, gapPressure + heartbeatBoost));
+    }
+
+    private int gapPressure(int gap, int currentTurn, int forcePlotAtTurn) {
+        if (forcePlotAtTurn <= 0 || currentTurn < forcePlotAtTurn) {
+            return gap >= 5 ? 1 : 0;
+        }
+        return currentTurn >= forcePlotAtTurn + 2 ? 3 : 2;
     }
 
     private void enrichTurnContext(TurnContext turnContext, PlotDirectorAgentDecision directorDecision) {
@@ -5241,6 +6250,11 @@ class PlotDirectorService {
         turnContext.plotEventSignal = 0;
         turnContext.plotContinuitySignal = 0;
         turnContext.plotRiskSignal = 0;
+        turnContext.plotRelationshipPressure = 0;
+        turnContext.plotScenePressure = 0;
+        turnContext.plotOpenLoopPressure = 0;
+        turnContext.plotEventPressure = 0;
+        turnContext.plotSilencePressure = 0;
         turnContext.updatedAt = nowIso;
     }
 
@@ -5812,13 +6826,22 @@ class SceneDirectorService {
 
 class SearchDecisionService {
     SearchDecision decide(String userMessage, String replySource, SceneState sceneState, IntentState intentState) {
+        return decide(userMessage, replySource, sceneState, intentState, null);
+    }
+
+    SearchDecision decide(String userMessage, String replySource, SceneState sceneState, IntentState intentState, TurnContext turnContext) {
         if (userMessage == null || userMessage.isBlank()) {
             return new SearchDecision(false, "", "empty", "skip", false);
         }
         String text = userMessage.trim();
+        if (turnContext != null
+                && turnContext.referentialFollowup
+                && !hasStandaloneSearchAnchor(text)) {
+            return new SearchDecision(false, "", "referential_followup", "skip", false);
+        }
         boolean lyrics = containsAny(text, List.of("歌词", "台词", "原句", "完整句子"));
         boolean realtime = containsAny(text, List.of("天气", "今天", "现在", "新闻", "热搜", "最近"));
-        boolean factual = containsAny(text, List.of("是什么", "资料", "介绍", "百科", "历史", "含义"));
+        boolean factual = containsAny(text, List.of("是什么", "什么是", "资料", "介绍", "百科", "历史", "含义"));
         boolean proactiveAnchor = ("plot_push".equals(replySource) || "long_chat_heartbeat".equals(replySource)) && sceneState != null;
         if (lyrics) {
             return new SearchDecision(true, text, "lyrics", "must_search", true);
@@ -5836,6 +6859,21 @@ class SearchDecisionService {
             return new SearchDecision(true, text, "contextual", "should_search", false);
         }
         return new SearchDecision(false, "", "skip", "skip", false);
+    }
+
+    private boolean hasStandaloneSearchAnchor(String text) {
+        String compact = text == null ? "" : text.replaceAll("\\s+", "");
+        if (compact.isBlank()) {
+            return false;
+        }
+        if (containsAny(compact, List.of("今天", "现在", "最近", "新闻", "热搜", "天气", "温度", "日期", "几点", "查一下", "搜索"))) {
+            return true;
+        }
+        if (compact.startsWith("什么是") || compact.startsWith("介绍一下") || compact.startsWith("百科")) {
+            return true;
+        }
+        return compact.length() >= 12
+                && !containsAny(compact, List.of("这", "这个", "这种", "那", "那个", "刚才", "刚刚", "你说的"));
     }
 
     private boolean containsAny(String text, List<String> keywords) {
@@ -5924,7 +6962,8 @@ class EnhancedPlotDirectorService extends PlotDirectorService {
                 base.replySource,
                 stableSceneFrame,
                 sceneText,
-                base.plotDirectorReason
+                base.plotDirectorReason,
+                base.plotDirectorInput
         );
     }
 
@@ -6129,6 +7168,19 @@ class EnhancedPresenceHeartbeatService extends PresenceHeartbeatService {
             }
         }
         PresenceResult base = super.ingest(next, session, visible, focused, observedIso);
+        if (base.shouldSend && shouldHoldForAssistantQuestion(session)) {
+            base.nextState.triggerReason = "presence";
+            base.nextState.blockedReason = "awaiting_user_answer";
+            base.nextState.heartbeatExplain = "\u4e0a\u4e00\u6761\u52a9\u624b\u6d88\u606f\u8fd8\u5728\u7b49\u5f85\u7528\u6237\u56de\u7b54\uff0c\u5fc3\u8df3\u6682\u4e0d\u4e3b\u52a8\u63a5\u8bdd\u3002";
+            return new PresenceResult(
+                    base.nextState,
+                    false,
+                    "presence",
+                    base.nextState.triggerReason,
+                    base.nextState.blockedReason,
+                    base.nextState.heartbeatExplain
+            );
+        }
         base.nextState.triggerReason = base.shouldSend ? base.replySource : "presence";
         base.nextState.blockedReason = base.shouldSend ? "" : base.blockedReason;
         base.nextState.heartbeatExplain = base.shouldSend
@@ -6145,6 +7197,33 @@ class EnhancedPresenceHeartbeatService extends PresenceHeartbeatService {
                 base.nextState.heartbeatExplain
         );
     }
+
+    private boolean shouldHoldForAssistantQuestion(SessionRecord session) {
+        if (session == null || !session.lastAssistantAwaitsUserReply) {
+            return false;
+        }
+        if (session.lastAssistantMessageText == null || session.lastAssistantMessageText.isBlank()) {
+            return false;
+        }
+        return looksLikePendingAssistantQuestion(session.lastAssistantMessageText);
+    }
+
+    private boolean looksLikePendingAssistantQuestion(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String compact = text.replaceAll("\\s+", "");
+        boolean hasQuestionMark = compact.contains("?") || compact.contains("\uff1f");
+        boolean directToUser = compact.contains("\u4f60") || compact.contains("\u4f60\u4eec");
+        boolean questionCue = compact.contains("\u5417")
+                || compact.contains("\u4f60\u5462")
+                || compact.contains("\u8981\u4e0d\u8981")
+                || compact.contains("\u60f3\u4e0d\u60f3")
+                || compact.contains("\u613f\u4e0d\u613f\u610f")
+                || compact.contains("\u53ef\u4ee5\u5417");
+        return hasQuestionMark || directToUser && questionCue;
+    }
+
 }
 
 class RealityContextService {

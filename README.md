@@ -50,6 +50,7 @@ npm test
 - `DASHSCOPE_TIMEOUT_MS`：主回复或百炼兼容链路超时，默认 `12000`
 - `ARK_API_KEY` / `ARK_MODEL` / `ARK_BASE_URL` / `ARK_TIMEOUT_MS`：兼容保留；当主回复未配置百炼时会继续用于主回复，同时默认也会被 `PlotDirector` / `QuickJudge` 这类 `plotLlm` 链路复用
 - `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_TIMEOUT_MS`：兼容保留；仅在未配置 `DASHSCOPE_*` 和 `ARK_*` 时用于主回复回退
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_TIMEOUT_MS`: DeepSeek OpenAI-compatible provider. When any `DEEPSEEK_*` value is configured, the main LLM defaults to `https://api.deepseek.com` and `deepseek-v4-flash`; `PlotDirector` / `QuickJudge` / async scoring / dynamic story events reuse the same provider unless `PLOT_LLM_*` overrides them.
 - `QUICK_JUDGE_FORCE_ALL`：后端诊断用开关，设为 `true` 后，每轮非空消息都尝试触发 `QuickJudgeService`；日常建议优先使用前端 Quick Judge 面板控制
 - `QUICK_JUDGE_WAIT_MS`：后端兜底等待窗口，默认 `120` 毫秒，最小 `60`，最大 `5000`；前端 Quick Judge 面板会按秒传入本轮等待时间并覆盖该兜底值
 
@@ -64,6 +65,15 @@ $env:DASHSCOPE_MODEL="qwen-plus-character"
 $env:ARK_API_KEY="你的密钥"
 $env:ARK_MODEL="ep-20260418203515-nw4jb"
 $env:ARK_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+npm start
+```
+
+DeepSeek 全链路启动示例：
+
+```powershell
+$env:DEEPSEEK_API_KEY="你的 DeepSeek 密钥"
+$env:DEEPSEEK_BASE_URL="https://api.deepseek.com"
+$env:DEEPSEEK_MODEL="deepseek-v4-flash"
 npm start
 ```
 
@@ -139,14 +149,22 @@ QuickJudge 的 `smart` 模式不是只靠高价值轮触发，而是三层触发
 
 调试导出：
 
-- 非沉浸模式可点击“导出调试数据”，导出当前会话的消息、最新智能体信号、Quick Judge 状态、剧情蓄力和关系评分摘要。
+- 非沉浸模式可点击“导出调试数据”，导出当前会话的消息、最新智能体信号、Quick Judge 状态、剧情蓄力、关系评分摘要和本轮主回复使用的 `promptSlotsUsed`。
+- 非沉浸模式会展示“会话记忆窗格”，把当前几轮的已确认事实、工作事实、待承接计划、场景锚点、WorldInfo 候选和晚到修正整理出来；主回复也会通过 `memory.session` 读取这层工作记忆。
+- 记忆窗格支持前端冻结和手动备注；适合排查或试玩时临时固定“不要重复转场”“先回答当前问题”等会话级提示。
+- 非沉浸模式的 `Prompt Stack Viewer` 会展示最新主回复实际注入或裁剪的上下文槽，方便确认 `memory.session`、`turn.understanding`、`plot.directive`、`world.info` 等模块是否真的进入主回复。
+- `promptSlotsUsed` 会标记每个上下文片段的 `included` 和 `tokenBudget`；如果记忆过长，低优先级 slot 会被预算裁剪，高优先级的人设、结构化理解和回复规则优先保留。
 - 后端接口为 `GET /api/session/export?session_id=...`，用于复盘“为什么这一轮推剧情/没推剧情”“为什么 Quick Judge 没采用”等问题。
+- `data/world-info.json` 是可配置背景候选池，借鉴 SillyTavern World Info 思路；关键词只用于召回候选背景和未来事件线索，不直接裁判当前轮是否转场或推进剧情。
 
 本地规则测试数据：
 
 - `testdata/local-rules/` 保存 960 条改写后的 CampusPulse 风格 JSONL 样例，覆盖场景移动、回应动作、QuickJudge 触发、剧情信号、心跳和关系评分。
+- `testdata/memory-pane-replay/` 保存会话记忆窗格与 Prompt Stack 固定回放脚本，用 mock 完整会话验证 `memory.session`、场景锚点、心跳和主回复上下文是否稳定。
 - `tools/dataset-mining/` 保存数据集挖掘和样例生成工具；原始公开数据集只应下载到被忽略的 `raw-datasets/`，不要提交原始语料。
 - 回归验证最小流程：先运行 `python tools/dataset-mining/validate_local_rule_cases.py` 检查样例格式，再运行 `.\run-local-rules.ps1` 把样例喂给真实 Java 本地模块，最后运行 `.\test-java.ps1` 做 Java smoke test。
+- `.\test-java.ps1` 内置了 prompt slot 模拟测试，会覆盖普通聊天、迟到纠错、WorldInfo 候选和超长记忆挤压四类主回复上下文组装场景。
+- `.\test-java.ps1` 也会运行 `MemoryPaneReplayTest`，报告写入 `build/memory-pane-replay/report.json`，用于观察固定脚本里的 `memoryPaneState / lastPromptSlotsUsed / turnContext / quickJudgeStatus / worldInfoActivations`。
 - `.\run-local-rules.ps1` 会输出 `pass / warn / fail`，并把详细报告写入 `build/local-rule-report.json`；`fail` 优先修，`warn` 需要结合 `testdata/local-rules/WARN_TRIAGE_2026-04-27.md` 判断，不要求清零。
 - 更完整的回归验证说明见 `testdata/README.md` 和 `testdata/local-rules/README.md`。
 

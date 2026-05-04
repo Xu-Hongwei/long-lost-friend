@@ -2,6 +2,7 @@ package com.campuspulse;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 
 class AppConfig {
     final int port;
@@ -81,6 +82,12 @@ class AppConfig {
         Path distDir = root.resolve("dist");
         Path staticDir = distDir;
         String portValue = getenvOrDefault("PORT", "3000");
+        boolean preferDeepSeekMain = hasAny(
+                System.getenv("DEEPSEEK_API_KEY"),
+                System.getenv("DEEPSEEK_BASE_URL"),
+                System.getenv("DEEPSEEK_BASE"),
+                System.getenv("DEEPSEEK_MODEL")
+        );
         boolean preferDashScopeMain = hasAny(
                 System.getenv("DASHSCOPE_API_KEY"),
                 System.getenv("DASHSCOPE_BASE_URL"),
@@ -88,43 +95,57 @@ class AppConfig {
                 System.getenv("DASHSCOPE_MODEL")
         );
         String timeoutValue = firstNonBlank(
+                preferDeepSeekMain ? System.getenv("DEEPSEEK_TIMEOUT_MS") : null,
                 preferDashScopeMain ? System.getenv("DASHSCOPE_TIMEOUT_MS") : null,
+                System.getenv("DEEPSEEK_TIMEOUT_MS"),
                 System.getenv("ARK_TIMEOUT_MS"),
                 System.getenv("DASHSCOPE_TIMEOUT_MS"),
                 System.getenv("OPENAI_TIMEOUT_MS"),
                 "12000"
         );
         String llmBaseUrl = firstNonBlank(
+                preferDeepSeekMain ? System.getenv("DEEPSEEK_BASE_URL") : null,
+                preferDeepSeekMain ? System.getenv("DEEPSEEK_BASE") : null,
                 preferDashScopeMain ? System.getenv("DASHSCOPE_BASE_URL") : null,
                 preferDashScopeMain ? System.getenv("DASHSCOPE_BASE") : null,
+                System.getenv("DEEPSEEK_BASE_URL"),
+                System.getenv("DEEPSEEK_BASE"),
                 System.getenv("ARK_BASE_URL"),
                 System.getenv("DASHSCOPE_BASE_URL"),
                 System.getenv("DASHSCOPE_BASE"),
                 System.getenv("OPENAI_API_BASE"),
                 System.getenv("OPENAI_BASE_URL"),
                 System.getenv("OPENAI_BASE"),
-                preferDashScopeMain
+                preferDeepSeekMain
+                        ? "https://api.deepseek.com"
+                        : preferDashScopeMain
                         ? "https://dashscope.aliyuncs.com/compatible-mode/v1"
                         : "https://ark.cn-beijing.volces.com/api/v3"
         );
         String llmApiKey = firstNonBlank(
+                preferDeepSeekMain ? System.getenv("DEEPSEEK_API_KEY") : null,
                 preferDashScopeMain ? System.getenv("DASHSCOPE_API_KEY") : null,
+                System.getenv("DEEPSEEK_API_KEY"),
                 System.getenv("ARK_API_KEY"),
                 System.getenv("DASHSCOPE_API_KEY"),
                 System.getenv("OPENAI_API_KEY"),
                 ""
         );
         String llmModel = firstNonBlank(
+                preferDeepSeekMain ? System.getenv("DEEPSEEK_MODEL") : null,
+                preferDeepSeekMain ? "deepseek-v4-flash" : null,
                 preferDashScopeMain ? System.getenv("DASHSCOPE_MODEL") : null,
                 preferDashScopeMain ? "qwen-plus-character" : null,
+                System.getenv("DEEPSEEK_MODEL"),
                 System.getenv("ARK_MODEL"),
                 System.getenv("DASHSCOPE_MODEL"),
                 System.getenv("OPENAI_MODEL"),
-                preferDashScopeMain ? "qwen-plus-character" : "ep-20260418203515-nw4jb"
+                preferDeepSeekMain ? "deepseek-v4-flash" : preferDashScopeMain ? "qwen-plus-character" : "ep-20260418203515-nw4jb"
         );
         Duration llmTimeout = Duration.ofMillis(Long.parseLong(timeoutValue));
         String plotTimeoutValue = firstNonBlank(
                 System.getenv("PLOT_LLM_TIMEOUT_MS"),
+                System.getenv("DEEPSEEK_TIMEOUT_MS"),
                 System.getenv("ARK_TIMEOUT_MS"),
                 System.getenv("DASHSCOPE_TIMEOUT_MS"),
                 System.getenv("OPENAI_TIMEOUT_MS"),
@@ -143,6 +164,8 @@ class AppConfig {
                 llmTimeout,
                 firstNonBlank(
                         System.getenv("PLOT_LLM_BASE_URL"),
+                        System.getenv("DEEPSEEK_BASE_URL"),
+                        System.getenv("DEEPSEEK_BASE"),
                         System.getenv("ARK_BASE_URL"),
                         System.getenv("DASHSCOPE_BASE_URL"),
                         System.getenv("DASHSCOPE_BASE"),
@@ -153,6 +176,7 @@ class AppConfig {
                 ),
                 firstNonBlank(
                         System.getenv("PLOT_LLM_API_KEY"),
+                        System.getenv("DEEPSEEK_API_KEY"),
                         System.getenv("ARK_API_KEY"),
                         System.getenv("DASHSCOPE_API_KEY"),
                         System.getenv("OPENAI_API_KEY"),
@@ -160,6 +184,8 @@ class AppConfig {
                 ),
                 firstNonBlank(
                         System.getenv("PLOT_LLM_MODEL"),
+                        System.getenv("DEEPSEEK_MODEL"),
+                        preferDeepSeekMain ? "deepseek-v4-flash" : null,
                         System.getenv("ARK_MODEL"),
                         System.getenv("DASHSCOPE_MODEL"),
                         System.getenv("OPENAI_MODEL"),
@@ -208,5 +234,22 @@ class AppConfig {
             }
         }
         return false;
+    }
+}
+
+final class DeepSeekCompat {
+    private DeepSeekCompat() {
+    }
+
+    static boolean isDeepSeek(String baseUrl, String model) {
+        String safeBase = baseUrl == null ? "" : baseUrl.trim().toLowerCase();
+        String safeModel = model == null ? "" : model.trim().toLowerCase();
+        return safeBase.contains("api.deepseek.com") || safeModel.startsWith("deepseek-");
+    }
+
+    static void disableThinkingIfDeepSeek(Map<String, Object> payload, String baseUrl, String model) {
+        if (payload != null && isDeepSeek(baseUrl, model)) {
+            payload.put("thinking", Map.of("type", "disabled"));
+        }
     }
 }

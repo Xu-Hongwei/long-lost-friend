@@ -101,14 +101,14 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[linear-gradient(145deg,#0c0d19_0%,#171224_48%,#1d2333_100%)] text-white" :style="sceneMoodStyle">
+  <div class="min-h-screen overflow-x-hidden bg-[linear-gradient(145deg,#0c0d19_0%,#171224_48%,#1d2333_100%)] text-white" :style="sceneMoodStyle">
     <div class="pointer-events-none fixed inset-0 opacity-80">
       <div class="absolute -left-24 top-[-8rem] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,var(--tone-a),transparent_62%)] blur-3xl"></div>
       <div class="absolute bottom-[-10rem] right-[-8rem] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,var(--tone-b),transparent_62%)] blur-3xl"></div>
       <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:4px_4px] opacity-[0.05]"></div>
     </div>
 
-    <div class="relative mx-auto w-[min(100%,1480px)] px-4 py-6 sm:px-6 xl:px-8">
+    <div class="relative mx-auto w-[min(100%,1480px)] max-w-full px-4 py-6 sm:px-6 xl:px-8">
       <div v-if="sessionStore.errorMessage" class="mb-5 rounded-[1.4rem] border border-rose-300/20 bg-rose-200/8 px-4 py-3 text-sm text-rose-100/90">
         {{ sessionStore.errorMessage }}
       </div>
@@ -129,7 +129,7 @@ onMounted(async () => {
           @start="handleStart"
         />
 
-        <div ref="chatStageAnchor" class="scroll-mt-6">
+        <div ref="chatStageAnchor" class="min-w-0 scroll-mt-6">
           <ChatStage
             :session="sessionStore.currentSession"
             :agent="sessionStore.currentSession?.agent || sessionStore.selectedAgent"
@@ -148,6 +148,7 @@ onMounted(async () => {
             @set-quick-judge-mode="sessionStore.setQuickJudgeMode"
             @set-quick-judge-wait-seconds="sessionStore.setQuickJudgeWaitSeconds"
             @set-plot-pressure-mode="sessionStore.setPlotPressureMode"
+            @update-memory-pane="sessionStore.updateMemoryPane"
             @export-debug-data="sessionStore.exportDebugData"
             @toggleDrawer="uiStore.toggleDrawer"
           />

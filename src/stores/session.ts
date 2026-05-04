@@ -234,6 +234,22 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
+  async function updateMemoryPane(payload: { frozen?: boolean; manualNote?: string }) {
+    if (!currentSession.value) {
+      return;
+    }
+    const session = await api<SessionRecord>("/api/session/memory-pane", {
+      method: "POST",
+      body: JSON.stringify({
+        visitor_id: visitorId.value,
+        session_id: currentSession.value.sessionId,
+        frozen: payload.frozen,
+        manual_note: payload.manualNote
+      })
+    });
+    currentSession.value = session;
+  }
+
   async function submitChoice(choiceId: string) {
     if (!currentSession.value) {
       return;
@@ -396,6 +412,7 @@ export const useSessionStore = defineStore("session", () => {
     setQuickJudgeMode,
     setQuickJudgeWaitSeconds,
     setPlotPressureMode,
+    updateMemoryPane,
     submitChoice,
     continueCheckpoint,
     settleCheckpoint,

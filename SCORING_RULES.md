@@ -552,6 +552,8 @@ TurnContext 相关：
 - `lastTurnContext.plotEventSignal`
 - `lastTurnContext.plotContinuitySignal`
 - `lastTurnContext.plotRiskSignal`
+- `turnTimeline[].assistantReplies[].promptSlotSummary`
+- `turnTimeline[].assistantReplies[].promptSlotsUsed`
 
 排查建议：
 
@@ -561,12 +563,15 @@ TurnContext 相关：
 - 剧情一直不推：先看是否被 `gap < 4`、短回复、显式换场、`sceneMoveKind` 或 `localConflicts` 压住。
 - 心跳后数字变 0：先确认 `lastTurnContext.plotPressure / plotSignal / plotGap` 是否被正确继承；心跳正常不应无故清空剧情蓄力。
 - 场景乱跳：先看 `sceneMoveKind` 和 `localConflicts`。
+- 主回复上下文混乱：先看 `promptSlotSummary` 是否出现大量 excluded，再看 `promptSlotsUsed[].included=false` 的低优先级片段是否被预算裁剪。
+- 背景或人设突然抢戏：先看 `worldInfoActivations` 和 `promptSlotsUsed[].key=world.info`；WorldInfo 只应作为候选背景，不应覆盖 `localGuards`、用户当前问题和真实场景。
 - 远程评分没生效：先看是否有 `pending_relationship_calibration`，以及下一轮是否出现 `llm_calibration`。
 
 ## 13. 维护原则
 
 - 新增规则前先判断它属于关系评分、QuickJudge 触发分、本轮信号，还是剧情蓄力。
-- 优先新增结构化 Act 或结构化冲突，不要继续堆散乱关键词。
+- 优先新增结构化 Act、结构化冲突或 WorldInfo 候选，不要继续堆散乱关键词。
+- 关键词只能作为候选召回证据；能直接压住主回复的只能是明确的 `localGuards`、安全规则、事实一致性和当前轮用户问题。
 - 本地评分必须可解释，明显加减分要进入 `scoreReasons`。
 - 异步 LLM 只能小幅校准，不能接管主评分。
 - 异步评分和剧情加分都必须复用三维阶段门槛。

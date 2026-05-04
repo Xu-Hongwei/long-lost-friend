@@ -43,7 +43,9 @@ public class CampusPulseServer {
                 analyticsService,
                 new QuickJudgeService(config),
                 new RelationshipCalibrationService(config),
-                new PlotDirectorAgentService(config)
+                new PlotDirectorAgentService(config),
+                new DynamicStoryEventService(config),
+                new WorldInfoService(config)
         );
     }
 
@@ -192,6 +194,20 @@ public class CampusPulseServer {
 
         if ("GET".equals(request.method) && "/api/session/state".equals(request.path)) {
             return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.getSessionState(request.query.get("session_id"))));
+        }
+
+        if ("POST".equals(request.method) && "/api/session/memory-pane".equals(request.path)) {
+            Map<String, Object> body = readJsonBody(request);
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("visitorId", Json.asString(body.get("visitor_id")));
+            payload.put("sessionId", Json.asString(body.get("session_id")));
+            if (body.containsKey("frozen")) {
+                payload.put("frozen", Json.asBoolean(body.get("frozen")));
+            }
+            if (body.containsKey("manual_note")) {
+                payload.put("manualNote", Json.asString(body.get("manual_note")));
+            }
+            return jsonResponse(200, Map.of("ok", true, "data", chatOrchestrator.updateMemoryPane(payload)));
         }
 
         if ("GET".equals(request.method) && "/api/session/export".equals(request.path)) {

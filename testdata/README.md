@@ -8,6 +8,7 @@
 
 - `local-rules/`：规则契约集。根据当前产品规则和公开数据集的标注维度改写生成，用来防止规则回归，不用来证明规则本身足够智能。
 - `bug-replay/`：真实问题复盘集。来自实际聊天截图、导出调试数据或手动复盘，去除个人信息后记录输入、上下文、错误表现和期望结果。
+- `memory-pane-replay/`：会话记忆窗格与 Prompt Stack 固定回放集。用 mock 完整会话链路验证 `memory.session`、`world.info`、场景锚点、心跳和主回复上下文是否协同稳定。
 - `human-labeled/`：人工标注集。先写自然聊天样例，再由人标注期望，不以现有规则为答案来源。
 - `adversarial/`：对抗样例集。专门覆盖容易误判的句子，例如地点话题和真实移动、接受计划和延迟计划、害羞短答和敷衍短答。
 - `external-rewrite/`：外部结构改写集。参考公开数据集的任务结构和标签体系，但改写成 CampusPulse 语境，不复制外部语料原文。
@@ -17,10 +18,23 @@
 
 - `local-rules/` 主要回答“我们定义过的边界有没有被改坏”。
 - `bug-replay/` 和 `human-labeled/` 主要回答“真实聊天里用户会不会觉得合理”。
+- `memory-pane-replay/` 主要回答“当前几轮工作记忆是否真的进入主回复，并在关键场景里保持稳定”。
 - `adversarial/` 主要回答“规则在边界场景下会不会误触发”。
 - `blind-eval/` 主要回答“现有规则在未知样例上的泛化如何”。
 
 后续如果要评估规则质量，应优先看 `bug-replay/`、`human-labeled/`、`adversarial/` 和 `blind-eval/`；`local-rules/` 只作为回归底线。
+
+## 真实导出回放
+
+`ExportReplayTool` 可以读取一次前端导出的 `session_debug_snapshot`，提取用户消息，用当前 Java 后端 mock 链路重新跑一遍，并按原始导出里的心跳时间间隔模拟 `updatePresence`。
+
+```powershell
+.\test-java.ps1
+$java = Get-ChildItem "C:\Program Files\Java" -Directory | Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName "bin\java.exe" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+& $java -cp build\test-classes com.campuspulse.ExportReplayTool "C:\path\to\session-debug-export.json"
+```
+
+报告会写入 `build/debug-replay/`。这类回放适合判断“旧导出里的问题在当前规则下是否仍会复现”，但 mock 回复只用于规则和链路验证，不能完全代表远程模型最终文案质量。
 
 ## 回归验证怎么跑
 
@@ -35,6 +49,10 @@ python tools/dataset-mining/validate_local_rule_cases.py
 .\run-local-rules.ps1
 .\test-java.ps1
 ```
+
+其中 `.\test-java.ps1` 还会运行 `PromptSlotSimulationTest`，用模拟聊天覆盖主回复上下文组装：普通聊天应完整保留 slots，迟到纠错应把修正提示送入 `turn.understanding`，超长记忆应优先裁剪低优先级记忆摘要而不是挤掉核心人设和回复规则。
+
+`.\test-java.ps1` 也会运行 `MemoryPaneReplayTest`，读取 `testdata/memory-pane-replay/cases.jsonl` 做固定回放，并把报告写入 `build/memory-pane-replay/report.json`。这组用例重点看 `memory.session / world.info` 是否注入、会话记忆窗格是否记录计划/场景/背景候选/修正、心跳是否承接上下文。
 
 ### 第一步：数据格式校验
 

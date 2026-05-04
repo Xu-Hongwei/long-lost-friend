@@ -41,7 +41,7 @@ function displayText(message: ConversationMessage) {
 </script>
 
 <template>
-  <div ref="container" class="no-scrollbar flex h-[clamp(480px,58vh,720px)] flex-col gap-4 overflow-y-auto pr-1">
+  <div ref="container" class="no-scrollbar flex h-[clamp(480px,58vh,720px)] min-w-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pr-1 [overflow-wrap:anywhere]">
     <div v-if="!messages.length" class="rounded-[1.6rem] border border-dashed border-white/12 bg-white/4 px-5 py-8 text-center text-sm leading-7 text-white/56">
       {{ emptyMessage || "从上面选择一个角色，今晚的对话会从第一句开场白慢慢长出来。" }}
     </div>
@@ -54,19 +54,19 @@ function displayText(message: ConversationMessage) {
         :animate="{ opacity: 1, y: 0 }"
         :exit="{ opacity: 0, y: -8 }"
         :transition="{ duration: 0.26 }"
-        class="flex w-full flex-col gap-2"
+        class="flex min-w-0 w-full flex-col gap-2"
         :class="message.role === 'user' ? 'items-end' : 'items-start'"
       >
         <div
           v-if="message.sceneText"
-          class="max-w-[88%] rounded-full border border-white/8 bg-white/6 px-4 py-2 text-left text-xs leading-6 tracking-[0.12em] text-white/50"
+          class="max-w-[88%] break-words rounded-full border border-white/8 bg-white/6 px-4 py-2 text-left text-xs leading-6 tracking-[0.12em] text-white/50"
           :class="message.role === 'user' ? 'ml-auto' : 'ml-2'"
         >
           {{ message.sceneText }}
         </div>
 
         <div
-          class="min-w-[8.5rem] max-w-[88%] overflow-hidden rounded-[1.6rem] border px-4 py-4 shadow-[0_16px_36px_rgba(4,6,18,0.26)] sm:min-w-[10rem] sm:px-5"
+          class="min-w-0 max-w-[88%] overflow-hidden rounded-[1.6rem] border px-4 py-4 shadow-[0_16px_36px_rgba(4,6,18,0.26)] sm:min-w-[10rem] sm:px-5"
           :class="message.role === 'user'
             ? 'ml-auto border-[#4f6c93]/30 bg-[linear-gradient(160deg,rgba(58,78,109,0.92),rgba(27,39,60,0.96))] text-white'
             : 'border-[#6b5a57]/30 bg-[linear-gradient(160deg,rgba(70,50,54,0.94),rgba(36,32,46,0.96))] text-white'"
@@ -79,7 +79,7 @@ function displayText(message: ConversationMessage) {
               </div>
             </div>
 
-            <div class="shrink-0 space-y-1 text-right">
+            <div class="min-w-0 shrink-0 space-y-1 text-right">
               <div class="text-xs text-white/48">{{ formatTime(message.createdAt) }}</div>
               <div v-if="message.replySource && message.role === 'assistant'" class="text-[11px] text-white/38">
                 {{ getReplySourceLabel(message.replySource) }}

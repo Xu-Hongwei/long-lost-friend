@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "description": "WorldInfo 是可配置的背景候选池，只用于召回上下文和生成候选剧情事件，不直接裁判当前轮行为。",
+  "entries": [
+    {
+      "id": "healing.library-window",
+      "title": "林晚栀的图书馆窗边",
+      "enabled": true,
+      "agentIds": ["healing"],
+      "keywordsAny": ["图书馆", "窗边", "热可可", "安静", "书"],
+      "tags": ["scene_push", "stay", "topic_only"],
+      "stageRange": ["初识", "升温", "心动", "靠近"],
+      "minAffection": 0,
+      "priority": 72,
+      "depth": 3,
+      "scanRecentTurns": 4,
+      "role": "system",
+      "content": "林晚栀在图书馆窗边会更放松。她喜欢低声聊天、热可可和慢慢被接住的安静，不喜欢被迫立刻说明全部心事。",
+      "eventCandidate": {
+        "title": "窗边热可可",
+        "theme": "如果用户也愿意停在图书馆，后续可以把热可可和窗边座位变成轻量共同事件。",
+        "category": "daily",
+        "affectionBonus": 2,
+        "minAffectionOffset": -2,
+        "unlockAfterTurns": 1,
+        "cooldown": 4
+      }
+    },
+    {
+      "id": "lively.club-night",
+      "title": "许朝暮的社团夜场",
+      "enabled": true,
+      "agentIds": ["lively"],
+      "keywordsAny": ["社团", "夜市", "摊", "活动", "热闹"],
+      "tags": ["scene_push", "light_chat"],
+      "stageRange": ["初识", "升温", "心动", "靠近"],
+      "minAffection": 0,
+      "priority": 70,
+      "depth": 3,
+      "scanRecentTurns": 4,
+      "role": "system",
+      "content": "许朝暮的精力常被社团、夜市和热闹摊位点亮。她会把尴尬转成玩笑，但认真时会突然把话说得很直。",
+      "eventCandidate": {
+        "title": "热闹里的认真",
+        "theme": "如果用户顺着热闹氛围继续接话，后续可以让她在玩笑里露出一点认真。",
+        "category": "emotion",
+        "affectionBonus": 3,
+        "minAffectionOffset": -2,
+        "unlockAfterTurns": 1,
+        "cooldown": 4
+      }
+    },
+    {
+      "id": "cool.lab-corridor",
+      "title": "沈砚的实验楼走廊",
+      "enabled": true,
+      "agentIds": ["cool"],
+      "keywordsAny": ["实验楼", "走廊", "咖啡", "黑咖啡", "程序", "代码"],
+      "tags": ["question_check", "meta_repair", "stay"],
+      "stageRange": ["初识", "升温", "心动", "靠近"],
+      "minAffection": 0,
+      "priority": 74,
+      "depth": 3,
+      "scanRecentTurns": 4,
+      "role": "system",
+      "content": "沈砚常把情绪藏在实验楼、走廊和黑咖啡后面。他不轻易表态，但会用实际安排回应在意。",
+      "eventCandidate": {
+        "title": "黑咖啡旁的停顿",
+        "theme": "如果用户持续追问他真实想法，后续可以让沈砚用一次具体行动替代表态。",
+        "category": "emotion",
+        "affectionBonus": 3,
+        "minAffectionOffset": -2,
+        "unlockAfterTurns": 1,
+        "cooldown": 4
+      }
+    },
+    {
+      "id": "artsy.lakeside-camera",
+      "title": "顾遥的湖边镜头",
+      "enabled": true,
+      "agentIds": ["artsy"],
+      "keywordsAny": ["湖边", "相机", "镜头", "黄昏", "照片"],
+      "tags": ["emotion_share", "romantic_probe"],
+      "stageRange": ["初识", "升温", "心动", "靠近"],
+      "minAffection": 0,
+      "priority": 73,
+      "depth": 3,
+      "scanRecentTurns": 4,
+      "role": "system",
+      "content": "顾遥习惯用镜头和湖边黄昏消化情绪。他会把亲近说得很轻，但会认真记住对方注意过的小细节。",
+      "eventCandidate": {
+        "title": "黄昏里的底片",
+        "theme": "如果用户主动聊记忆或照片，后续可以把一张未洗出的照片作为温柔线索。",
+        "category": "daily",
+        "affectionBonus": 2,
+        "minAffectionOffset": -2,
+        "unlockAfterTurns": 1,
+        "cooldown": 4
+      }
+    },
+    {
+      "id": "sunny.playground-wind",
+      "title": "周燃的操场风",
+      "enabled": true,
+      "agentIds": ["sunny"],
+      "keywordsAny": ["操场", "球场", "篮球", "跑步", "风"],
+      "tags": ["scene_push", "light_chat"],
+      "stageRange": ["初识", "升温", "心动", "靠近"],
+      "minAffection": 0,
+      "priority": 70,
+      "depth": 3,
+      "scanRecentTurns": 4,
+      "role": "system",
+      "content": "周燃在操场和球场最自然。他常用轻松玩笑降低压力，但真正关心时会直接把陪伴落到行动上。",
+      "eventCandidate": {
+        "title": "并肩慢跑",
+        "theme": "如果用户愿意一起去操场，后续可以让并肩慢跑成为轻松拉近的事件。",
+        "category": "daily",
+        "affectionBonus": 2,
+        "minAffectionOffset": -2,
+        "unlockAfterTurns": 1,
+        "cooldown": 4
+      }
+    },
+    {
+      "id": "campus.slow-night",
+      "title": "校园夜聊的慢靠近",
+      "enabled": true,
+      "agentIds": ["*"],
+      "keywordsAny": ["今晚", "校园", "靠近", "一起"],
+      "tags": ["light_chat", "emotion_share", "continue_chat"],
+      "stageRange": ["初识", "升温", "心动", "靠近", "确认关系"],
+      "minAffection": 0,
+      "priority": 60,
+      "depth": 2,
+      "scanRecentTurns": 3,
+      "role": "system",
+      "content": "校园夜聊适合慢慢靠近：真实问题优先回答，世界信息只做底色，不应该替用户决定剧情方向。"
+    }
+  ]
+}

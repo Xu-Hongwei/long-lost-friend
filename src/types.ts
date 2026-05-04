@@ -58,6 +58,20 @@ export interface ConversationMessage {
   triggeredEventId?: string;
   affectionDelta?: number;
   replySource?: string;
+  promptSlotSummary?: Record<string, unknown>;
+  promptSlotsUsed?: ContextSlot[];
+  promptRawText?: string;
+}
+
+export interface ContextSlot {
+  key?: string;
+  content?: string;
+  position?: string;
+  role?: string;
+  depth?: number;
+  priority?: number;
+  tokenBudget?: number;
+  included?: boolean;
 }
 
 export interface ChoiceOption {
@@ -215,6 +229,14 @@ export interface TurnContext {
   plotGap?: number;
   plotSignal?: number;
   plotPressure?: number;
+  plotDecisionGap?: number;
+  plotDecisionSignal?: number;
+  plotDecisionPressure?: number;
+  plotRelationshipPressure?: number;
+  plotScenePressure?: number;
+  plotOpenLoopPressure?: number;
+  plotEventPressure?: number;
+  plotSilencePressure?: number;
   plotSceneSignal?: number;
   plotRelationshipSignal?: number;
   plotEventSignal?: number;
@@ -234,6 +256,15 @@ export interface TurnContext {
   assistantObligation?: AssistantObligation;
   recommendedQuickJudgeTier?: string;
   shouldAskQuickJudge?: boolean;
+  turnMission?: string;
+  turnMissionReason?: string;
+  turnMissionPriority?: number;
+  turnMissionCandidates?: TurnMissionCandidate[];
+  localGuards?: string[];
+  referentialFollowup?: boolean;
+  referentSource?: string;
+  referentAnchor?: string;
+  referentReason?: string;
   userReplyActCandidates?: UserReplyActCandidate[];
   localConflicts?: LocalConflict[];
   continuityObjective?: string;
@@ -241,6 +272,13 @@ export interface TurnContext {
   continuityNextBestMove?: string;
   continuityGuards?: string[];
   updatedAt?: string;
+}
+
+export interface TurnMissionCandidate {
+  mission?: string;
+  reason?: string;
+  confidence?: number;
+  guardCandidate?: boolean;
 }
 
 export interface DialogueContinuityState {
@@ -254,6 +292,34 @@ export interface DialogueContinuityState {
   mustNotContradict?: string[];
   confidence?: number;
   updatedAt?: string;
+}
+
+export interface SessionMemoryPaneState {
+  pinnedFacts?: string[];
+  workingFacts?: string[];
+  pendingPlans?: string[];
+  sceneAnchors?: string[];
+  loreNotes?: string[];
+  repairNotes?: string[];
+  assistantObligations?: string[];
+  directorNote?: string;
+  manualNote?: string;
+  frozen?: boolean;
+  updatedAt?: string;
+}
+
+export interface WorldInfoActivation {
+  id?: string;
+  title?: string;
+  source?: string;
+  matchedKeywords?: string[];
+  tags?: string[];
+  score?: number;
+  priority?: number;
+  depth?: number;
+  role?: string;
+  eventCandidate?: boolean;
+  content?: string;
 }
 
 export interface UserReplyActCandidate {
@@ -411,6 +477,12 @@ export interface SessionRecord {
   lastPlotGateDecision?: PlotGateDecision;
   lastTurnContext?: TurnContext;
   dialogueContinuityState?: DialogueContinuityState;
+  memoryPaneState?: SessionMemoryPaneState;
+  worldInfoActivations?: WorldInfoActivation[];
+  lastPromptSlotSummary?: Record<string, unknown>;
+  lastPromptSlotsUsed?: ContextSlot[];
+  lastPromptSlotMessageId?: string;
+  lastPromptRawText?: string;
   lastQuickJudgeStatus?: QuickJudgeStatus;
   pendingRelationshipCalibration?: RelationshipScoreCalibration;
   pendingRelationshipCalibrationAt?: string;
@@ -498,6 +570,7 @@ export interface PresenceResponse {
   scene_frame?: string;
   reply_source?: string;
   plot_director_decision?: string;
+  plot_director_input?: Record<string, unknown>;
   run_status?: string;
   checkpoint_ready?: boolean;
   arc_summary_preview?: ArcSummary;

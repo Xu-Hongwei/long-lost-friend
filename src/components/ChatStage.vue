@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentProfile, AnalyticsOverview, SessionRecord } from "../types";
+import type { AgentProfile, AnalyticsOverview, ContextSlot, SessionRecord } from "../types";
 import MessageStack from "./MessageStack.vue";
 import ComposerBar from "./ComposerBar.vue";
 import RelationshipMiniPanel from "./RelationshipMiniPanel.vue";
@@ -39,6 +39,7 @@ const emits = defineEmits<{
   setQuickJudgeMode: [mode: QuickJudgeMode];
   setQuickJudgeWaitSeconds: [value: number];
   setPlotPressureMode: [mode: PlotPressureMode];
+  updateMemoryPane: [payload: { frozen?: boolean; manualNote?: string }];
   exportDebugData: [];
   toggleDrawer: [drawer: "relationship" | "memory" | "plot" | "analytics"];
 }>();
@@ -46,6 +47,11 @@ const emits = defineEmits<{
 function handleQuickJudgeWaitInput(event: Event) {
   const target = event.target as HTMLInputElement | null;
   emits("setQuickJudgeWaitSeconds", Number(target?.value || 0));
+}
+
+function handleMemoryNoteChange(event: Event) {
+  const target = event.target as HTMLTextAreaElement | null;
+  emits("updateMemoryPane", { manualNote: target?.value || "" });
 }
 
 function sceneStatusText(session: SessionRecord | null) {
@@ -85,18 +91,35 @@ function interactionModeLabel(mode?: string) {
       return "面对面继续聊天";
   }
 }
+
+function promptStackSummary(session: SessionRecord | null) {
+  const summary = session?.lastPromptSlotSummary || {};
+  const total = Number(summary.total || 0);
+  const included = Number(summary.included || 0);
+  const excluded = Number(summary.excluded || 0);
+  const includedTokens = Number(summary.includedTokenBudget || 0);
+  return `共 ${total} 个，注入 ${included} 个，裁剪 ${excluded} 个，预算约 ${includedTokens}`;
+}
+
+function promptSlotPreview(slot: ContextSlot) {
+  const content = slot.content?.trim() || "";
+  if (!content) {
+    return "暂无内容";
+  }
+  return content.length > 96 ? `${content.slice(0, 96)}…` : content;
+}
 </script>
 
 <template>
   <section
-    class="gap-5"
+    class="min-w-0 gap-5 [overflow-wrap:anywhere]"
     :class="uiMode === 'inspector'
       ? 'grid xl:grid-cols-[minmax(0,1fr),360px]'
       : 'mx-auto block w-full'"
   >
-    <div class="w-full rounded-[2rem] border border-white/10 bg-white/6 p-4 shadow-[0_20px_60px_rgba(5,6,18,0.28)] backdrop-blur sm:p-5">
+    <div class="min-w-0 w-full rounded-[2rem] border border-white/10 bg-white/6 p-4 shadow-[0_20px_60px_rgba(5,6,18,0.28)] backdrop-blur sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-4">
-        <div>
+        <div class="min-w-0">
           <p class="tracking-[0.28em] text-[0.68rem] text-white/44">当前对话</p>
           <h2 class="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
             {{ agent ? `${agent.name} · ${agent.archetype}` : "选择角色后开始聊天" }}
@@ -106,7 +129,7 @@ function interactionModeLabel(mode?: string) {
           </p>
         </div>
 
-        <div class="flex flex-wrap gap-2 text-xs text-white/62">
+        <div class="min-w-0 flex flex-wrap gap-2 text-xs text-white/62">
           <span class="rounded-full border border-white/10 bg-black/16 px-3 py-2">
             {{ getOnlineLabel(session?.presenceState?.online, session?.presenceState?.typing) }}
           </span>
@@ -119,7 +142,7 @@ function interactionModeLabel(mode?: string) {
         </div>
       </div>
 
-      <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div class="mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <div class="rounded-[1.35rem] border border-white/8 bg-black/12 px-4 py-3">
           <div class="text-[11px] uppercase tracking-[0.2em] text-white/38">当前时间</div>
           <div class="mt-2 text-[15px] leading-6 text-white/82">{{ session?.timeContext?.label || "等待会话建立" }}</div>
@@ -209,7 +232,7 @@ function interactionModeLabel(mode?: string) {
       </div>
     </div>
 
-    <aside v-if="uiMode === 'inspector'" class="space-y-4">
+    <aside v-if="uiMode === 'inspector'" class="min-w-0 space-y-4">
       <RelationshipMiniPanel :relationship="session?.relationshipState || null" />
       <PlotMiniPanel
         :plot-state="session?.plotState || null"
@@ -239,6 +262,131 @@ function interactionModeLabel(mode?: string) {
 
       <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/45">会话记忆窗格</p>
+          <button
+            type="button"
+            class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/56 transition hover:border-white/20 hover:bg-white/8 hover:text-white/78"
+            :disabled="!session"
+            @click="emits('updateMemoryPane', { frozen: !session?.memoryPaneState?.frozen })"
+          >
+            {{ session?.memoryPaneState?.frozen ? "已冻结" : "自动更新" }}
+          </button>
+        </div>
+        <p class="mt-3 text-sm leading-6 text-white/58">
+          {{ session?.memoryPaneState?.directorNote || "用于把当前几轮的事实、计划、场景和修正整理成主回复可读取的工作记忆。" }}
+        </p>
+        <label class="mt-4 block">
+          <span class="text-xs text-white/38">手动备注</span>
+          <textarea
+            class="mt-2 min-h-[4.5rem] w-full resize-none rounded-2xl border border-white/10 bg-black/16 px-3 py-2 text-xs leading-5 text-white/68 outline-none placeholder:text-white/28 focus:border-white/22"
+            :value="session?.memoryPaneState?.manualNote || ''"
+            placeholder="给本会话固定一条人工提示，比如：别再把图书馆误判成新转场。"
+            :disabled="!session"
+            @change="handleMemoryNoteChange"
+          />
+        </label>
+        <div class="mt-4 space-y-3 text-xs leading-5 text-white/62">
+          <div>
+            <div class="mb-2 text-white/38">已确认事实</div>
+            <div class="flex flex-wrap gap-2">
+              <span
+                v-for="item in (session?.memoryPaneState?.pinnedFacts || []).slice(0, 4)"
+                :key="item"
+                class="rounded-full border border-white/10 bg-black/16 px-3 py-1"
+              >
+                {{ item }}
+              </span>
+              <span v-if="!(session?.memoryPaneState?.pinnedFacts || []).length" class="text-white/34">暂无</span>
+            </div>
+          </div>
+          <div>
+            <div class="mb-2 text-white/38">本轮工作事实</div>
+            <div class="space-y-1">
+              <div v-for="item in (session?.memoryPaneState?.workingFacts || []).slice(0, 5)" :key="item">{{ item }}</div>
+              <div v-if="!(session?.memoryPaneState?.workingFacts || []).length" class="text-white/34">暂无</div>
+            </div>
+          </div>
+          <div>
+            <div class="mb-2 text-white/38">计划 / 场景 / 修正</div>
+            <div class="space-y-1">
+              <div v-for="item in (session?.memoryPaneState?.pendingPlans || []).slice(0, 3)" :key="`plan-${item}`">{{ item }}</div>
+              <div v-for="item in (session?.memoryPaneState?.sceneAnchors || []).slice(0, 3)" :key="`scene-${item}`">{{ item }}</div>
+              <div v-for="item in (session?.memoryPaneState?.repairNotes || []).slice(0, 3)" :key="`repair-${item}`" class="text-amber-100/72">{{ item }}</div>
+              <div
+                v-if="!(session?.memoryPaneState?.pendingPlans || []).length && !(session?.memoryPaneState?.sceneAnchors || []).length && !(session?.memoryPaneState?.repairNotes || []).length"
+                class="text-white/34"
+              >
+                暂无
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="mb-2 text-white/38">World Info 候选</div>
+            <div class="space-y-1">
+              <div
+                v-for="item in (session?.memoryPaneState?.loreNotes || []).slice(0, 4)"
+                :key="`lore-${item}`"
+                class="text-sky-100/68"
+              >
+                {{ item }}
+              </div>
+              <div v-if="!(session?.memoryPaneState?.loreNotes || []).length" class="text-white/34">暂无候选背景</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/45">World Info 激活</p>
+          <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/56">
+            {{ session?.worldInfoActivations?.length || 0 }} 条
+          </span>
+        </div>
+        <p class="mt-3 text-xs leading-5 text-white/46">
+          这些是可配置背景候选，只帮助主回复理解“可以提什么”，不会直接决定转场或剧情推进。
+        </p>
+        <details
+          v-if="session?.lastPromptRawText"
+          class="mt-4 rounded-2xl border border-white/10 bg-black/16 px-4 py-3 text-xs text-white/58"
+        >
+          <summary class="cursor-pointer select-none text-white/72">Raw prompt preview</summary>
+          <pre class="mt-3 max-h-72 max-w-full overflow-auto whitespace-pre-wrap break-words leading-5 text-white/54">{{ session?.lastPromptRawText }}</pre>
+        </details>
+        <div class="mt-4 space-y-2">
+          <div
+            v-for="item in (session?.worldInfoActivations || []).slice(0, 4)"
+            :key="item.id"
+            class="rounded-2xl border border-sky-200/12 bg-sky-200/6 px-3 py-3 text-xs text-white/62"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-medium text-sky-50/86">{{ item.title || item.id }}</span>
+              <span class="font-mono text-white/42">score {{ item.score ?? 0 }}</span>
+            </div>
+            <p class="mt-2 leading-5 text-white/46">
+              {{ (item.content || '').length > 88 ? `${(item.content || '').slice(0, 88)}…` : item.content }}
+            </p>
+            <div class="mt-2 flex flex-wrap gap-2 text-[0.65rem] text-white/42">
+              <span
+                v-for="keyword in (item.matchedKeywords || []).slice(0, 4)"
+                :key="`${item.id}-${keyword}`"
+                class="rounded-full border border-white/10 bg-black/16 px-2 py-0.5"
+              >
+                {{ keyword }}
+              </span>
+              <span v-if="item.eventCandidate" class="rounded-full border border-amber-200/15 bg-amber-200/8 px-2 py-0.5 text-amber-50/70">
+                可生成候选事件
+              </span>
+            </div>
+          </div>
+          <div v-if="!(session?.worldInfoActivations || []).length" class="rounded-2xl border border-white/10 bg-black/12 px-4 py-3 text-sm text-white/42">
+            暂无激活。普通闲聊不会强塞背景，这是有意设计。
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
+        <div class="flex flex-wrap items-center justify-between gap-3">
           <p class="tracking-[0.28em] text-[0.68rem] text-white/45">本轮决策链路</p>
           <button
             type="button"
@@ -255,6 +403,7 @@ function interactionModeLabel(mode?: string) {
           <div class="flex justify-between gap-4"><span class="text-white/42">主动程度</span><span>{{ session?.lastResponsePlan?.initiativeLevel || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">好感变化</span><span>{{ session?.lastTurnContext?.affectionDeltaTotal ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">场景移动意图</span><span>{{ session?.lastTurnContext?.sceneMoveKind || "暂无" }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-white/42">本轮任务</span><span>{{ session?.lastTurnContext?.turnMission || "暂无" }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">本轮信号</span><span>{{ session?.lastTurnContext?.plotSignal ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情蓄力</span><span>{{ session?.lastTurnContext?.plotPressure ?? session?.plotArcState?.plotPressure ?? 0 }}</span></div>
           <div class="flex justify-between gap-4"><span class="text-white/42">剧情间隔</span><span>{{ session?.lastTurnContext?.plotGap ?? 0 }}</span></div>
@@ -282,6 +431,51 @@ function interactionModeLabel(mode?: string) {
               ? "轻松模式不做剧情蓄力减分；普通闲聊也会 +1，让关系和剧情更容易自然往前走。"
               : "困难模式保留严格衰减；低信号、显式转场或被结构化规则压住时，剧情蓄力可能下降。" }}
           </p>
+        </div>
+      </section>
+
+      <section class="rounded-[1.6rem] border border-white/10 bg-white/6 p-5 backdrop-blur">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="tracking-[0.28em] text-[0.68rem] text-white/45">Prompt Stack Viewer</p>
+          <span class="rounded-full border border-white/10 bg-black/16 px-3 py-1 text-xs text-white/56">
+            {{ promptStackSummary(session) }}
+          </span>
+        </div>
+        <p class="mt-3 text-sm leading-6 text-white/54">
+          最新主回复实际使用的上下文槽；`memory.session` 如果在这里显示“已注入”，说明会话记忆窗格已经进入主回复。
+        </p>
+        <div class="mt-4 space-y-2">
+          <div
+            v-for="slot in (session?.lastPromptSlotsUsed || [])"
+            :key="slot.key"
+            class="rounded-2xl border px-3 py-3 text-xs transition"
+            :class="slot.included
+              ? 'border-emerald-200/14 bg-emerald-200/7 text-white/70'
+              : 'border-white/8 bg-black/14 text-white/38'"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="font-mono text-[0.72rem]" :class="slot.key === 'memory.session' ? 'text-emerald-100' : 'text-white/74'">
+                {{ slot.key || "unknown.slot" }}
+              </div>
+              <div class="flex flex-wrap gap-2 text-[0.65rem]">
+                <span class="rounded-full border border-white/10 bg-black/16 px-2 py-0.5">
+                  {{ slot.included ? "已注入" : "已裁剪" }}
+                </span>
+                <span class="rounded-full border border-white/10 bg-black/16 px-2 py-0.5">
+                  p{{ slot.priority ?? 0 }}
+                </span>
+                <span class="rounded-full border border-white/10 bg-black/16 px-2 py-0.5">
+                  {{ slot.tokenBudget ?? 0 }}
+                </span>
+              </div>
+            </div>
+            <p class="mt-2 leading-5 text-white/46">
+              {{ promptSlotPreview(slot) }}
+            </p>
+          </div>
+          <div v-if="!(session?.lastPromptSlotsUsed || []).length" class="rounded-2xl border border-white/10 bg-black/12 px-4 py-3 text-sm text-white/42">
+            暂无 Prompt Stack。发送一轮消息后会显示最新主回复使用的上下文槽。
+          </div>
         </div>
       </section>
 

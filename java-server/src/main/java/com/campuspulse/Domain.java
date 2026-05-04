@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 final class Domain {
@@ -893,6 +894,8 @@ class ConversationMessage implements Serializable {
     String triggeredEventId;
     Integer affectionDelta;
     String replySource;
+    List<ContextSlot> promptSlotsUsed = new ArrayList<>();
+    String promptRawText;
 }
 
 class MemorySummary implements Serializable {
@@ -919,6 +922,20 @@ class MemorySummary implements Serializable {
     String lastResponseCadence;
     String lastMemoryUseMode;
     String lastMemoryRelevanceReason;
+    String updatedAt;
+}
+
+class SessionMemoryPaneState implements Serializable {
+    List<String> pinnedFacts = new ArrayList<>();
+    List<String> workingFacts = new ArrayList<>();
+    List<String> pendingPlans = new ArrayList<>();
+    List<String> sceneAnchors = new ArrayList<>();
+    List<String> loreNotes = new ArrayList<>();
+    List<String> repairNotes = new ArrayList<>();
+    List<String> assistantObligations = new ArrayList<>();
+    String directorNote;
+    String manualNote;
+    boolean frozen;
     String updatedAt;
 }
 
@@ -1066,6 +1083,14 @@ class TurnContext implements Serializable {
     int plotGap;
     int plotSignal;
     int plotPressure;
+    int plotDecisionGap;
+    int plotDecisionSignal;
+    int plotDecisionPressure;
+    int plotRelationshipPressure;
+    int plotScenePressure;
+    int plotOpenLoopPressure;
+    int plotEventPressure;
+    int plotSilencePressure;
     int plotSceneSignal;
     int plotRelationshipSignal;
     int plotEventSignal;
@@ -1085,6 +1110,15 @@ class TurnContext implements Serializable {
     AssistantObligation assistantObligation;
     String recommendedQuickJudgeTier;
     boolean shouldAskQuickJudge;
+    String turnMission;
+    String turnMissionReason;
+    int turnMissionPriority;
+    List<TurnMissionCandidate> turnMissionCandidates = new ArrayList<>();
+    List<String> localGuards = new ArrayList<>();
+    boolean referentialFollowup;
+    String referentSource;
+    String referentAnchor;
+    String referentReason;
     List<UserReplyActCandidate> userReplyActCandidates = new ArrayList<>();
     List<LocalConflict> localConflicts = new ArrayList<>();
     String continuityObjective;
@@ -1093,6 +1127,13 @@ class TurnContext implements Serializable {
     boolean sceneTransitionNeeded;
     List<String> continuityGuards = new ArrayList<>();
     String updatedAt;
+}
+
+class TurnMissionCandidate implements Serializable {
+    String mission;
+    String reason;
+    int confidence;
+    boolean guardCandidate;
 }
 
 class UserReplyActCandidate implements Serializable {
@@ -1126,6 +1167,15 @@ class TurnUnderstandingState implements Serializable {
     AssistantObligation assistantObligation;
     String recommendedQuickJudgeTier;
     boolean shouldAskQuickJudge;
+    String turnMission;
+    String turnMissionReason;
+    int turnMissionPriority;
+    List<TurnMissionCandidate> turnMissionCandidates = new ArrayList<>();
+    List<String> localGuards = new ArrayList<>();
+    boolean referentialFollowup;
+    String referentSource;
+    String referentAnchor;
+    String referentReason;
     String sceneMoveKind;
     String sceneMoveTarget;
     String sceneMoveReason;
@@ -1245,6 +1295,47 @@ class StoryEventProgress implements Serializable {
     String nextExpectedDirection;
 }
 
+class WorldInfoEntry implements Serializable {
+    String id;
+    String title;
+    String content;
+    boolean enabled = true;
+    List<String> agentIds = new ArrayList<>();
+    List<String> keywordsAny = new ArrayList<>();
+    List<String> tags = new ArrayList<>();
+    List<String> stageRange = new ArrayList<>();
+    int minAffection;
+    int priority;
+    int depth;
+    int scanRecentTurns;
+    String role;
+    WorldInfoEventSpec eventCandidate;
+}
+
+class WorldInfoEventSpec implements Serializable {
+    String title;
+    String theme;
+    String category;
+    int affectionBonus;
+    int minAffectionOffset;
+    int unlockAfterTurns;
+    int cooldown;
+}
+
+class WorldInfoActivation implements Serializable {
+    String id;
+    String title;
+    String content;
+    String source;
+    List<String> matchedKeywords = new ArrayList<>();
+    List<String> tags = new ArrayList<>();
+    int score;
+    int priority;
+    int depth;
+    String role;
+    boolean eventCandidate;
+}
+
 class SceneState implements Serializable {
     String location;
     String subLocation;
@@ -1307,6 +1398,7 @@ class SessionRecord implements Serializable {
     SceneState sceneState;
     PresenceState presenceState;
     RelationalTensionState tensionState;
+    List<StoryEvent> dynamicStoryEvents = new ArrayList<>();
     String pendingChoiceEventId;
     List<ChoiceOption> pendingChoices = new ArrayList<>();
     String pendingEventContext;
@@ -1318,9 +1410,15 @@ class SessionRecord implements Serializable {
     PlotGateDecision lastPlotGateDecision;
     TurnContext lastTurnContext;
     DialogueContinuityState dialogueContinuityState;
+    SessionMemoryPaneState memoryPaneState;
+    List<WorldInfoActivation> lastWorldInfoActivations = new ArrayList<>();
     QuickJudgeStatus lastQuickJudgeStatus;
     QuickJudgeDecision pendingQuickJudgeCorrection;
     String pendingQuickJudgeCorrectionAt;
+    int pendingQuickJudgeSourceTurn;
+    String lastAssistantMessageText;
+    String lastAssistantMessageAt;
+    boolean lastAssistantAwaitsUserReply;
     PendingRepairCue pendingRepairCue;
     RelationshipScoreCalibration pendingRelationshipCalibration;
     String pendingRelationshipCalibrationAt;
@@ -1460,6 +1558,8 @@ class LlmRequest {
     final DialogueContinuityState dialogueContinuityState;
     final PendingRepairCue pendingRepairCue;
     final TurnContext turnContext;
+    final SessionMemoryPaneState memoryPaneState;
+    final List<WorldInfoActivation> worldInfoActivations;
 
     LlmRequest(
             AgentProfile agent,
@@ -1627,6 +1727,148 @@ class LlmRequest {
             PendingRepairCue pendingRepairCue,
             TurnContext turnContext
     ) {
+        this(
+                agent,
+                relationshipState,
+                shortTermContext,
+                longTermSummary,
+                recalledMemoryTier,
+                recalledMemoryText,
+                currentUserMood,
+                responseCadence,
+                responseDirective,
+                event,
+                userMessage,
+                timeContext,
+                weatherContext,
+                sceneFrame,
+                sceneState,
+                memoryUsePlan,
+                emotionState,
+                replySource,
+                temperamentProfile,
+                searchContext,
+                intentState,
+                responsePlan,
+                uncertaintyState,
+                initiativeDecision,
+                memoryIntentBindings,
+                realityEnvelope,
+                tensionState,
+                plotGateDecision,
+                dialogueContinuityState,
+                pendingRepairCue,
+                turnContext,
+                null
+        );
+    }
+
+    LlmRequest(
+            AgentProfile agent,
+            RelationshipState relationshipState,
+            List<ConversationSnippet> shortTermContext,
+            String longTermSummary,
+            String recalledMemoryTier,
+            String recalledMemoryText,
+            String currentUserMood,
+            String responseCadence,
+            String responseDirective,
+            StoryEvent event,
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String sceneFrame,
+            SceneState sceneState,
+            MemoryUsePlan memoryUsePlan,
+            EmotionState emotionState,
+            String replySource,
+            TemperamentProfile temperamentProfile,
+            String searchContext,
+            IntentState intentState,
+            ResponsePlan responsePlan,
+            UncertaintyState uncertaintyState,
+            InitiativeDecision initiativeDecision,
+            List<MemoryIntentBinding> memoryIntentBindings,
+            RealityEnvelope realityEnvelope,
+            RelationalTensionState tensionState,
+            PlotGateDecision plotGateDecision,
+            DialogueContinuityState dialogueContinuityState,
+            PendingRepairCue pendingRepairCue,
+            TurnContext turnContext,
+            SessionMemoryPaneState memoryPaneState
+    ) {
+        this(
+                agent,
+                relationshipState,
+                shortTermContext,
+                longTermSummary,
+                recalledMemoryTier,
+                recalledMemoryText,
+                currentUserMood,
+                responseCadence,
+                responseDirective,
+                event,
+                userMessage,
+                timeContext,
+                weatherContext,
+                sceneFrame,
+                sceneState,
+                memoryUsePlan,
+                emotionState,
+                replySource,
+                temperamentProfile,
+                searchContext,
+                intentState,
+                responsePlan,
+                uncertaintyState,
+                initiativeDecision,
+                memoryIntentBindings,
+                realityEnvelope,
+                tensionState,
+                plotGateDecision,
+                dialogueContinuityState,
+                pendingRepairCue,
+                turnContext,
+                memoryPaneState,
+                List.of()
+        );
+    }
+
+    LlmRequest(
+            AgentProfile agent,
+            RelationshipState relationshipState,
+            List<ConversationSnippet> shortTermContext,
+            String longTermSummary,
+            String recalledMemoryTier,
+            String recalledMemoryText,
+            String currentUserMood,
+            String responseCadence,
+            String responseDirective,
+            StoryEvent event,
+            String userMessage,
+            TimeContext timeContext,
+            WeatherContext weatherContext,
+            String sceneFrame,
+            SceneState sceneState,
+            MemoryUsePlan memoryUsePlan,
+            EmotionState emotionState,
+            String replySource,
+            TemperamentProfile temperamentProfile,
+            String searchContext,
+            IntentState intentState,
+            ResponsePlan responsePlan,
+            UncertaintyState uncertaintyState,
+            InitiativeDecision initiativeDecision,
+            List<MemoryIntentBinding> memoryIntentBindings,
+            RealityEnvelope realityEnvelope,
+            RelationalTensionState tensionState,
+            PlotGateDecision plotGateDecision,
+            DialogueContinuityState dialogueContinuityState,
+            PendingRepairCue pendingRepairCue,
+            TurnContext turnContext,
+            SessionMemoryPaneState memoryPaneState,
+            List<WorldInfoActivation> worldInfoActivations
+    ) {
         this.agent = agent;
         this.relationshipState = relationshipState;
         this.shortTermContext = shortTermContext;
@@ -1658,6 +1900,8 @@ class LlmRequest {
         this.dialogueContinuityState = dialogueContinuityState;
         this.pendingRepairCue = pendingRepairCue;
         this.turnContext = turnContext;
+        this.memoryPaneState = memoryPaneState;
+        this.worldInfoActivations = worldInfoActivations == null ? List.of() : new ArrayList<>(worldInfoActivations);
     }
 }
 
@@ -1668,6 +1912,237 @@ class ConversationSnippet {
     ConversationSnippet(String role, String text) {
         this.role = role;
         this.text = text;
+    }
+}
+
+class ContextSlot implements Serializable {
+    String key;
+    String content;
+    String position;
+    String role;
+    int depth;
+    int priority;
+    int tokenBudget;
+    boolean included;
+
+    ContextSlot() {
+    }
+
+    ContextSlot(String key, String content, String position, String role, int depth, int priority, int tokenBudget) {
+        this.key = key;
+        this.content = content == null ? "" : content;
+        this.position = normalizePosition(position);
+        this.role = normalizeRole(role);
+        this.depth = Math.max(0, depth);
+        this.priority = priority;
+        this.tokenBudget = Math.max(0, tokenBudget);
+        this.included = !this.content.isBlank();
+    }
+
+    static String normalizePosition(String value) {
+        String normalized = value == null || value.isBlank()
+                ? "SYSTEM"
+                : value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "BEFORE_HISTORY", "IN_HISTORY", "AFTER_HISTORY" -> normalized;
+            default -> "SYSTEM";
+        };
+    }
+
+    static String normalizeRole(String value) {
+        String normalized = value == null || value.isBlank()
+                ? "system"
+                : value.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "user", "assistant" -> normalized;
+            default -> "system";
+        };
+    }
+}
+
+class PromptMessage implements Serializable {
+    final String role;
+    final String content;
+    final String sourceKey;
+
+    PromptMessage(String role, String content, String sourceKey) {
+        this.role = ContextSlot.normalizeRole(role);
+        this.content = content == null ? "" : content;
+        this.sourceKey = sourceKey == null || sourceKey.isBlank() ? "unknown" : sourceKey;
+    }
+}
+
+class PromptBundle implements Serializable {
+    List<ContextSlot> slots = new ArrayList<>();
+    int estimatedTokens;
+    int maxTokenBudget;
+    int usedTokenBudget;
+    int excludedTokenBudget;
+    String renderedSystemPrompt;
+
+    static PromptBundle empty() {
+        return new PromptBundle();
+    }
+
+    void add(ContextSlot slot) {
+        if (slot == null || slot.content == null || slot.content.isBlank()) {
+            return;
+        }
+        slots.add(slot);
+        estimatedTokens += Math.max(0, slot.tokenBudget);
+        usedTokenBudget = estimatedTokens;
+    }
+
+    void applyBudget(int maxTokenBudget) {
+        this.maxTokenBudget = Math.max(0, maxTokenBudget);
+        recomputeTokenTotals();
+        if (this.maxTokenBudget <= 0 || usedTokenBudget <= this.maxTokenBudget) {
+            return;
+        }
+        while (usedTokenBudget > this.maxTokenBudget) {
+            ContextSlot candidate = lowestPriorityIncludedSlot(false);
+            if (candidate == null) {
+                candidate = lowestPriorityIncludedSlot(true);
+            }
+            if (candidate == null) {
+                break;
+            }
+            candidate.included = false;
+            recomputeTokenTotals();
+        }
+    }
+
+    private ContextSlot lowestPriorityIncludedSlot(boolean allowProtected) {
+        ContextSlot candidate = null;
+        for (ContextSlot slot : slots) {
+            if (slot == null || !slot.included) {
+                continue;
+            }
+            if (!allowProtected && slot.priority >= 95) {
+                continue;
+            }
+            if (candidate == null
+                    || slot.priority < candidate.priority
+                    || (slot.priority == candidate.priority && slot.tokenBudget > candidate.tokenBudget)) {
+                candidate = slot;
+            }
+        }
+        return candidate;
+    }
+
+    private void recomputeTokenTotals() {
+        int includedTotal = 0;
+        int excludedTotal = 0;
+        for (ContextSlot slot : slots) {
+            if (slot == null) {
+                continue;
+            }
+            int tokenCount = Math.max(0, slot.tokenBudget);
+            if (slot.included) {
+                includedTotal += tokenCount;
+            } else {
+                excludedTotal += tokenCount;
+            }
+        }
+        estimatedTokens = includedTotal;
+        usedTokenBudget = includedTotal;
+        excludedTokenBudget = excludedTotal;
+    }
+
+    String renderSystemPrompt() {
+        StringBuilder builder = new StringBuilder();
+        for (ContextSlot slot : slots) {
+            if (slot == null || !slot.included || !"SYSTEM".equals(ContextSlot.normalizePosition(slot.position))) {
+                continue;
+            }
+            if (builder.length() > 0 && builder.charAt(builder.length() - 1) != '\n') {
+                builder.append('\n');
+            }
+            builder.append(slot.content);
+            if (builder.length() > 0 && builder.charAt(builder.length() - 1) != '\n') {
+                builder.append('\n');
+            }
+        }
+        renderedSystemPrompt = builder.toString().trim();
+        return renderedSystemPrompt;
+    }
+
+    List<PromptMessage> renderMessages(List<ConversationSnippet> history, String userCue) {
+        List<PromptMessage> messages = new ArrayList<>();
+        String systemPrompt = renderSystemPrompt();
+        if (!systemPrompt.isBlank()) {
+            messages.add(new PromptMessage("system", systemPrompt, "system"));
+        }
+        appendPositionSlots(messages, "BEFORE_HISTORY");
+
+        List<PromptMessage> historyMessages = new ArrayList<>();
+        if (history != null) {
+            for (ConversationSnippet snippet : history) {
+                if (snippet == null || snippet.text == null || snippet.text.isBlank()) {
+                    continue;
+                }
+                historyMessages.add(new PromptMessage(snippet.role, snippet.text, "history"));
+            }
+        }
+        insertHistorySlots(historyMessages);
+        messages.addAll(historyMessages);
+
+        appendPositionSlots(messages, "AFTER_HISTORY");
+        if (userCue != null && !userCue.isBlank()) {
+            messages.add(new PromptMessage("user", userCue, "current_user"));
+        }
+        return messages;
+    }
+
+    String renderPromptPreview(List<ConversationSnippet> history, String userCue) {
+        return renderPromptPreview(renderMessages(history, userCue));
+    }
+
+    String renderPromptPreview(List<PromptMessage> messages) {
+        StringBuilder builder = new StringBuilder();
+        if (messages != null) {
+            for (PromptMessage message : messages) {
+                if (message == null || message.content == null || message.content.isBlank()) {
+                    continue;
+                }
+                builder.append('[')
+                        .append(ContextSlot.normalizeRole(message.role))
+                        .append(" | ")
+                        .append(message.sourceKey)
+                        .append("]\n")
+                        .append(message.content)
+                        .append("\n\n");
+            }
+        }
+        return builder.toString().trim();
+    }
+
+    private void appendPositionSlots(List<PromptMessage> messages, String position) {
+        for (ContextSlot slot : slots) {
+            if (!isRenderableSlot(slot, position)) {
+                continue;
+            }
+            messages.add(new PromptMessage(slot.role, slot.content, slot.key));
+        }
+    }
+
+    private void insertHistorySlots(List<PromptMessage> historyMessages) {
+        for (ContextSlot slot : slots) {
+            if (!isRenderableSlot(slot, "IN_HISTORY")) {
+                continue;
+            }
+            int depth = Math.max(0, slot.depth);
+            int insertIndex = Math.max(0, historyMessages.size() - depth);
+            historyMessages.add(insertIndex, new PromptMessage(slot.role, slot.content, slot.key));
+        }
+    }
+
+    private boolean isRenderableSlot(ContextSlot slot, String position) {
+        return slot != null
+                && slot.included
+                && slot.content != null
+                && !slot.content.isBlank()
+                && position.equals(ContextSlot.normalizePosition(slot.position));
     }
 }
 
@@ -1682,6 +2157,7 @@ class LlmResponse {
     final String errorCode;
     final boolean fallbackUsed;
     final String provider;
+    final List<ContextSlot> promptSlotsUsed;
 
     LlmResponse(
             String replyText,
@@ -1695,6 +2171,22 @@ class LlmResponse {
             boolean fallbackUsed,
             String provider
     ) {
+        this(replyText, sceneText, actionText, speechText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider, List.of());
+    }
+
+    LlmResponse(
+            String replyText,
+            String sceneText,
+            String actionText,
+            String speechText,
+            String emotionTag,
+            String confidenceStatus,
+            int tokenUsage,
+            String errorCode,
+            boolean fallbackUsed,
+            String provider,
+            List<ContextSlot> promptSlotsUsed
+    ) {
         this.replyText = replyText;
         this.sceneText = sceneText;
         this.actionText = actionText;
@@ -1705,10 +2197,15 @@ class LlmResponse {
         this.errorCode = errorCode;
         this.fallbackUsed = fallbackUsed;
         this.provider = provider;
+        this.promptSlotsUsed = promptSlotsUsed == null ? List.of() : new ArrayList<>(promptSlotsUsed);
     }
 
     LlmResponse(String replyText, String emotionTag, String confidenceStatus, int tokenUsage, String errorCode, boolean fallbackUsed, String provider) {
         this(replyText, null, null, replyText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider);
+    }
+
+    LlmResponse(String replyText, String emotionTag, String confidenceStatus, int tokenUsage, String errorCode, boolean fallbackUsed, String provider, List<ContextSlot> promptSlotsUsed) {
+        this(replyText, null, null, replyText, emotionTag, confidenceStatus, tokenUsage, errorCode, fallbackUsed, provider, promptSlotsUsed);
     }
 }
 

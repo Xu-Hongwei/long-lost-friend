@@ -9,16 +9,21 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 final class Services {
     private Services() {
@@ -240,9 +245,10 @@ class EventEngine {
 
         String normalized = userMessage.trim().toLowerCase();
         int currentTurns = session.userTurnCount + 1;
+        boolean hasDynamicCandidates = session.dynamicStoryEvents != null && !session.dynamicStoryEvents.isEmpty();
         StoryEvent best = null;
         int bestScore = Integer.MIN_VALUE;
-        for (StoryEvent event : agent.storyEvents) {
+        for (StoryEvent event : candidateEvents(agent, session)) {
             if (session.storyEventProgress.triggeredEventIds.contains(event.id)) {
                 continue;
             }
@@ -266,17 +272,20 @@ class EventEngine {
                     keywordHits++;
                 }
             }
-            int topicHits = countMemoryTopicHits(session.memorySummary, normalized);
+            int topicHits = countMemoryTopicHits(session.memorySummary, normalized, event);
             int cadenceBonus = cadenceBonus(session.memorySummary == null ? "" : session.memorySummary.lastResponseCadence, event.category);
             int stageBonus = session.relationshipState.relationshipStage != null && event.stageRange.contains(session.relationshipState.relationshipStage) ? 2 : 0;
             int noveltyBonus = session.storyEventProgress.lastTriggeredEventId != null
                     && !Objects.equals(session.storyEventProgress.lastTriggeredEventId, event.id) ? 1 : 0;
-            int keyChoiceBonus = event.keyChoiceEvent && session.relationshipState.affectionScore >= event.minAffection ? 6 : 0;
-            int score = event.weight + keywordHits * 4 + topicHits * 2 + cadenceBonus + stageBonus + noveltyBonus + keyChoiceBonus;
+            int keyChoiceBonus = event.keyChoiceEvent && session.relationshipState.affectionScore >= event.minAffection && keywordHits + topicHits > 0 ? 6 : 0;
+            int dynamicCandidateBonus = isDynamicEvent(event) ? 8 : hasDynamicCandidates ? -2 : 0;
+            int score = event.weight + keywordHits * 4 + topicHits * 2 + cadenceBonus + stageBonus + noveltyBonus + keyChoiceBonus + dynamicCandidateBonus;
             boolean canTrigger = keywordHits > 0
-                    || currentTurns == event.unlockAtMessages
                     || topicHits > 0
-                    || (event.keyChoiceEvent && currentTurns >= event.unlockAtMessages && session.relationshipState.affectionScore >= event.minAffection);
+                    || (event.keyChoiceEvent && currentTurns >= event.unlockAtMessages && session.relationshipState.affectionScore >= event.minAffection && hasRelationshipCue(normalized));
+            if (canTrigger && isGenericKnowledgeOrTravelTurn(normalized, event, keywordHits, topicHits)) {
+                canTrigger = false;
+            }
             if (canTrigger && score > bestScore) {
                 bestScore = score;
                 best = event;
@@ -289,33 +298,92 @@ class EventEngine {
         if (eventId == null || eventId.isBlank()) {
             return null;
         }
-        for (StoryEvent event : agent.storyEvents) {
+        for (StoryEvent event : candidateEvents(agent, null)) {
             if (event.id.equals(eventId)) {
                 return event;
             }
         }
+        if (agent != null && eventId.startsWith("dynamic_")) {
+            return null;
+        }
         return null;
     }
 
-    private int countMemoryTopicHits(MemorySummary summary, String normalizedMessage) {
+    private List<StoryEvent> candidateEvents(AgentProfile agent, SessionRecord session) {
+        List<StoryEvent> events = new ArrayList<>();
+        if (session != null && session.dynamicStoryEvents != null) {
+            events.addAll(session.dynamicStoryEvents);
+        }
+        if (agent != null && agent.storyEvents != null) {
+            events.addAll(agent.storyEvents);
+        }
+        return events;
+    }
+
+    private boolean isDynamicEvent(StoryEvent event) {
+        return event != null && event.id != null && event.id.startsWith("dynamic_");
+    }
+
+    private int countMemoryTopicHits(MemorySummary summary, String normalizedMessage, StoryEvent event) {
         if (summary == null) {
             return 0;
         }
         int hits = 0;
         List<String> topics = new ArrayList<>();
-        topics.addAll(summary.discussedTopics);
         topics.addAll(summary.sharedMoments);
         topics.addAll(summary.strongMemories);
+        String eventTitle = event == null ? "" : blankTo(event.title, "").toLowerCase();
+        String eventTheme = event == null ? "" : blankTo(event.theme, "").toLowerCase();
         for (String topic : topics) {
             if (topic == null || topic.isBlank()) {
                 continue;
             }
             String compact = topic.toLowerCase().replace("：", "").replace(":", "");
-            if (compact.length() >= 2 && normalizedMessage.contains(compact.substring(0, Math.min(4, compact.length())))) {
+            boolean eventRelated = !eventTitle.isBlank() && compact.contains(eventTitle)
+                    || !eventTheme.isBlank() && eventTheme.length() >= 4 && compact.contains(eventTheme.substring(0, 4));
+            if (!eventRelated && event != null) {
+                for (String keyword : event.keywordsAny) {
+                    if (keyword != null && keyword.length() >= 2 && compact.contains(keyword.toLowerCase())) {
+                        eventRelated = true;
+                        break;
+                    }
+                }
+            }
+            if (eventRelated && compact.length() >= 2 && normalizedMessage.contains(compact.substring(0, Math.min(4, compact.length())))) {
                 hits++;
             }
         }
         return Math.min(2, hits);
+    }
+
+    private boolean hasRelationshipCue(String text) {
+        return containsAny(text, List.of("喜欢", "想你", "陪", "以后", "一直", "认真", "约好", "一起", "记得", "答应"));
+    }
+
+    private boolean isGenericKnowledgeOrTravelTurn(String text, StoryEvent event, int keywordHits, int topicHits) {
+        if (event == null || keywordHits + topicHits > 1) {
+            return false;
+        }
+        boolean knowledge = containsAny(text, List.of("为什么", "什么原因", "理论", "讲讲", "解释", "例子", "是什么意思"));
+        boolean travelWeather = containsAny(text, List.of("风景", "出去玩", "推荐", "旅游", "日光山谷"))
+                && containsAny(text, List.of("天气", "晴", "不错"));
+        return knowledge || travelWeather && "emotion".equals(event.category);
+    }
+
+    private String blankTo(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int cadenceBonus(String cadence, String category) {
@@ -329,6 +397,661 @@ class EventEngine {
             case "conflict" -> "answer_first".equals(cadence) ? 1 : 0;
             default -> 0;
         };
+    }
+}
+
+class DynamicStoryEventTask {
+    final CompletableFuture<List<StoryEvent>> future;
+    final int sourceTurn;
+
+    DynamicStoryEventTask(CompletableFuture<List<StoryEvent>> future, int sourceTurn) {
+        this.future = future;
+        this.sourceTurn = sourceTurn;
+    }
+}
+
+class DynamicStoryEventService {
+    private static final int MAX_DYNAMIC_EVENTS = 6;
+    private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "dynamic-story-event");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    private final String baseUrl;
+    private final String apiKey;
+    private final String model;
+    private final Duration timeout;
+    private final LocalSignalExtractor localSignalExtractor = new LocalSignalExtractor();
+
+    DynamicStoryEventService() {
+        this.baseUrl = "";
+        this.apiKey = "";
+        this.model = "qwen-plus";
+        this.timeout = Duration.ofMillis(2500);
+    }
+
+    DynamicStoryEventService(AppConfig config) {
+        this.baseUrl = config == null ? "" : blankTo(config.plotLlmBaseUrl, "");
+        this.apiKey = config == null ? "" : blankTo(config.plotLlmApiKey, "");
+        this.model = config == null || blankTo(config.plotLlmModel, "").isBlank() ? "qwen-plus" : blankTo(config.plotLlmModel, "");
+        long configuredTimeout = config == null || config.plotLlmTimeout == null ? 2500L : config.plotLlmTimeout.toMillis();
+        this.timeout = Duration.ofMillis(Math.max(800L, Math.min(3500L, configuredTimeout)));
+    }
+
+    void refresh(AgentProfile agent, SessionRecord session, String userMessage, TurnContext turnContext, String nowIso) {
+        if (session == null) {
+            return;
+        }
+        if (session.dynamicStoryEvents == null) {
+            session.dynamicStoryEvents = new ArrayList<>();
+        }
+        prune(session);
+        if (!shouldCreate(userMessage, turnContext)) {
+            return;
+        }
+        StoryEvent event = buildEvent(agent, session, userMessage, turnContext);
+        if (event == null) {
+            return;
+        }
+        addCandidate(session, event);
+    }
+
+    DynamicStoryEventTask startRemote(
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext,
+            List<ConversationSnippet> recentContext,
+            int sourceTurn
+    ) {
+        if (!remoteEnabled() || session == null || !shouldCreate(userMessage, turnContext)) {
+            return null;
+        }
+        CompletableFuture<List<StoryEvent>> future = CompletableFuture.supplyAsync(() -> {
+            try {
+                return callRemoteEvents(agent, session, userMessage, turnContext, recentContext);
+            } catch (Exception ex) {
+                return List.of();
+            }
+        }, EXECUTOR);
+        return new DynamicStoryEventTask(future, sourceTurn);
+    }
+
+    void mergeRemoteEvents(SessionRecord session, List<StoryEvent> events) {
+        if (session == null || events == null || events.isEmpty()) {
+            return;
+        }
+        if (session.dynamicStoryEvents == null) {
+            session.dynamicStoryEvents = new ArrayList<>();
+        }
+        prune(session);
+        for (StoryEvent event : events) {
+            if (event != null && isRemoteEventSafe(session, event)) {
+                addCandidate(session, event);
+            }
+        }
+    }
+
+    private void addCandidate(SessionRecord session, StoryEvent event) {
+        for (int index = 0; index < session.dynamicStoryEvents.size(); index++) {
+            StoryEvent existing = session.dynamicStoryEvents.get(index);
+            if (existing != null && event.id.equals(existing.id)) {
+                session.dynamicStoryEvents.set(index, event);
+                return;
+            }
+        }
+        session.dynamicStoryEvents.add(0, event);
+        while (session.dynamicStoryEvents.size() > MAX_DYNAMIC_EVENTS) {
+            session.dynamicStoryEvents.remove(session.dynamicStoryEvents.size() - 1);
+        }
+    }
+
+    private boolean isRemoteEventSafe(SessionRecord session, StoryEvent event) {
+        if (event.title == null || event.title.isBlank() || event.theme == null || event.theme.isBlank()) {
+            return false;
+        }
+        if (event.keywordsAny == null || event.keywordsAny.isEmpty()) {
+            return false;
+        }
+        if (event.minAffection > (session.relationshipState == null ? 0 : session.relationshipState.affectionScore) + 12) {
+            return false;
+        }
+        return event.category == null || List.of("daily", "emotion", "breakthrough").contains(event.category);
+    }
+
+    private StoryEvent buildEvent(AgentProfile agent, SessionRecord session, String userMessage, TurnContext turnContext) {
+        String text = blankTo(userMessage, "").trim();
+        if (text.isBlank()) {
+            return null;
+        }
+        String agentId = agent == null ? "agent" : blankTo(agent.id, "agent");
+        String stage = session.relationshipState == null ? "" : blankTo(session.relationshipState.relationshipStage, "");
+        String scene = session.sceneState == null ? "" : blankTo(session.sceneState.location, "");
+        String target = normalizeDynamicTarget(turnContext == null ? "" : blankTo(turnContext.sceneMoveTarget, ""), scene);
+        String category = inferCategory(text, turnContext);
+        List<String> keywords = dynamicKeywords(text, target, scene);
+        String excerpt = excerpt(text, 18);
+        String title = dynamicTitle(category, target, excerpt);
+        String theme = "围绕“" + excerpt + "”自然长出的临场事件"
+                + (scene.isBlank() ? "" : "，当前场景锚点：" + scene)
+                + (target.isBlank() ? "" : "，目标：" + target);
+        String seed = agentId + "|" + stage + "|" + category + "|" + String.join("|", keywords);
+        String id = "dynamic_" + agentId + "_" + Integer.toHexString(Math.abs(seed.hashCode()));
+        int currentTurn = session.userTurnCount + 1;
+        int minAffection = Math.max(0, session.relationshipState == null ? 0 : session.relationshipState.affectionScore - 4);
+        int bonus = switch (category) {
+            case "breakthrough" -> 4;
+            case "emotion" -> 3;
+            default -> 2;
+        };
+        EventEffect success = new EventEffect(
+                Math.max(1, bonus / 2 + 1),
+                Math.max(1, bonus / 2),
+                bonus,
+                "动态剧情",
+                "这段剧情来自当前对话本身，而不是固定事件表。",
+                "顺着刚刚生成的共同线索推进，但不要脱离用户当前意图。",
+                false
+        );
+        EventEffect neutral = new EventEffect(
+                1,
+                0,
+                Math.max(0, bonus - 1),
+                "动态剧情",
+                "先把临场线索轻轻留住，等待更明确的信号。",
+                "继续观察用户是否愿意把这条线往前推。",
+                false
+        );
+        EventEffect fail = new EventEffect(
+                -1,
+                -1,
+                -1,
+                "动态剧情",
+                "这条临场剧情推进得太急，需要退回当前话题。",
+                "先回到用户当前真正要聊的事。",
+                false
+        );
+        return new StoryEvent(
+                id,
+                title,
+                currentTurn + 1,
+                minAffection,
+                theme,
+                keywords,
+                bonus,
+                category,
+                stageRange(stage),
+                new LinkedHashMap<>(),
+                new LinkedHashMap<>(),
+                9 + bonus,
+                4,
+                List.of(),
+                success,
+                neutral,
+                fail,
+                List.of(),
+                false,
+                success.nextDirection
+        );
+    }
+
+    private List<StoryEvent> callRemoteEvents(
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext,
+            List<ConversationSnippet> recentContext
+    ) throws IOException {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", model);
+        payload.put("temperature", 0.25);
+        payload.put("messages", List.of(
+                Map.of(
+                        "role", "system",
+                        "content", "You are a hidden story-event designer for a campus romance chat game. Return ONLY strict JSON. Do not write dialogue. Create 0-2 conservative event candidates from the current conversation, and never force confession, rain, library, phone, or location changes unless supported by context."
+                ),
+                Map.of(
+                        "role", "user",
+                        "content", Json.stringify(buildRemoteInput(agent, session, userMessage, turnContext, recentContext))
+                )
+        ));
+        return callHttpEvents(payload, agent, session, userMessage, turnContext);
+    }
+
+    private Map<String, Object> buildRemoteInput(
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext,
+            List<ConversationSnippet> recentContext
+    ) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("task", "Generate dynamic story event candidates for future turns.");
+        input.put("output_schema", Map.of(
+                "events", "array length 0..2",
+                "events[].title", "short Chinese title",
+                "events[].theme", "one Chinese sentence, grounded in current user intent",
+                "events[].keywords", "2..5 Chinese trigger keywords",
+                "events[].category", "daily|emotion|breakthrough",
+                "events[].minAffection", "integer <= current score + 8",
+                "events[].affectionBonus", "integer 2..4"
+        ));
+        input.put("hard_rules", List.of(
+                "Return JSON only.",
+                "The event is only a candidate for later local arbitration.",
+                "Do not create an event for bug reports, meta repair, pure explanation questions, or simple greetings.",
+                "Do not contradict current scene, objective, or relationship stage.",
+                "Prefer small grounded events over dramatic plot twists."
+        ));
+        input.put("userMessage", blankTo(userMessage, ""));
+        input.put("agent", Map.of(
+                "id", agent == null ? "" : blankTo(agent.id, ""),
+                "name", agent == null ? "" : blankTo(agent.name, ""),
+                "archetype", agent == null ? "" : blankTo(agent.archetype, ""),
+                "speechStyle", agent == null ? "" : blankTo(agent.speechStyle, "")
+        ));
+        input.put("relationship", Map.of(
+                "stage", session == null || session.relationshipState == null ? "" : blankTo(session.relationshipState.relationshipStage, ""),
+                "score", session == null || session.relationshipState == null ? 0 : session.relationshipState.affectionScore
+        ));
+        input.put("scene", Map.of(
+                "location", session == null || session.sceneState == null ? "" : blankTo(session.sceneState.location, ""),
+                "summary", session == null || session.sceneState == null ? "" : blankTo(session.sceneState.sceneSummary, ""),
+                "moveKind", turnContext == null ? "" : blankTo(turnContext.sceneMoveKind, ""),
+                "moveTarget", turnContext == null ? "" : blankTo(turnContext.sceneMoveTarget, "")
+        ));
+        input.put("turnContext", Map.of(
+                "primaryIntent", turnContext == null ? "" : blankTo(turnContext.primaryIntent, ""),
+                "userReplyAct", turnContext == null ? "" : blankTo(turnContext.userReplyAct, ""),
+                "assistantObligation", turnContext == null || turnContext.assistantObligation == null ? "" : blankTo(turnContext.assistantObligation.type, ""),
+                "localConflicts", turnContext == null || turnContext.localConflicts == null ? List.of() : turnContext.localConflicts.stream().map(item -> item.type).limit(3).toList()
+        ));
+        input.put("memory", Map.of(
+                "openLoops", limitList(session == null || session.memorySummary == null ? null : session.memorySummary.openLoops, 4),
+                "sharedMoments", limitList(session == null || session.memorySummary == null ? null : session.memorySummary.sharedMoments, 4),
+                "strongMemories", limitList(session == null || session.memorySummary == null ? null : session.memorySummary.strongMemories, 4)
+        ));
+        input.put("recentContext", summarizeRecentContext(recentContext));
+        return input;
+    }
+
+    private List<StoryEvent> callHttpEvents(
+            Map<String, Object> payload,
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext
+    ) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) URI.create(trimTrailingSlash(baseUrl) + "/chat/completions").toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout((int) timeout.toMillis());
+        connection.setReadTimeout((int) timeout.toMillis());
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(Json.stringify(payload).getBytes(StandardCharsets.UTF_8));
+        }
+        int status = connection.getResponseCode();
+        String raw = new String(
+                (status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream()).readAllBytes(),
+                StandardCharsets.UTF_8
+        );
+        if (status < 200 || status >= 300) {
+            throw new IOException("dynamic_story_event_http_" + status + ":" + raw);
+        }
+        Map<String, Object> parsed = Json.asObject(Json.parse(raw));
+        List<Object> choices = Json.asArray(parsed.get("choices"));
+        if (choices.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Object> choice = Json.asObject(choices.get(0));
+        Map<String, Object> message = Json.asObject(choice.get("message"));
+        return parseRemoteEvents(Json.asString(message.get("content")), agent, session, userMessage, turnContext);
+    }
+
+    private List<StoryEvent> parseRemoteEvents(
+            String content,
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext
+    ) throws IOException {
+        Object parsed = Json.parse(extractJson(content));
+        List<Object> rawEvents;
+        if (parsed instanceof List<?>) {
+            rawEvents = Json.asArray(parsed);
+        } else {
+            Object eventsValue = Json.asObject(parsed).get("events");
+            rawEvents = eventsValue instanceof List<?> ? Json.asArray(eventsValue) : List.of();
+        }
+        List<StoryEvent> events = new ArrayList<>();
+        for (Object rawEvent : rawEvents) {
+            if (events.size() >= 2) {
+                break;
+            }
+            Map<String, Object> item = Json.asObject(rawEvent);
+            StoryEvent event = remoteEventFromJson(item, agent, session, userMessage, turnContext);
+            if (event != null) {
+                events.add(event);
+            }
+        }
+        return events;
+    }
+
+    private StoryEvent remoteEventFromJson(
+            Map<String, Object> item,
+            AgentProfile agent,
+            SessionRecord session,
+            String userMessage,
+            TurnContext turnContext
+    ) {
+        String title = truncate(blankTo(Json.asString(item.get("title")), ""), 36);
+        String theme = truncate(blankTo(Json.asString(item.get("theme")), ""), 120);
+        if (title.isBlank() || theme.isBlank()) {
+            return null;
+        }
+        String category = blankTo(Json.asString(item.get("category")), "daily").toLowerCase();
+        if (!List.of("daily", "emotion", "breakthrough").contains(category)) {
+            category = inferCategory(userMessage, turnContext);
+        }
+        String scene = session == null || session.sceneState == null ? "" : blankTo(session.sceneState.location, "");
+        String target = normalizeDynamicTarget(turnContext == null ? "" : blankTo(turnContext.sceneMoveTarget, ""), scene);
+        Object keywordValue = item.get("keywords");
+        List<String> keywords = sanitizeKeywords(keywordValue instanceof List<?> ? Json.asArray(keywordValue) : List.of(), userMessage, target, scene);
+        if (keywords.isEmpty()) {
+            return null;
+        }
+        int currentScore = session == null || session.relationshipState == null ? 0 : session.relationshipState.affectionScore;
+        int minAffection = clamp(Json.asInt(item.get("minAffection"), Math.max(0, currentScore - 4)), 0, currentScore + 8);
+        int bonus = clamp(Json.asInt(item.get("affectionBonus"), "breakthrough".equals(category) ? 4 : 2), 2, 4);
+        return constructDynamicEvent(agent, session, title, theme, keywords, category, minAffection, bonus, "remote");
+    }
+
+    private StoryEvent constructDynamicEvent(
+            AgentProfile agent,
+            SessionRecord session,
+            String title,
+            String theme,
+            List<String> keywords,
+            String category,
+            int minAffection,
+            int bonus,
+            String source
+    ) {
+        String agentId = agent == null ? "agent" : blankTo(agent.id, "agent");
+        String stage = session == null || session.relationshipState == null ? "" : blankTo(session.relationshipState.relationshipStage, "");
+        int currentTurn = session == null ? 1 : session.userTurnCount + 1;
+        String seed = agentId + "|" + stage + "|" + source + "|" + category + "|" + title + "|" + String.join("|", keywords);
+        String id = "dynamic_" + agentId + "_" + Integer.toHexString(Math.abs(seed.hashCode()));
+        EventEffect success = new EventEffect(
+                Math.max(1, bonus / 2 + 1),
+                Math.max(1, bonus / 2),
+                bonus,
+                "动态剧情",
+                "这段剧情来自当前对话本身，而不是固定事件表。",
+                "顺着刚刚生成的共同线索推进，但不要脱离用户当前意图。",
+                false
+        );
+        EventEffect neutral = new EventEffect(
+                1,
+                0,
+                Math.max(0, bonus - 1),
+                "动态剧情",
+                "先把临场线索轻轻留住，等待更明确的信号。",
+                "继续观察用户是否愿意把这条线往前推。",
+                false
+        );
+        EventEffect fail = new EventEffect(
+                -1,
+                -1,
+                -1,
+                "动态剧情",
+                "这条临场剧情推进得太急，需要退回当前话题。",
+                "先回到用户当前真正要聊的事。",
+                false
+        );
+        return new StoryEvent(
+                id,
+                title,
+                currentTurn + 1,
+                minAffection,
+                theme,
+                keywords,
+                bonus,
+                category,
+                stageRange(stage),
+                new LinkedHashMap<>(),
+                new LinkedHashMap<>(),
+                9 + bonus,
+                4,
+                List.of(),
+                success,
+                neutral,
+                fail,
+                List.of(),
+                false,
+                success.nextDirection
+        );
+    }
+
+    private List<String> sanitizeKeywords(List<Object> rawKeywords, String userMessage, String target, String scene) {
+        List<String> keywords = new ArrayList<>();
+        if (rawKeywords != null) {
+            for (Object raw : rawKeywords) {
+                if (keywords.size() >= 5) {
+                    break;
+                }
+                addKeyword(keywords, truncate(blankTo(Json.asString(raw), ""), 12));
+            }
+        }
+        for (String fallback : dynamicKeywords(userMessage, target, scene)) {
+            if (keywords.size() >= 5) {
+                break;
+            }
+            addKeyword(keywords, fallback);
+        }
+        return keywords;
+    }
+
+    private boolean remoteEnabled() {
+        return !baseUrl.isBlank() && !apiKey.isBlank() && !model.isBlank();
+    }
+
+    private String extractJson(String content) throws IOException {
+        String text = blankTo(content, "").trim();
+        int objectStart = text.indexOf('{');
+        int arrayStart = text.indexOf('[');
+        int start;
+        char close;
+        if (arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart)) {
+            start = arrayStart;
+            close = ']';
+        } else {
+            start = objectStart;
+            close = '}';
+        }
+        int end = text.lastIndexOf(close);
+        if (start < 0 || end <= start) {
+            throw new IOException("dynamic_story_event_invalid_json");
+        }
+        return text.substring(start, end + 1);
+    }
+
+    private String trimTrailingSlash(String value) {
+        String safe = blankTo(value, "");
+        while (safe.endsWith("/")) {
+            safe = safe.substring(0, safe.length() - 1);
+        }
+        return safe;
+    }
+
+    private List<String> limitList(List<String> values, int limit) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .limit(Math.max(0, limit))
+                .toList();
+    }
+
+    private List<Map<String, String>> summarizeRecentContext(List<ConversationSnippet> recentContext) {
+        if (recentContext == null || recentContext.isEmpty()) {
+            return List.of();
+        }
+        return recentContext.stream()
+                .skip(Math.max(0, recentContext.size() - 8))
+                .map(item -> Map.of(
+                        "role", item == null ? "" : blankTo(item.role, ""),
+                        "text", item == null ? "" : truncate(blankTo(item.text, ""), 120)
+                ))
+                .toList();
+    }
+
+    private String truncate(String value, int maxLength) {
+        String safe = blankTo(value, "").trim();
+        if (safe.length() <= maxLength) {
+            return safe;
+        }
+        return safe.substring(0, maxLength);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private boolean shouldCreate(String userMessage, TurnContext turnContext) {
+        String text = blankTo(userMessage, "");
+        String compact = text.replaceAll("\\s+", "");
+        if (compact.length() < 4) {
+            return false;
+        }
+        LocalSignalProfile signals = localSignalExtractor.analyze(text);
+        String primary = turnContext == null ? "" : blankTo(turnContext.primaryIntent, "");
+        String replyAct = turnContext == null ? "" : blankTo(turnContext.userReplyAct, "");
+        String moveKind = turnContext == null ? "" : blankTo(turnContext.sceneMoveKind, "");
+        boolean explicitMove = "move_to".equals(moveKind) && turnContext != null && !blankTo(turnContext.sceneMoveTarget, "").isBlank();
+        boolean acceptedPlan = "accept_plan".equals(replyAct)
+                || signals.hasAny("plan_proposal", "future_plan");
+        boolean personalSignal = signals.hasAny(
+                "romantic_signal",
+                "emotional_signal",
+                "memory_signal",
+                "companionship_signal"
+        );
+        boolean eligibleIntent = containsAny(primary, List.of("romantic", "emotion", "scene_push"))
+                || explicitMove
+                || acceptedPlan
+                || personalSignal;
+        boolean metaRepair = signals.has("meta_repair");
+        boolean informationalOnly = signals.has("info_question")
+                && !personalSignal
+                && !acceptedPlan;
+        return eligibleIntent && !metaRepair && !informationalOnly;
+    }
+
+    private String inferCategory(String text, TurnContext turnContext) {
+        LocalSignalProfile signals = localSignalExtractor.analyze(text);
+        String primary = turnContext == null ? "" : blankTo(turnContext.primaryIntent, "");
+        if (signals.has("romantic_signal") || primary.contains("romantic")) {
+            return "breakthrough";
+        }
+        if (signals.has("emotional_signal") || primary.contains("emotion")) {
+            return "emotion";
+        }
+        return "daily";
+    }
+
+    private String dynamicTitle(String category, String target, String excerpt) {
+        if (target != null && !target.isBlank()) {
+            return "去" + target + "路上的小约定";
+        }
+        return switch (category) {
+            case "breakthrough" -> "更近一点的确认";
+            case "emotion" -> "被认真接住的心事";
+            default -> excerpt.length() >= 4 ? "关于“" + excerpt + "”的新片段" : "今晚新长出的片段";
+        };
+    }
+
+    private List<String> dynamicKeywords(String text, String target, String scene) {
+        LocalSignalProfile signals = localSignalExtractor.analyze(text);
+        List<String> keywords = new ArrayList<>(signals.eventKeywords(target, scene, 5));
+        String compact = blankTo(text, "").replaceAll("[^\\p{IsHan}A-Za-z0-9]+", "");
+        for (int index = 0; index < compact.length() - 1 && keywords.size() < 5; index += 2) {
+            addKeyword(keywords, compact.substring(index, Math.min(index + 4, compact.length())));
+        }
+        if (keywords.isEmpty() && !compact.isBlank()) {
+            addKeyword(keywords, compact.substring(0, Math.min(4, compact.length())));
+        }
+        return keywords;
+    }
+
+    private String normalizeDynamicTarget(String target, String scene) {
+        String safeTarget = blankTo(target, "").trim();
+        String safeScene = blankTo(scene, "").trim();
+        if (safeTarget.isBlank()) {
+            return "";
+        }
+        if ("聊天现场".equals(safeTarget) || "当前场景".equals(safeTarget) || "同一场景".equals(safeTarget)) {
+            return "";
+        }
+        if (!safeScene.isBlank() && safeTarget.equals(safeScene)) {
+            return "";
+        }
+        return safeTarget;
+    }
+
+    private void addKeyword(List<String> keywords, String value) {
+        String keyword = blankTo(value, "").trim();
+        if (keyword.length() < 2 || keywords.contains(keyword)) {
+            return;
+        }
+        keywords.add(keyword);
+    }
+
+    private List<String> stageRange(String stage) {
+        if (stage != null && !stage.isBlank()) {
+            return List.of(stage);
+        }
+        return List.of("初识", "升温", "心动", "靠近", "确认关系");
+    }
+
+    private void prune(SessionRecord session) {
+        if (session.dynamicStoryEvents == null) {
+            session.dynamicStoryEvents = new ArrayList<>();
+            return;
+        }
+        session.dynamicStoryEvents.removeIf(event -> event == null
+                || session.storyEventProgress != null && session.storyEventProgress.triggeredEventIds.contains(event.id));
+        while (session.dynamicStoryEvents.size() > MAX_DYNAMIC_EVENTS) {
+            session.dynamicStoryEvents.remove(session.dynamicStoryEvents.size() - 1);
+        }
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String excerpt(String text, int limit) {
+        String safe = blankTo(text, "").replaceAll("\\s+", "");
+        if (safe.length() <= limit) {
+            return safe;
+        }
+        return safe.substring(0, limit);
+    }
+
+    private String blankTo(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 }
 
@@ -471,18 +1194,8 @@ class MemoryService {
         if (message == null) {
             return "";
         }
-        List<String> parts = new ArrayList<>();
-        if (message.sceneText != null && !message.sceneText.isBlank()) {
-            parts.add(message.sceneText);
-        }
-        if (message.actionText != null && !message.actionText.isBlank()) {
-            parts.add(message.actionText);
-        }
         if (message.speechText != null && !message.speechText.isBlank()) {
-            parts.add(message.speechText);
-        }
-        if (!parts.isEmpty()) {
-            return String.join(" ", parts);
+            return message.speechText.trim();
         }
         return message.text == null ? "" : message.text;
     }
@@ -658,7 +1371,7 @@ class MemoryService {
         if (event != null) {
             pushUniqueLimited(next.sharedMoments, event.title + "：" + event.theme, 8);
             pushUniqueLimited(next.milestones, relationshipStage + "阶段触发了" + event.title, 8);
-        } else if (userMessage.length() >= 10) {
+        } else if (isWorthMemoryMilestone(userMessage)) {
             pushUniqueLimited(next.milestones, relationshipStage + "阶段里你提到过“" + excerpt(userMessage, 20) + "”", 8);
         }
         return next;
@@ -736,7 +1449,7 @@ class MemoryService {
     private List<String> extractTopics(String userMessage) {
         List<String> topics = new ArrayList<>();
         for (String term : extractTerms(userMessage)) {
-            if (term.length() >= 2) {
+            if (term.length() >= 3 && !looksLikeNoisyTopic(term)) {
                 topics.add(term);
             }
             if (topics.size() >= 3) {
@@ -747,6 +1460,17 @@ class MemoryService {
             topics.add(excerpt(userMessage, 10));
         }
         return topics;
+    }
+
+    private boolean looksLikeNoisyTopic(String term) {
+        String safe = term == null ? "" : term.trim();
+        if (safe.length() <= 2) {
+            return true;
+        }
+        return containsAny(safe, List.of(
+                "\u5e94\u8be5", "\u4f46\u662f", "\u4e0d\u8fc7", "\u54c8\u54c8", "\u54ea\u4e2a",
+                "\u4ec0\u4e48", "\u600e\u4e48", "\u6709\u6ca1\u6709", "\u53ef\u4ee5"
+        ));
     }
 
     private void addTagged(List<String> target, String label, List<String> values) {
@@ -779,7 +1503,7 @@ class MemoryService {
     }
 
     private List<String> extractTerms(String text) {
-        Set<String> terms = new HashSet<>();
+        Set<String> terms = new LinkedHashSet<>();
         String normalized = text == null ? "" : text
                 .replaceAll("[^\\p{IsHan}A-Za-z0-9]+", " ")
                 .trim()
@@ -929,11 +1653,37 @@ class MemoryService {
         if (event != null) {
             rememberInTier(next, next.strongMemories, "和你的共同剧情：" + event.title + "（" + event.theme + "）", 8);
             rememberInTier(next, next.strongMemories, "关系推进到了" + relationshipStage + "，触发了" + event.title, 8);
-        } else if (userMessage != null && userMessage.length() >= 10) {
-            rememberInTier(next, next.strongMemories, relationshipStage + "阶段重点：" + excerpt(userMessage, 20), 8);
+        } else if (isWorthMemoryMilestone(userMessage)) {
+            rememberInTier(next, next.temporaryMemories, relationshipStage + "阶段重点：" + excerpt(userMessage, 20), 8);
         }
 
         return next;
+    }
+
+    private boolean isWorthMemoryMilestone(String userMessage) {
+        String safe = userMessage == null ? "" : userMessage.trim();
+        if (safe.length() < 12) {
+            return false;
+        }
+        String compact = safe.replaceAll("\\s+", "");
+        if (looksLikeNoisyTopic(compact)) {
+            return false;
+        }
+        return containsAny(compact, List.of(
+                "我喜欢", "我想", "一起", "带你", "陪你", "记得", "重要", "有意义", "了解你",
+                "出去", "湖边", "图书馆", "食堂", "操场"
+        ));
+    }
+
+    MemorySummary settleOpenLoopsAfterAssistant(
+            MemorySummary summary,
+            String userMessage,
+            String assistantReply,
+            TurnContext turnContext,
+            DialogueContinuityState continuity,
+            String nowIso
+    ) {
+        return normalizeSummary(summary, nowIso);
     }
 
     private void backfillTieredMemories(MemorySummary summary) {
@@ -1051,15 +1801,24 @@ class RelationshipService {
         int resonance = countMatches(userMessage, resonanceKeywords);
         int memorySignal = countMatches(userMessage, memoryKeywords) + (referencesKnownMemory(userMessage, memorySummary) ? 1 : 0);
         int sharesPersonalDetail = userMessage.matches(".*(我觉得|我喜欢|害怕|担心|希望|最近).*") ? 1 : 0;
-        int questionBonus = userMessage.contains("?") || userMessage.contains("？") ? 1 : 0;
+        boolean informationalTurn = isInformationalTurn(userMessage);
+        int questionBonus = !informationalTurn && (userMessage.contains("?") || userMessage.contains("？")) ? 1 : 0;
 
         int closenessDelta = clamp(1 + positive + questionBonus - negative, -3, 4);
         int trustDelta = clamp(trust + sharesPersonalDetail + Math.min(1, memorySignal) - negative, -2, 5);
         int resonanceDelta = clamp(resonance + memorySignal + (event == null ? 0 : event.affectionBonus), -2, 7);
+        if (informationalTurn && event == null) {
+            closenessDelta = Math.min(closenessDelta, 1);
+            trustDelta = Math.min(trustDelta, 0);
+            resonanceDelta = Math.min(resonanceDelta, memorySignal > 0 ? 1 : 0);
+        }
         List<String> scoreReasons = new ArrayList<>();
         scoreReasons.add("closeness " + signed(closenessDelta) + "：基础互动" + (positive > 0 ? "、积极表达" : "") + (questionBonus > 0 ? "、主动提问" : "") + (negative > 0 ? "、负面表达抵消" : ""));
         scoreReasons.add("trust " + signed(trustDelta) + "：" + (trust > 0 || sharesPersonalDetail > 0 ? "真诚/脆弱信息" : "本轮信任信号较弱") + (memorySignal > 0 ? "、承接记忆" : "") + (negative > 0 ? "、负面表达抵消" : ""));
         scoreReasons.add("resonance " + signed(resonanceDelta) + "：" + (resonance > 0 ? "共同计划/默契表达" : "默契信号较弱") + (memorySignal > 0 ? "、记忆回环" : "") + (event == null ? "" : "、剧情事件加成"));
+        if (informationalTurn && event == null) {
+            scoreReasons.add("knowledge_turn_cap: informational questions do not count as intimacy by themselves");
+        }
 
         RelationshipState next = new RelationshipState();
         next.closeness = Math.max(0, previousState.closeness + closenessDelta);
@@ -1134,6 +1893,45 @@ class RelationshipService {
             }
         }
         return count;
+    }
+
+    private boolean isInformationalTurn(String text) {
+        String safe = text == null ? "" : text;
+        boolean asksConcept = containsAny(safe, List.of(
+                "\u4e3a\u4ec0\u4e48",
+                "\u4ec0\u4e48\u539f\u56e0",
+                "\u7406\u8bba",
+                "\u539f\u7406",
+                "\u89e3\u91ca",
+                "\u8bb2\u8bb2",
+                "\u4f8b\u5b50",
+                "\u662f\u4ec0\u4e48\u610f\u601d",
+                "\u600e\u4e48\u7406\u89e3",
+                "\u5982\u4f55\u7406\u89e3"
+        ));
+        boolean relational = containsAny(safe, List.of(
+                "\u559c\u6b22\u6211",
+                "\u60f3\u6211",
+                "\u6211\u4eec",
+                "\u7ea6",
+                "\u4e00\u8d77",
+                "\u4ee5\u540e",
+                "\u8ba4\u771f",
+                "\u966a"
+        ));
+        return asksConcept && !relational;
+    }
+
+    private boolean containsAny(String text, List<String> keywords) {
+        if (text == null || keywords == null) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int clamp(int value, int min, int max) {
@@ -1433,6 +2231,8 @@ class ChatOrchestrator {
     private final MemoryService memoryService;
     private final RelationshipService relationshipService;
     private final EventEngine eventEngine;
+    private final DynamicStoryEventService dynamicStoryEventService;
+    private final WorldInfoService worldInfoService;
     private final CompositeLlmClient llmClient;
     private final SafetyService safetyService;
     private final AnalyticsService analyticsService;
@@ -1546,6 +2346,68 @@ class ChatOrchestrator {
             RelationshipCalibrationService relationshipCalibrationService,
             PlotDirectorAgentService plotDirectorAgentService
     ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                quickJudgeService,
+                relationshipCalibrationService,
+                plotDirectorAgentService,
+                new DynamicStoryEventService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            QuickJudgeService quickJudgeService,
+            RelationshipCalibrationService relationshipCalibrationService,
+            PlotDirectorAgentService plotDirectorAgentService,
+            DynamicStoryEventService dynamicStoryEventService
+    ) {
+        this(
+                repository,
+                agentConfigService,
+                memoryService,
+                relationshipService,
+                eventEngine,
+                llmClient,
+                safetyService,
+                analyticsService,
+                quickJudgeService,
+                relationshipCalibrationService,
+                plotDirectorAgentService,
+                dynamicStoryEventService,
+                new WorldInfoService()
+        );
+    }
+
+    ChatOrchestrator(
+            StateRepository repository,
+            AgentConfigService agentConfigService,
+            MemoryService memoryService,
+            RelationshipService relationshipService,
+            EventEngine eventEngine,
+            CompositeLlmClient llmClient,
+            SafetyService safetyService,
+            AnalyticsService analyticsService,
+            QuickJudgeService quickJudgeService,
+            RelationshipCalibrationService relationshipCalibrationService,
+            PlotDirectorAgentService plotDirectorAgentService,
+            DynamicStoryEventService dynamicStoryEventService,
+            WorldInfoService worldInfoService
+    ) {
         this.repository = repository;
         this.agentConfigService = agentConfigService;
         this.memoryService = memoryService;
@@ -1557,6 +2419,8 @@ class ChatOrchestrator {
         this.quickJudgeService = quickJudgeService == null ? new QuickJudgeService() : quickJudgeService;
         this.relationshipCalibrationService = relationshipCalibrationService == null ? new RelationshipCalibrationService() : relationshipCalibrationService;
         this.plotDirectorService = new EnhancedPlotDirectorService(plotDirectorAgentService);
+        this.dynamicStoryEventService = dynamicStoryEventService == null ? new DynamicStoryEventService() : dynamicStoryEventService;
+        this.worldInfoService = worldInfoService == null ? new WorldInfoService() : worldInfoService;
     }
 
     Map<String, Object> initVisitor(String visitorId) throws Exception {
@@ -1692,6 +2556,7 @@ class ChatOrchestrator {
             session.plotState = plotDirectorService.normalizePlot(null, createdAt);
             session.plotArcState = plotDirectorService.normalizeArc(null, createdAt);
             session.sceneState = sceneDirectorService.normalize(null, createdAt);
+            session.memoryPaneState = createEmptyMemoryPane(createdAt);
             session.presenceState = presenceHeartbeatService.normalizePresence(null, createdAt);
             session.tensionState = boundaryResponseService.normalize(null, createdAt);
             session.pendingChoices = new ArrayList<>();
@@ -1708,6 +2573,9 @@ class ChatOrchestrator {
             opening.tokenUsage = 0;
             opening.fallbackUsed = false;
             state.messages.add(opening);
+            session.lastAssistantMessageText = opening.text;
+            session.lastAssistantMessageAt = opening.createdAt;
+            session.lastAssistantAwaitsUserReply = false;
 
             analyticsService.recordEvent(state, "session_start", Map.of(
                     "visitorId", visitorId,
@@ -1722,6 +2590,26 @@ class ChatOrchestrator {
     Map<String, Object> getSessionState(String sessionId) throws Exception {
         AppState state = repository.getState();
         return buildSessionPayload(state, sessionId);
+    }
+
+    Map<String, Object> updateMemoryPane(Map<String, Object> payload) throws Exception {
+        return repository.transact(state -> {
+            String visitorId = Json.asString(payload.get("visitorId"));
+            String sessionId = Json.asString(payload.get("sessionId"));
+            SessionRecord session = findSession(state, sessionId);
+            validateSessionOwner(session, visitorId, Instant.now());
+            ensureSessionState(session);
+            SessionMemoryPaneState pane = normalizeMemoryPane(session.memoryPaneState, IsoTimes.now());
+            if (payload.containsKey("frozen")) {
+                pane.frozen = Json.asBoolean(payload.get("frozen"));
+            }
+            if (payload.containsKey("manualNote")) {
+                pane.manualNote = excerpt(blankTo(Json.asString(payload.get("manualNote")), "").trim(), 220);
+            }
+            pane.updatedAt = IsoTimes.now();
+            session.memoryPaneState = pane;
+            return buildSessionPayload(state, session.id);
+        });
     }
 
     Map<String, Object> exportSessionDebugData(String sessionId) throws Exception {
@@ -1909,6 +2797,8 @@ class ChatOrchestrator {
             RealityAudit realityAudit = passRealityAudit();
             HumanizationAudit humanizationAudit = emptyHumanizationAudit();
             List<MemoryIntentBinding> memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, null);
+            SessionMemoryPaneState memoryPaneForPrompt = normalizeMemoryPane(session.memoryPaneState, messageCreatedAt);
+            List<WorldInfoActivation> worldInfoActivations = List.of();
 
             if (inspection.blocked) {
                 quickJudgeDecision = QuickJudgeDecision.none("blocked_by_safety");
@@ -1923,6 +2813,19 @@ class ChatOrchestrator {
                         "safety"
                 );
             } else {
+                worldInfoActivations = worldInfoService.activate(agent, session, userMessage, shortTerm, turnContext);
+                session.lastWorldInfoActivations = worldInfoActivations;
+                worldInfoService.refreshStoryCandidates(agent, session, worldInfoActivations);
+                dynamicStoryEventService.refresh(agent, session, userMessage, turnContext, messageCreatedAt);
+                DynamicStoryEventTask dynamicStoryEventTask = dynamicStoryEventService.startRemote(
+                        agent,
+                        session,
+                        userMessage,
+                        turnContext,
+                        shortTerm,
+                        session.userTurnCount + 1
+                );
+                registerLateDynamicStoryEvents(session.id, dynamicStoryEventTask);
                 StoryEvent candidateEvent = eventEngine.findTriggeredEvent(agent, session, userMessage);
                 StoryEvent scoringEvent = candidateEvent != null && candidateEvent.keyChoiceEvent ? null : candidateEvent;
                 AffectionScoreResult affectionScoreResult = affectionJudgeService.evaluateTurn(
@@ -2028,7 +2931,7 @@ class ChatOrchestrator {
                 MemoryRecall recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
                 memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, recall);
                 String currentUserMood = memoryService.detectMood(userMessage);
-                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState);
+                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState, turnContext);
                 searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
                 realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
                 uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
@@ -2051,11 +2954,6 @@ class ChatOrchestrator {
                         plotDecision.replySource,
                         messageCreatedAt
                 );
-                String responseCadence = memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
-                String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent)
-                        + " 当前记忆使用模式：" + memoryUsePlan.useMode
-                        + "。原因：" + memoryUsePlan.relevanceReason).trim();
-
                 // Spend the extra quick-judge wait budget only when the main reply is
                 // about to be sent, instead of blocking earlier local planning steps.
                 quickJudgeDecision = quickJudgeService.resolve(quickJudgeTask, quickJudgeService.resolveBudgetMs(quickJudgeWaitMs, quickJudgeTask));
@@ -2094,7 +2992,7 @@ class ChatOrchestrator {
                 turnContext.updatedAt = messageCreatedAt;
                 applyContinuityToTurnContext(turnContext, dialogueContinuity);
                 applyUnderstandingToTurnContext(turnContext, turnUnderstanding);
-                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState);
+                searchDecision = searchDecisionService.decide(userMessage, plotDecision.replySource, plotDecision.nextSceneState, intentState, turnContext);
                 searchGroundingSummary = realityGuardService.groundingFromDecision(searchDecision);
                 realityEnvelope = realityGuardService.buildEnvelope(timeContext, weatherContext, plotDecision.nextSceneState, searchGroundingSummary);
                 uncertaintyState = buildUncertaintyState(intentState, searchDecision, plotGateDecision, messageCreatedAt);
@@ -2115,6 +3013,30 @@ class ChatOrchestrator {
                         nextTension,
                         plotGateDecision,
                         plotDecision.replySource,
+                        messageCreatedAt
+                );
+                memoryUsePlan = memoryService.planMemoryUse(session.memorySummary, userMessage, plotDecision.replySource, plotDecision.sceneFrame);
+                longTermSummary = memoryService.getTieredSummaryText(session.memorySummary);
+                recall = sanitizeMemoryRecall(memoryService.recallRelevantMemories(session.memorySummary, userMessage, 2));
+                memoryIntentBindings = buildMemoryIntentBindings(memoryUsePlan, recall);
+                currentUserMood = memoryService.detectMood(userMessage);
+                worldInfoActivations = worldInfoService.activate(agent, session, userMessage, shortTerm, turnContext);
+                session.lastWorldInfoActivations = worldInfoActivations;
+                worldInfoService.refreshStoryCandidates(agent, session, worldInfoActivations);
+                String responseCadence = memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
+                String responseDirective = (memoryService.buildTieredResponseDirective(session.memorySummary, userMessage, relationship.nextState, triggeredEvent)
+                        + " 当前记忆使用模式：" + memoryUsePlan.useMode
+                        + "。原因：" + memoryUsePlan.relevanceReason).trim();
+                memoryPaneForPrompt = buildSessionMemoryPane(
+                        session,
+                        userMessage,
+                        "",
+                        plotDecision.nextSceneState,
+                        dialogueContinuity,
+                        turnContext,
+                        pendingRepairCue,
+                        quickJudgeDecision,
+                        memoryUsePlan,
                         messageCreatedAt
                 );
 
@@ -2150,7 +3072,9 @@ class ChatOrchestrator {
                         plotGateDecision,
                         dialogueContinuity,
                         pendingRepairCue,
-                        turnContext
+                        turnContext,
+                        memoryPaneForPrompt,
+                        worldInfoActivations
                 ));
                 mainReplyFinishedAtNanos = System.nanoTime();
 
@@ -2171,6 +3095,7 @@ class ChatOrchestrator {
                         realityAudit
                 );
 
+                List<ContextSlot> promptSlotsUsed = llmReply.promptSlotsUsed;
                 InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
                 if (outputInspection.blocked) {
                     llmReply = new LlmResponse(
@@ -2180,7 +3105,8 @@ class ChatOrchestrator {
                             0,
                             outputInspection.reason,
                             true,
-                            "fallback"
+                            "fallback",
+                            promptSlotsUsed
                     );
                 }
             }
@@ -2193,7 +3119,7 @@ class ChatOrchestrator {
             String rawSpeechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
             assistantEntry.sceneText = selectSceneText(plotDecision.sceneText, llmReply.sceneText, rawSpeechText, plotDecision.replySource);
             assistantEntry.actionText = llmReply.actionText;
-            assistantEntry.speechText = removeSceneTextFromSpeech(rawSpeechText, assistantEntry.sceneText);
+            assistantEntry.speechText = cleanAssistantSpeechForDisplay(rawSpeechText, assistantEntry.sceneText);
             assistantEntry.text = assistantEntry.speechText;
             assistantEntry.createdAt = replyCreatedAt;
             assistantEntry.emotionTag = llmReply.emotionTag;
@@ -2203,7 +3129,24 @@ class ChatOrchestrator {
             assistantEntry.triggeredEventId = triggeredEvent == null ? null : triggeredEvent.id;
             assistantEntry.affectionDelta = relationship.affectionDelta.total;
             assistantEntry.replySource = plotDecision.replySource;
+            assistantEntry.promptSlotsUsed = copyPromptSlots(llmReply.promptSlotsUsed);
+            assistantEntry.promptRawText = renderPromptPreview(assistantEntry.promptSlotsUsed, shortTerm, userMessage);
             state.messages.add(assistantEntry);
+            session.lastAssistantMessageText = assistantEntry.speechText;
+            session.lastAssistantMessageAt = assistantEntry.createdAt;
+            session.lastAssistantAwaitsUserReply = assistantAwaitsUserReply(assistantEntry.speechText);
+            session.memoryPaneState = buildSessionMemoryPane(
+                    session,
+                    userMessage,
+                    assistantEntry.speechText,
+                    plotDecision.nextSceneState,
+                    dialogueContinuity,
+                    turnContext,
+                    pendingRepairCue,
+                    quickJudgeDecision,
+                    memoryUsePlan,
+                    replyCreatedAt
+            );
 
             session.lastActiveAt = replyCreatedAt;
             session.memoryExpireAt = memoryService.createMemoryExpiry(Instant.parse(replyCreatedAt));
@@ -2232,10 +3175,30 @@ class ChatOrchestrator {
                         relationship.nextState.relationshipStage,
                         replyCreatedAt
                 );
+                session.memorySummary = memoryService.settleOpenLoopsAfterAssistant(
+                        session.memorySummary,
+                        userMessage,
+                        assistantEntry.speechText,
+                        turnContext,
+                        dialogueContinuity,
+                        replyCreatedAt
+                );
                 session.memorySummary.lastMemoryUseMode = memoryUsePlan.useMode;
                 session.memorySummary.lastMemoryRelevanceReason = memoryUsePlan.relevanceReason;
             }
             session.memorySummary.lastResponseCadence = inspection.blocked ? session.memorySummary.lastResponseCadence : memoryService.determineResponseCadence(userMessage, relationship.nextState, triggeredEvent);
+            session.memoryPaneState = buildSessionMemoryPane(
+                    session,
+                    userMessage,
+                    assistantEntry.speechText,
+                    plotDecision.nextSceneState,
+                    dialogueContinuity,
+                    turnContext,
+                    pendingRepairCue,
+                    quickJudgeDecision,
+                    memoryUsePlan,
+                    replyCreatedAt
+            );
 
             if (triggeredEvent != null) {
                 session.storyEventProgress.lastTriggeredTitle = triggeredEvent.title;
@@ -2300,7 +3263,10 @@ class ChatOrchestrator {
             response.put("turn_context", turnContextMap(session.lastTurnContext));
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
             response.put("quick_judge_status", quickJudgeStatusMap(session.lastQuickJudgeStatus));
+            response.put("memory_pane_state", memoryPaneStateMap(session.memoryPaneState));
+            response.put("world_info_activations", worldInfoActivationMaps(session.lastWorldInfoActivations));
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
+            response.put("plot_director_input", plotDecision.plotDirectorInput == null ? Map.of() : plotDecision.plotDirectorInput);
             response.put("tension_state", tensionStateMap(session.tensionState));
             response.put("emotion_state", emotionStateMap(session.emotionState));
             response.put("plot_progress", plotStateMap(session.plotState));
@@ -2337,13 +3303,16 @@ class ChatOrchestrator {
             int draftLength = Json.asInt(payload.get("draftLength"), 0);
             String lastInputAt = Json.asString(payload.get("lastInputAt"));
             String clientTime = Json.asString(payload.get("clientTime"));
-            String plotPressureMode = plotPressureMode(payload.get("plotPressureMode"));
+            String requestedPlotPressureMode = Json.asString(payload.get("plotPressureMode"));
             String nowIso = clientTime == null || clientTime.isBlank() ? IsoTimes.now() : clientTime;
             Instant now = Instant.parse(nowIso);
 
             SessionRecord session = findSession(state, sessionId);
             validateSessionOwner(session, visitorId, now);
             ensureSessionState(session);
+            String plotPressureMode = requestedPlotPressureMode == null || requestedPlotPressureMode.isBlank()
+                    ? plotPressureMode(session.plotPressureMode)
+                    : plotPressureMode(requestedPlotPressureMode);
             session.plotPressureMode = plotPressureMode;
             VisitorRecord visitor = requireVisitor(state, visitorId);
 
@@ -2533,6 +3502,21 @@ class ChatOrchestrator {
 
             responseDirective = (responseDirective + heartbeatSelfContextDirective(heartbeatAssistantMessage)).trim();
 
+            SessionMemoryPaneState memoryPaneForPrompt = buildSessionMemoryPane(
+                    session,
+                    heartbeatAnchorMessage,
+                    "",
+                    plotDecision.nextSceneState,
+                    dialogueContinuity,
+                    heartbeatTurnContext,
+                    pendingRepairCue,
+                    pendingQuickJudgeCorrection,
+                    memoryUsePlan,
+                    nowIso
+            );
+            List<WorldInfoActivation> worldInfoActivations = worldInfoService.activate(agent, session, heartbeatAnchorMessage, shortTerm, heartbeatTurnContext);
+            session.lastWorldInfoActivations = worldInfoActivations;
+            worldInfoService.refreshStoryCandidates(agent, session, worldInfoActivations);
             LlmResponse llmReply = llmClient.generateReply(new LlmRequest(
                     agent,
                     session.relationshipState,
@@ -2564,7 +3548,9 @@ class ChatOrchestrator {
                     plotGateDecision,
                     dialogueContinuity,
                     pendingRepairCue,
-                    heartbeatTurnContext
+                    heartbeatTurnContext,
+                    memoryPaneForPrompt,
+                    worldInfoActivations
             ));
 
             RealityGuardResult guardResult = realityGuardService.auditAndRepair(
@@ -2586,6 +3572,7 @@ class ChatOrchestrator {
 
             InputInspection outputInspection = safetyService.inspectAssistantOutput(llmReply.replyText);
             if (outputInspection.blocked) {
+                List<ContextSlot> promptSlotsUsed = llmReply.promptSlotsUsed;
                 llmReply = new LlmResponse(
                         llmClient.buildFallbackReply(agent, outputInspection.reason),
                         "guarded",
@@ -2593,7 +3580,8 @@ class ChatOrchestrator {
                         0,
                         outputInspection.reason,
                         true,
-                        "fallback"
+                        "fallback",
+                        promptSlotsUsed
                 );
             }
 
@@ -2604,7 +3592,7 @@ class ChatOrchestrator {
             String rawSpeechText = llmReply.speechText == null || llmReply.speechText.isBlank() ? llmReply.replyText : llmReply.speechText;
             proactiveEntry.sceneText = selectSceneText(plotDecision.sceneText, llmReply.sceneText, rawSpeechText, plotDecision.replySource);
             proactiveEntry.actionText = llmReply.actionText;
-            proactiveEntry.speechText = removeSceneTextFromSpeech(rawSpeechText, proactiveEntry.sceneText);
+            proactiveEntry.speechText = cleanAssistantSpeechForDisplay(rawSpeechText, proactiveEntry.sceneText);
             proactiveEntry.text = proactiveEntry.speechText;
             proactiveEntry.createdAt = nowIso;
             proactiveEntry.emotionTag = llmReply.emotionTag;
@@ -2612,7 +3600,24 @@ class ChatOrchestrator {
             proactiveEntry.tokenUsage = llmReply.tokenUsage;
             proactiveEntry.fallbackUsed = llmReply.fallbackUsed;
             proactiveEntry.replySource = presenceResult.replySource;
+            proactiveEntry.promptSlotsUsed = copyPromptSlots(llmReply.promptSlotsUsed);
+            proactiveEntry.promptRawText = renderPromptPreview(proactiveEntry.promptSlotsUsed, shortTerm, heartbeatAnchorMessage);
             state.messages.add(proactiveEntry);
+            session.lastAssistantMessageText = proactiveEntry.speechText;
+            session.lastAssistantMessageAt = proactiveEntry.createdAt;
+            session.lastAssistantAwaitsUserReply = assistantAwaitsUserReply(proactiveEntry.speechText);
+            session.memoryPaneState = buildSessionMemoryPane(
+                    session,
+                    heartbeatAnchorMessage,
+                    proactiveEntry.speechText,
+                    plotDecision.nextSceneState,
+                    dialogueContinuity,
+                    heartbeatTurnContext,
+                    pendingRepairCue,
+                    pendingQuickJudgeCorrection,
+                    memoryUsePlan,
+                    nowIso
+            );
 
             session.emotionState = nextEmotion;
             session.tensionState = nextTension;
@@ -2628,7 +3633,9 @@ class ChatOrchestrator {
             session.lastPlotGateDecision = plotGateDecision;
             session.dialogueContinuityState = dialogueContinuity;
             session.lastTurnContext = heartbeatTurnContext;
-            session.lastQuickJudgeStatus = quickJudgeStatusFrom(QuickJudgeDecision.none("not_applicable_presence"), nowIso);
+            session.lastQuickJudgeStatus = pendingQuickJudgeCorrection.shouldApply()
+                    ? quickJudgeStatusFrom(pendingQuickJudgeCorrection, nowIso)
+                    : quickJudgeStatusFrom(QuickJudgeDecision.none("not_applicable_presence"), nowIso);
             if (plotDecision.advanced) {
                 session.storyEventProgress.lastTriggeredTitle = "剧情推进 · " + plotDecision.nextPlotState.plotProgress;
                 session.storyEventProgress.lastTriggeredTheme = plotDecision.sceneFrame;
@@ -2655,9 +3662,12 @@ class ChatOrchestrator {
             response.put("scene_frame", session.plotState.sceneFrame);
             response.put("reply_source", presenceResult.replySource);
             response.put("plot_director_decision", plotDecision.plotDirectorReason);
+            response.put("plot_director_input", plotDecision.plotDirectorInput == null ? Map.of() : plotDecision.plotDirectorInput);
             response.put("turn_context", turnContextMap(session.lastTurnContext));
             response.put("dialogue_continuity", dialogueContinuityMap(session.dialogueContinuityState));
             response.put("quick_judge_status", quickJudgeStatusMap(session.lastQuickJudgeStatus));
+            response.put("memory_pane_state", memoryPaneStateMap(session.memoryPaneState));
+            response.put("world_info_activations", worldInfoActivationMaps(session.lastWorldInfoActivations));
             response.put("run_status", session.plotArcState == null ? "" : session.plotArcState.runStatus);
             response.put("checkpoint_ready", session.plotArcState != null && session.plotArcState.checkpointReady);
             response.put("arc_summary_preview", arcSummaryMap(session.plotArcState == null ? null : session.plotArcState.latestArcSummary));
@@ -2727,6 +3737,9 @@ class ChatOrchestrator {
             assistantEntry.triggeredEventId = event.id;
             assistantEntry.replySource = "choice_result";
             state.messages.add(assistantEntry);
+            session.lastAssistantMessageText = assistantEntry.speechText;
+            session.lastAssistantMessageAt = assistantEntry.createdAt;
+            session.lastAssistantAwaitsUserReply = assistantAwaitsUserReply(assistantEntry.speechText);
 
             session.relationshipState = nextState;
             session.emotionState = affectionJudgeService.applyChoiceOutcome(session.emotionState, selectedChoice, nextState, nowIso);
@@ -2829,10 +3842,12 @@ class ChatOrchestrator {
         TimeContext timeContext = realityContextService.buildTimeContext(visitor, IsoTimes.now());
         WeatherContext weatherContext = realityContextService.buildWeatherContext(visitor, IsoTimes.now());
 
+        List<ConversationMessage> sessionMessages = getSessionMessages(state, session.id);
         List<Map<String, Object>> history = new ArrayList<>();
-        for (ConversationMessage message : getSessionMessages(state, session.id)) {
+        for (ConversationMessage message : sessionMessages) {
             history.add(messageMap(message));
         }
+        ConversationMessage latestPromptMessage = latestAssistantWithPromptSlots(sessionMessages);
 
         Map<String, Object> agentMap = new LinkedHashMap<>();
         agentMap.put("id", agent.id);
@@ -2908,6 +3923,8 @@ class ChatOrchestrator {
         payload.put("relationshipState", relationshipMap);
         payload.put("memorySummary", memoryMap);
         payload.put("storyEventProgress", eventProgressMap);
+        payload.put("dynamicStoryEvents", storyEventMaps(session.dynamicStoryEvents));
+        payload.put("worldInfoActivations", worldInfoActivationMaps(session.lastWorldInfoActivations));
         payload.put("emotionState", emotionStateMap(session.emotionState));
         payload.put("tensionState", tensionStateMap(session.tensionState));
         payload.put("plotState", plotStateMap(session.plotState));
@@ -2921,9 +3938,15 @@ class ChatOrchestrator {
         payload.put("lastPlotGateDecision", plotGateDecisionMap(session.lastPlotGateDecision));
         payload.put("lastTurnContext", turnContextMap(session.lastTurnContext));
         payload.put("dialogueContinuityState", dialogueContinuityMap(session.dialogueContinuityState));
+        payload.put("memoryPaneState", memoryPaneStateMap(session.memoryPaneState));
+        payload.put("lastPromptSlotSummary", contextSlotSummary(latestPromptMessage == null ? null : latestPromptMessage.promptSlotsUsed));
+        payload.put("lastPromptSlotsUsed", contextSlotMaps(latestPromptMessage == null ? null : latestPromptMessage.promptSlotsUsed));
+        payload.put("lastPromptSlotMessageId", latestPromptMessage == null ? "" : blankTo(latestPromptMessage.id, ""));
+        payload.put("lastPromptRawText", latestPromptMessage == null ? "" : blankTo(latestPromptMessage.promptRawText, ""));
         payload.put("lastQuickJudgeStatus", quickJudgeStatusMap(session.lastQuickJudgeStatus));
         payload.put("pendingQuickJudgeCorrection", quickJudgeDecisionMap(session.pendingQuickJudgeCorrection));
         payload.put("pendingQuickJudgeCorrectionAt", blankTo(session.pendingQuickJudgeCorrectionAt, ""));
+        payload.put("pendingQuickJudgeSourceTurn", session.pendingQuickJudgeSourceTurn);
         payload.put("pendingRepairCue", pendingRepairCueMap(session.pendingRepairCue));
         payload.put("pendingRelationshipCalibration", relationshipCalibrationMap(session.pendingRelationshipCalibration));
         payload.put("pendingRelationshipCalibrationAt", blankTo(session.pendingRelationshipCalibrationAt, ""));
@@ -2942,6 +3965,22 @@ class ChatOrchestrator {
         payload.put("pendingEventContext", session.pendingEventContext);
         payload.put("lastProactiveMessageAt", session.lastProactiveMessageAt);
         return payload;
+    }
+
+    private ConversationMessage latestAssistantWithPromptSlots(List<ConversationMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return null;
+        }
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ConversationMessage message = messages.get(index);
+            if (message == null || !"assistant".equals(message.role)) {
+                continue;
+            }
+            if (message.promptSlotsUsed != null && !message.promptSlotsUsed.isEmpty()) {
+                return message;
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> debugSummary(Map<String, Object> sessionPayload, List<ConversationMessage> messages) {
@@ -2987,7 +4026,7 @@ class ChatOrchestrator {
                 currentTurn = new LinkedHashMap<>();
                 assistantReplies = new ArrayList<>();
                 currentTurn.put("turnIndex", turnIndex);
-                currentTurn.put("userMessage", messageMap(message));
+                currentTurn.put("userMessage", debugMessageMap(message));
                 continue;
             }
             if (currentTurn == null) {
@@ -2996,7 +4035,7 @@ class ChatOrchestrator {
                 currentTurn.put("userMessage", Map.of());
                 assistantReplies = new ArrayList<>();
             }
-            assistantReplies.add(messageMap(message));
+            assistantReplies.add(debugMessageMap(message));
         }
         if (currentTurn != null) {
             currentTurn.put("assistantReplies", assistantReplies);
@@ -3019,6 +4058,7 @@ class ChatOrchestrator {
         snapshot.put("plotArcState", sessionPayload.getOrDefault("plotArcState", Map.of()));
         snapshot.put("plotGate", sessionPayload.getOrDefault("lastPlotGateDecision", Map.of()));
         snapshot.put("scene", sessionPayload.getOrDefault("sceneState", Map.of()));
+        snapshot.put("worldInfo", sessionPayload.getOrDefault("worldInfoActivations", List.of()));
         snapshot.put("humanizationAudit", sessionPayload.getOrDefault("lastHumanizationAudit", Map.of()));
         snapshot.put("realityAudit", sessionPayload.getOrDefault("lastRealityAudit", Map.of()));
         return snapshot;
@@ -3075,6 +4115,22 @@ class ChatOrchestrator {
         if (session.storyEventProgress.eventCooldownUntilTurn == null) {
             session.storyEventProgress.eventCooldownUntilTurn = new LinkedHashMap<>();
         }
+        if (session.dynamicStoryEvents == null) {
+            session.dynamicStoryEvents = new ArrayList<>();
+        } else {
+            session.dynamicStoryEvents.removeIf(Objects::isNull);
+            while (session.dynamicStoryEvents.size() > 6) {
+                session.dynamicStoryEvents.remove(session.dynamicStoryEvents.size() - 1);
+            }
+        }
+        if (session.lastWorldInfoActivations == null) {
+            session.lastWorldInfoActivations = new ArrayList<>();
+        } else {
+            session.lastWorldInfoActivations.removeIf(Objects::isNull);
+            while (session.lastWorldInfoActivations.size() > 4) {
+                session.lastWorldInfoActivations.remove(session.lastWorldInfoActivations.size() - 1);
+            }
+        }
         if (session.pendingChoices == null) {
             session.pendingChoices = new ArrayList<>();
         }
@@ -3085,16 +4141,264 @@ class ChatOrchestrator {
         session.presenceState = presenceHeartbeatService.normalizePresence(session.presenceState, session.createdAt);
         session.tensionState = boundaryResponseService.normalize(session.tensionState, session.createdAt);
         session.dialogueContinuityState = dialogueContinuityService.normalize(session.dialogueContinuityState, session.createdAt);
+        session.memoryPaneState = normalizeMemoryPane(session.memoryPaneState, session.createdAt);
         session.plotPressureMode = plotPressureMode(session.plotPressureMode);
+    }
+
+    private SessionMemoryPaneState createEmptyMemoryPane(String nowIso) {
+        SessionMemoryPaneState pane = new SessionMemoryPaneState();
+        pane.updatedAt = blankTo(nowIso, IsoTimes.now());
+        return pane;
+    }
+
+    private SessionMemoryPaneState normalizeMemoryPane(SessionMemoryPaneState pane, String nowIso) {
+        SessionMemoryPaneState next = pane == null ? new SessionMemoryPaneState() : pane;
+        if (next.pinnedFacts == null) next.pinnedFacts = new ArrayList<>();
+        if (next.workingFacts == null) next.workingFacts = new ArrayList<>();
+        if (next.pendingPlans == null) next.pendingPlans = new ArrayList<>();
+        if (next.sceneAnchors == null) next.sceneAnchors = new ArrayList<>();
+        if (next.loreNotes == null) next.loreNotes = new ArrayList<>();
+        if (next.repairNotes == null) next.repairNotes = new ArrayList<>();
+        if (next.assistantObligations == null) next.assistantObligations = new ArrayList<>();
+        if (next.updatedAt == null || next.updatedAt.isBlank()) {
+            next.updatedAt = blankTo(nowIso, IsoTimes.now());
+        }
+        return next;
+    }
+
+    private SessionMemoryPaneState buildSessionMemoryPane(
+            SessionRecord session,
+            String userMessage,
+            String assistantReply,
+            SceneState sceneState,
+            DialogueContinuityState continuity,
+            TurnContext turnContext,
+            PendingRepairCue pendingRepairCue,
+            QuickJudgeDecision quickJudgeDecision,
+            MemoryUsePlan memoryUsePlan,
+            String nowIso
+    ) {
+        SessionMemoryPaneState previous = normalizeMemoryPane(session == null ? null : session.memoryPaneState, nowIso);
+        if (previous.frozen) {
+            SessionMemoryPaneState frozen = copyMemoryPane(previous);
+            frozen.updatedAt = blankTo(nowIso, frozen.updatedAt);
+            return frozen;
+        }
+
+        SessionMemoryPaneState pane = new SessionMemoryPaneState();
+        pane.manualNote = blankTo(previous.manualNote, "");
+        pane.frozen = previous.frozen;
+        pane.updatedAt = blankTo(nowIso, IsoTimes.now());
+
+        MemorySummary memory = session == null ? null : session.memorySummary;
+        addMemoryPaneFacts(pane, memory);
+        addWorldInfoNotes(pane, session == null ? null : session.lastWorldInfoActivations);
+        addWorkingFact(pane.workingFacts, "用户最近意图", memory == null ? "" : memory.lastUserIntent, 4);
+        addWorkingFact(pane.workingFacts, "用户最近情绪", memory == null ? "" : memory.lastUserMood, 4);
+        addWorkingFact(pane.workingFacts, "回复节奏", memory == null ? "" : memory.lastResponseCadence, 4);
+        addWorkingFact(pane.workingFacts, "本轮用户输入", excerpt(userMessage, 42), 5);
+        addWorkingFact(pane.workingFacts, "角色上一句", excerpt(assistantReply, 42), 5);
+        if (memoryUsePlan != null) {
+            addWorkingFact(pane.workingFacts, "记忆使用", blankTo(memoryUsePlan.useMode, "hold") + " / " + blankTo(memoryUsePlan.relevanceReason, ""), 5);
+        }
+
+        if (continuity != null) {
+            addWorkingFact(pane.pendingPlans, "共同目标", continuity.currentObjective, 5);
+            addWorkingFact(pane.pendingPlans, "已确认计划", continuity.acceptedPlan, 5);
+            addWorkingFact(pane.pendingPlans, "下一步承接", continuity.nextBestMove, 5);
+            addListFacts(pane.pendingPlans, "禁止违背", continuity.mustNotContradict, 3, 5);
+            addWorkingFact(pane.assistantObligations, "上一轮问题", continuity.lastAssistantQuestion, 4);
+        }
+        if (turnContext != null) {
+            if (!blankTo(turnContext.userReplyAct, "").isBlank()) {
+                addWorkingFact(pane.pendingPlans, "用户回应动作", turnContext.userReplyAct + " (" + turnContext.userReplyActConfidence + ")", 5);
+            }
+            if (!blankTo(turnContext.sceneMoveKind, "").isBlank()) {
+                addWorkingFact(pane.sceneAnchors, "移动判断", turnContext.sceneMoveKind + (blankTo(turnContext.sceneMoveTarget, "").isBlank() ? "" : " -> " + turnContext.sceneMoveTarget), 5);
+            }
+            addWorkingFact(pane.assistantObligations, "当前义务", summarizeMemoryPaneObligation(turnContext.assistantObligation), 5);
+            addConflictRepairNotes(pane.repairNotes, turnContext.localConflicts);
+            pane.directorNote = "replySource=" + blankTo(turnContext.replySource, "user_turn")
+                    + "；plotAction=" + blankTo(turnContext.plotDirectorAction, "hold")
+                    + "；plotPressure=" + turnContext.plotPressure;
+        }
+
+        SceneState scene = sceneState == null ? (session == null ? null : session.sceneState) : sceneState;
+        if (scene != null) {
+            addWorkingFact(pane.sceneAnchors, "地点", sceneLocationLabel(scene), 5);
+            addWorkingFact(pane.sceneAnchors, "互动", scene.interactionMode, 5);
+            addWorkingFact(pane.sceneAnchors, "场景摘要", excerpt(scene.sceneSummary, 48), 5);
+        }
+
+        if (pendingRepairCue != null) {
+            addWorkingFact(pane.repairNotes, "待自然修正", pendingRepairCue.instruction, 5);
+        }
+        if (quickJudgeDecision != null && quickJudgeDecision.shouldApply()) {
+            addWorkingFact(pane.repairNotes, "远程轻判断", quickJudgeDecision.nextBestMove, 5);
+            addWorkingFact(pane.pendingPlans, "远程共享目标", quickJudgeDecision.sharedObjective, 5);
+        }
+        return pane;
+    }
+
+    private SessionMemoryPaneState copyMemoryPane(SessionMemoryPaneState source) {
+        SessionMemoryPaneState copy = new SessionMemoryPaneState();
+        if (source == null) {
+            return copy;
+        }
+        copy.pinnedFacts = new ArrayList<>(source.pinnedFacts == null ? List.of() : source.pinnedFacts);
+        copy.workingFacts = new ArrayList<>(source.workingFacts == null ? List.of() : source.workingFacts);
+        copy.pendingPlans = new ArrayList<>(source.pendingPlans == null ? List.of() : source.pendingPlans);
+        copy.sceneAnchors = new ArrayList<>(source.sceneAnchors == null ? List.of() : source.sceneAnchors);
+        copy.loreNotes = new ArrayList<>(source.loreNotes == null ? List.of() : source.loreNotes);
+        copy.repairNotes = new ArrayList<>(source.repairNotes == null ? List.of() : source.repairNotes);
+        copy.assistantObligations = new ArrayList<>(source.assistantObligations == null ? List.of() : source.assistantObligations);
+        copy.directorNote = source.directorNote;
+        copy.manualNote = source.manualNote;
+        copy.frozen = source.frozen;
+        copy.updatedAt = source.updatedAt;
+        return copy;
+    }
+
+    private void addMemoryPaneFacts(SessionMemoryPaneState pane, MemorySummary memory) {
+        if (pane == null || memory == null) {
+            return;
+        }
+        addListFacts(pane.pinnedFacts, "偏好", memory.preferences, 2, 6);
+        addListFacts(pane.pinnedFacts, "身份", memory.identityNotes, 2, 6);
+        addListFacts(pane.pinnedFacts, "约定", memory.promises, 2, 6);
+        addListFacts(pane.pinnedFacts, "重要记忆", memory.strongMemories, 2, 6);
+        if (memory.factMemories != null) {
+            int count = 0;
+            for (FactMemoryItem item : memory.factMemories) {
+                if (item == null || blankTo(item.value, "").isBlank()) {
+                    continue;
+                }
+                addWorkingFact(pane.pinnedFacts, blankTo(item.key, "fact"), item.value, 6);
+                count++;
+                if (count >= 3) {
+                    break;
+                }
+            }
+        }
+    }
+
+    private void addWorldInfoNotes(SessionMemoryPaneState pane, List<WorldInfoActivation> activations) {
+        if (pane == null || activations == null || activations.isEmpty()) {
+            return;
+        }
+        for (WorldInfoActivation activation : activations) {
+            if (activation == null) {
+                continue;
+            }
+            String title = blankTo(activation.title, activation.id);
+            String evidence = activation.matchedKeywords == null || activation.matchedKeywords.isEmpty()
+                    ? blankTo(activation.source, "candidate")
+                    : String.join("、", activation.matchedKeywords);
+            addWorkingFact(pane.loreNotes, title, evidence + " / score=" + activation.score, 4);
+        }
+    }
+
+    private void addListFacts(List<String> target, String label, List<String> values, int maxItems, int limit) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        int count = 0;
+        for (String value : values) {
+            addWorkingFact(target, label, value, limit);
+            count++;
+            if (count >= maxItems) {
+                break;
+            }
+        }
+    }
+
+    private void addConflictRepairNotes(List<String> target, List<LocalConflict> conflicts) {
+        if (conflicts == null || conflicts.isEmpty()) {
+            return;
+        }
+        for (LocalConflict conflict : conflicts) {
+            if (conflict == null) {
+                continue;
+            }
+            addWorkingFact(
+                    target,
+                    blankTo(conflict.type, "local_conflict"),
+                    blankTo(conflict.recommendedAction, ""),
+                    5
+            );
+        }
+    }
+
+    private void addWorkingFact(List<String> target, String label, String value, int limit) {
+        if (target == null) {
+            return;
+        }
+        String safeValue = blankTo(value, "").trim();
+        if (safeValue.isBlank()) {
+            return;
+        }
+        String text = blankTo(label, "备注") + "：" + safeValue;
+        target.remove(text);
+        target.add(0, text);
+        while (target.size() > limit) {
+            target.remove(target.size() - 1);
+        }
+    }
+
+    private String summarizeMemoryPaneObligation(AssistantObligation obligation) {
+        if (obligation == null || blankTo(obligation.type, "").isBlank()) {
+            return "";
+        }
+        return blankTo(obligation.type, "none")
+                + " / priority=" + obligation.priority
+                + (blankTo(obligation.reason, "").isBlank() ? "" : " / " + obligation.reason);
+    }
+
+    private String joinNonBlank(List<String> values, String delimiter) {
+        if (values == null || values.isEmpty()) {
+            return "";
+        }
+        List<String> filtered = new ArrayList<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                filtered.add(value.trim());
+            }
+        }
+        return String.join(delimiter, filtered);
+    }
+
+    private String sceneLocationLabel(SceneState scene) {
+        if (scene == null) {
+            return "";
+        }
+        List<String> values = new ArrayList<>();
+        values.add(scene.location);
+        values.add(scene.subLocation);
+        return joinNonBlank(values, " / ");
+    }
+
+    private String excerpt(String text, int maxLength) {
+        String safe = blankTo(text, "").trim();
+        if (safe.length() <= maxLength) {
+            return safe;
+        }
+        return safe.substring(0, Math.max(0, maxLength)) + "…";
     }
 
     private QuickJudgeDecision consumePendingQuickJudgeCorrection(SessionRecord session) {
         if (session == null || session.pendingQuickJudgeCorrection == null) {
             return QuickJudgeDecision.none("no_pending_correction");
         }
+        if (session.pendingQuickJudgeSourceTurn > 0 && session.pendingQuickJudgeSourceTurn < session.userTurnCount) {
+            session.pendingQuickJudgeCorrection = null;
+            session.pendingQuickJudgeCorrectionAt = "";
+            session.pendingQuickJudgeSourceTurn = 0;
+            return QuickJudgeDecision.none("stale_pending_correction");
+        }
         QuickJudgeDecision decision = session.pendingQuickJudgeCorrection;
         session.pendingQuickJudgeCorrection = null;
         session.pendingQuickJudgeCorrectionAt = "";
+        session.pendingQuickJudgeSourceTurn = 0;
         return decision;
     }
 
@@ -3219,6 +4523,41 @@ class ChatOrchestrator {
         });
     }
 
+    private void registerLateDynamicStoryEvents(String sessionId, DynamicStoryEventTask task) {
+        if (sessionId == null || sessionId.isBlank() || task == null || task.future == null) {
+            return;
+        }
+        task.future.thenAccept(events -> {
+            if (events == null || events.isEmpty()) {
+                return;
+            }
+            try {
+                storeLateDynamicStoryEvents(sessionId, events, task.sourceTurn);
+            } catch (Exception ignored) {
+                // Dynamic story candidates are advisory and must never fail chat.
+            }
+        });
+    }
+
+    private void storeLateDynamicStoryEvents(String sessionId, List<StoryEvent> events, int sourceTurn) throws Exception {
+        if (events == null || events.isEmpty()) {
+            return;
+        }
+        repository.transact(state -> {
+            for (SessionRecord item : state.sessions) {
+                if (sessionId.equals(item.id)) {
+                    ensureSessionState(item);
+                    if (sourceTurn > 0 && item.userTurnCount > sourceTurn + 3) {
+                        break;
+                    }
+                    dynamicStoryEventService.mergeRemoteEvents(item, events);
+                    break;
+                }
+            }
+            return null;
+        });
+    }
+
     private void registerLateQuickJudgeCorrection(String sessionId, QuickJudgeTask task) {
         if (sessionId == null || sessionId.isBlank() || task == null || task.future == null) {
             return;
@@ -3256,8 +4595,12 @@ class ChatOrchestrator {
             for (SessionRecord item : state.sessions) {
                 if (sessionId.equals(item.id)) {
                     ensureSessionState(item);
+                    if (task != null && task.sourceTurn > 0 && item.userTurnCount > task.sourceTurn) {
+                        break;
+                    }
                     item.pendingQuickJudgeCorrection = decision;
                     item.pendingQuickJudgeCorrectionAt = IsoTimes.now();
+                    item.pendingQuickJudgeSourceTurn = task == null ? 0 : task.sourceTurn;
                     item.pendingRepairCue = buildPendingRepairCue(decision, item.pendingQuickJudgeCorrectionAt);
                     item.lastQuickJudgeStatus = quickJudgeStatusFrom(decision, item.pendingQuickJudgeCorrectionAt);
                     applyQuickJudgeTriggerInfo(item.lastQuickJudgeStatus, task);
@@ -3331,8 +4674,48 @@ class ChatOrchestrator {
                 "title", event.title,
                 "theme", event.theme,
                 "category", event.category,
+                "dynamic", event.id != null && event.id.startsWith("dynamic_"),
                 "next_direction", event.nextDirection
         );
+    }
+
+    private List<Map<String, Object>> storyEventMaps(List<StoryEvent> events) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (events == null) {
+            return result;
+        }
+        for (StoryEvent event : events) {
+            if (event != null) {
+                result.add(eventMap(event));
+            }
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> worldInfoActivationMaps(List<WorldInfoActivation> activations) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (activations == null) {
+            return result;
+        }
+        for (WorldInfoActivation activation : activations) {
+            if (activation == null) {
+                continue;
+            }
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id", blankTo(activation.id, ""));
+            map.put("title", blankTo(activation.title, ""));
+            map.put("source", blankTo(activation.source, ""));
+            map.put("matchedKeywords", activation.matchedKeywords == null ? List.of() : activation.matchedKeywords);
+            map.put("tags", activation.tags == null ? List.of() : activation.tags);
+            map.put("score", activation.score);
+            map.put("priority", activation.priority);
+            map.put("depth", activation.depth);
+            map.put("role", blankTo(activation.role, "system"));
+            map.put("eventCandidate", activation.eventCandidate);
+            map.put("content", blankTo(activation.content, ""));
+            result.add(map);
+        }
+        return result;
     }
 
     private List<Map<String, Object>> serializeChoices(List<ChoiceOption> choices) {
@@ -3368,7 +4751,146 @@ class ChatOrchestrator {
         map.put("triggeredEventId", message.triggeredEventId);
         map.put("affectionDelta", message.affectionDelta);
         map.put("replySource", message.replySource);
+        map.put("promptRawText", blankTo(message.promptRawText, ""));
         return map;
+    }
+
+    private Map<String, Object> debugMessageMap(ConversationMessage message) {
+        Map<String, Object> map = messageMap(message);
+        map.put("promptSlotSummary", contextSlotSummary(message == null ? null : message.promptSlotsUsed));
+        map.put("promptSlotsUsed", contextSlotMaps(message == null ? null : message.promptSlotsUsed));
+        return map;
+    }
+
+    private List<ContextSlot> copyPromptSlots(List<ContextSlot> slots) {
+        if (slots == null || slots.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<ContextSlot> copy = new ArrayList<>();
+        for (ContextSlot slot : slots) {
+            if (slot == null) {
+                continue;
+            }
+            ContextSlot next = new ContextSlot(
+                    blankTo(slot.key, ""),
+                    blankTo(slot.content, ""),
+                    blankTo(slot.position, "SYSTEM"),
+                    blankTo(slot.role, "system"),
+                    slot.depth,
+                    slot.priority,
+                    slot.tokenBudget
+            );
+            next.included = slot.included;
+            copy.add(next);
+        }
+        return copy;
+    }
+
+    private String renderPromptPreview(List<ContextSlot> slots, List<ConversationSnippet> shortTerm, String userCue) {
+        if (slots != null || slots == null) {
+            PromptBundle bundle = PromptBundle.empty();
+            if (slots != null) {
+                for (ContextSlot slot : slots) {
+                    if (slot == null) {
+                        continue;
+                    }
+                    ContextSlot next = new ContextSlot(
+                            blankTo(slot.key, ""),
+                            blankTo(slot.content, ""),
+                            blankTo(slot.position, "SYSTEM"),
+                            blankTo(slot.role, "system"),
+                            slot.depth,
+                            slot.priority,
+                            slot.tokenBudget
+                    );
+                    next.included = slot.included;
+                    bundle.add(next);
+                }
+            }
+            String preview = bundle.renderPromptPreview(shortTerm, blankTo(userCue, ""));
+            return preview.isBlank() ? "[user]\n" + blankTo(userCue, "") : preview;
+        }
+        StringBuilder builder = new StringBuilder();
+        builder.append("[system]\n");
+        boolean hasSystem = false;
+        if (slots != null) {
+            for (ContextSlot slot : slots) {
+                if (slot == null || !slot.included || !"SYSTEM".equals(blankTo(slot.position, "SYSTEM"))) {
+                    continue;
+                }
+                hasSystem = true;
+                builder.append("### ").append(blankTo(slot.key, "slot")).append('\n')
+                        .append(blankTo(slot.content, "")).append("\n\n");
+            }
+        }
+        if (!hasSystem) {
+            builder.append("暂无系统上下文。\n\n");
+        }
+        if (shortTerm != null && !shortTerm.isEmpty()) {
+            for (ConversationSnippet snippet : shortTerm) {
+                if (snippet == null || blankTo(snippet.text, "").isBlank()) {
+                    continue;
+                }
+                builder.append('[').append(blankTo(snippet.role, "user")).append("]\n")
+                        .append(snippet.text).append("\n\n");
+            }
+        }
+        builder.append("[user]\n").append(blankTo(userCue, ""));
+        return builder.toString().trim();
+    }
+
+    private List<Map<String, Object>> contextSlotMaps(List<ContextSlot> slots) {
+        if (slots == null || slots.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ContextSlot slot : slots) {
+            if (slot == null) {
+                continue;
+            }
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("key", blankTo(slot.key, ""));
+            map.put("position", blankTo(slot.position, "SYSTEM"));
+            map.put("role", blankTo(slot.role, "system"));
+            map.put("depth", slot.depth);
+            map.put("priority", slot.priority);
+            map.put("tokenBudget", slot.tokenBudget);
+            map.put("included", slot.included);
+            map.put("content", blankTo(slot.content, ""));
+            result.add(map);
+        }
+        return result;
+    }
+
+    private Map<String, Object> contextSlotSummary(List<ContextSlot> slots) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        int total = 0;
+        int included = 0;
+        int excluded = 0;
+        int includedTokens = 0;
+        int excludedTokens = 0;
+        if (slots != null) {
+            for (ContextSlot slot : slots) {
+                if (slot == null) {
+                    continue;
+                }
+                total++;
+                int tokenBudget = Math.max(0, slot.tokenBudget);
+                if (slot.included) {
+                    included++;
+                    includedTokens += tokenBudget;
+                } else {
+                    excluded++;
+                    excludedTokens += tokenBudget;
+                }
+            }
+        }
+        summary.put("total", total);
+        summary.put("included", included);
+        summary.put("excluded", excluded);
+        summary.put("includedTokenBudget", includedTokens);
+        summary.put("excludedTokenBudget", excludedTokens);
+        return summary;
     }
 
     private Map<String, Object> intentStateMap(IntentState intentState) {
@@ -3436,6 +4958,15 @@ class ChatOrchestrator {
         context.assistantObligation = understanding.assistantObligation;
         context.recommendedQuickJudgeTier = blankTo(understanding.recommendedQuickJudgeTier, "");
         context.shouldAskQuickJudge = understanding.shouldAskQuickJudge;
+        context.turnMission = blankTo(understanding.turnMission, "");
+        context.turnMissionReason = blankTo(understanding.turnMissionReason, "");
+        context.turnMissionPriority = understanding.turnMissionPriority;
+        context.turnMissionCandidates = understanding.turnMissionCandidates == null ? new ArrayList<>() : new ArrayList<>(understanding.turnMissionCandidates);
+        context.localGuards = understanding.localGuards == null ? new ArrayList<>() : new ArrayList<>(understanding.localGuards);
+        context.referentialFollowup = understanding.referentialFollowup;
+        context.referentSource = blankTo(understanding.referentSource, "");
+        context.referentAnchor = blankTo(understanding.referentAnchor, "");
+        context.referentReason = blankTo(understanding.referentReason, "");
         context.userReplyActCandidates = understanding.candidates == null ? new ArrayList<>() : new ArrayList<>(understanding.candidates);
         context.localConflicts = understanding.localConflicts == null ? new ArrayList<>() : new ArrayList<>(understanding.localConflicts);
         context.sceneMoveKind = blankTo(understanding.sceneMoveKind, "");
@@ -3451,6 +4982,14 @@ class ChatOrchestrator {
         target.plotGap = source.plotGap;
         target.plotSignal = source.plotSignal;
         target.plotPressure = source.plotPressure;
+        target.plotDecisionGap = source.plotDecisionGap;
+        target.plotDecisionSignal = source.plotDecisionSignal;
+        target.plotDecisionPressure = source.plotDecisionPressure;
+        target.plotRelationshipPressure = source.plotRelationshipPressure;
+        target.plotScenePressure = source.plotScenePressure;
+        target.plotOpenLoopPressure = source.plotOpenLoopPressure;
+        target.plotEventPressure = source.plotEventPressure;
+        target.plotSilencePressure = source.plotSilencePressure;
         target.plotSceneSignal = source.plotSceneSignal;
         target.plotRelationshipSignal = source.plotRelationshipSignal;
         target.plotEventSignal = source.plotEventSignal;
@@ -3624,6 +5163,14 @@ class ChatOrchestrator {
         map.put("plotGap", context.plotGap);
         map.put("plotSignal", context.plotSignal);
         map.put("plotPressure", context.plotPressure);
+        map.put("plotDecisionGap", context.plotDecisionGap);
+        map.put("plotDecisionSignal", context.plotDecisionSignal);
+        map.put("plotDecisionPressure", context.plotDecisionPressure);
+        map.put("plotRelationshipPressure", context.plotRelationshipPressure);
+        map.put("plotScenePressure", context.plotScenePressure);
+        map.put("plotOpenLoopPressure", context.plotOpenLoopPressure);
+        map.put("plotEventPressure", context.plotEventPressure);
+        map.put("plotSilencePressure", context.plotSilencePressure);
         map.put("plotSceneSignal", context.plotSceneSignal);
         map.put("plotRelationshipSignal", context.plotRelationshipSignal);
         map.put("plotEventSignal", context.plotEventSignal);
@@ -3643,6 +5190,15 @@ class ChatOrchestrator {
         map.put("assistantObligation", assistantObligationMap(context.assistantObligation));
         map.put("recommendedQuickJudgeTier", blankTo(context.recommendedQuickJudgeTier, ""));
         map.put("shouldAskQuickJudge", context.shouldAskQuickJudge);
+        map.put("turnMission", blankTo(context.turnMission, ""));
+        map.put("turnMissionReason", blankTo(context.turnMissionReason, ""));
+        map.put("turnMissionPriority", context.turnMissionPriority);
+        map.put("turnMissionCandidates", turnMissionCandidateMaps(context.turnMissionCandidates));
+        map.put("localGuards", context.localGuards == null ? List.of() : context.localGuards);
+        map.put("referentialFollowup", context.referentialFollowup);
+        map.put("referentSource", blankTo(context.referentSource, ""));
+        map.put("referentAnchor", blankTo(context.referentAnchor, ""));
+        map.put("referentReason", blankTo(context.referentReason, ""));
         map.put("userReplyActCandidates", userReplyActCandidateMaps(context.userReplyActCandidates));
         map.put("localConflicts", localConflictMaps(context.localConflicts));
         map.put("continuityObjective", blankTo(context.continuityObjective, ""));
@@ -3651,6 +5207,25 @@ class ChatOrchestrator {
         map.put("sceneTransitionNeeded", context.sceneTransitionNeeded);
         map.put("continuityGuards", context.continuityGuards == null ? List.of() : context.continuityGuards);
         map.put("updatedAt", blankTo(context.updatedAt, ""));
+        return map;
+    }
+
+    private Map<String, Object> memoryPaneStateMap(SessionMemoryPaneState pane) {
+        if (pane == null) {
+            return Map.of();
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("pinnedFacts", pane.pinnedFacts == null ? List.of() : pane.pinnedFacts);
+        map.put("workingFacts", pane.workingFacts == null ? List.of() : pane.workingFacts);
+        map.put("pendingPlans", pane.pendingPlans == null ? List.of() : pane.pendingPlans);
+        map.put("sceneAnchors", pane.sceneAnchors == null ? List.of() : pane.sceneAnchors);
+        map.put("loreNotes", pane.loreNotes == null ? List.of() : pane.loreNotes);
+        map.put("repairNotes", pane.repairNotes == null ? List.of() : pane.repairNotes);
+        map.put("assistantObligations", pane.assistantObligations == null ? List.of() : pane.assistantObligations);
+        map.put("directorNote", blankTo(pane.directorNote, ""));
+        map.put("manualNote", blankTo(pane.manualNote, ""));
+        map.put("frozen", pane.frozen);
+        map.put("updatedAt", blankTo(pane.updatedAt, ""));
         return map;
     }
 
@@ -3686,6 +5261,25 @@ class ChatOrchestrator {
             map.put("score", candidate.score);
             map.put("confidence", candidate.confidence);
             map.put("evidence", candidate.evidence == null ? List.of() : candidate.evidence);
+            result.add(map);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> turnMissionCandidateMaps(List<TurnMissionCandidate> candidates) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (candidates == null) {
+            return result;
+        }
+        for (TurnMissionCandidate candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("mission", blankTo(candidate.mission, ""));
+            map.put("reason", blankTo(candidate.reason, ""));
+            map.put("confidence", candidate.confidence);
+            map.put("guardCandidate", candidate.guardCandidate);
             result.add(map);
         }
         return result;
@@ -4336,13 +5930,82 @@ class ChatOrchestrator {
         }
         normalized = removeLeadingScenePrefix(normalized, scene);
         List<String> kept = new ArrayList<>();
-        for (String sentence : splitDisplaySentences(normalized)) {
+        for (String sentence : splitDisplaySentencesSafe(normalized)) {
             if (!isDuplicateSceneSentence(sentence, scene)) {
                 kept.add(sentence.trim());
             }
         }
         String cleaned = String.join(" ", kept).trim().replaceAll("\\s+", " ");
         return trimStrayScenePunctuation(cleaned);
+    }
+
+    private String cleanAssistantSpeechForDisplay(String speechText, String sceneText) {
+        String cleaned = removeSceneTextFromSpeech(speechText, sceneText);
+        cleaned = removeContradictorySceneMovement(cleaned, sceneText);
+        cleaned = removeStandaloneNarrationSentences(cleaned);
+        return cleaned.isBlank() ? removeSceneTextFromSpeech(speechText, sceneText) : cleaned;
+    }
+
+    private String removeContradictorySceneMovement(String speechText, String sceneText) {
+        String normalized = speechText == null ? "" : speechText.trim().replaceAll("\\s+", " ");
+        String scene = sceneText == null ? "" : sceneText;
+        if (normalized.isBlank() || scene.isBlank()) {
+            return normalized;
+        }
+        String compactScene = scene.replaceAll("\\s+", "");
+        if (compactScene.contains("湖边") && normalized.contains("走到湖边") && normalized.contains("刚从这里出来")) {
+            return trimStrayScenePunctuation(normalized.replaceFirst("^.*?走到湖边[^。！？!?]*[。！？!?，,、]?", ""));
+        }
+        return normalized;
+    }
+
+    private String removeStandaloneNarrationSentences(String speechText) {
+        String normalized = speechText == null ? "" : speechText.trim().replaceAll("\\s+", " ");
+        if (normalized.isBlank()) {
+            return "";
+        }
+        List<String> kept = new ArrayList<>();
+        for (String sentence : splitDisplaySentencesSafe(normalized)) {
+            String trimmed = sentence.trim();
+            if (!looksLikeStandaloneNarration(trimmed)) {
+                kept.add(trimmed);
+            }
+        }
+        return trimStrayScenePunctuation(String.join(" ", kept).trim().replaceAll("\\s+", " "));
+    }
+
+    private boolean looksLikeStandaloneNarration(String sentence) {
+        String text = sentence == null ? "" : sentence.trim();
+        if (text.isBlank()) {
+            return false;
+        }
+        String compact = text.replaceAll("\\s+", "");
+        if (compact.length() > 90) {
+            return false;
+        }
+        boolean thirdPersonScene = startsWithAny(compact, List.of(
+                "\u4f60\u4eec", "\u4e24\u4eba", "\u573a\u666f", "\u753b\u9762", "\u955c\u5934",
+                "\u4f60\u4eec\u7684\u76ee\u5149", "\u4ea4\u8c08\u7684\u8282\u594f", "\u811a\u6b65",
+                "\u5fae\u98ce", "\u6e56\u9762", "\u6c14\u6c1b"
+        ));
+        boolean sceneVerb = sceneContainsAny(compact, List.of(
+                "\u987a\u7740", "\u5f80", "\u8d70\u53bb", "\u8d70\u5230", "\u6765\u5230", "\u843d\u5728",
+                "\u6162\u4e86\u4e0b\u6765", "\u6362\u4e86\u6c14\u6c1b", "\u8ddf\u7740\u6362\u4e86", "\u62c2\u8fc7"
+        ));
+        boolean hasSpeechCue = sceneContainsAny(compact, List.of(
+                "\u6211", "\u55ef", "\u597d", "\u4e0d\u8fc7", "\u5176\u5b9e", "\u4f60\u5462", "\u6211\u4eec"
+        ));
+        return thirdPersonScene && sceneVerb && !hasSpeechCue;
+    }
+
+    private boolean startsWithAny(String text, List<String> prefixes) {
+        String safe = text == null ? "" : text;
+        for (String prefix : prefixes) {
+            if (!prefix.isBlank() && safe.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String removeLeadingScenePrefix(String speechText, String sceneText) {
@@ -4427,6 +6090,28 @@ class ChatOrchestrator {
             char ch = text.charAt(index);
             current.append(ch);
             if (ch == '。' || ch == '！' || ch == '？' || ch == '!' || ch == '?') {
+                String sentence = current.toString().trim();
+                if (!sentence.isBlank()) {
+                    sentences.add(sentence);
+                }
+                current.setLength(0);
+            }
+        }
+        String rest = current.toString().trim();
+        if (!rest.isBlank()) {
+            sentences.add(rest);
+        }
+        return sentences;
+    }
+
+    private List<String> splitDisplaySentencesSafe(String text) {
+        List<String> sentences = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        String safe = text == null ? "" : text;
+        for (int index = 0; index < safe.length(); index++) {
+            char ch = safe.charAt(index);
+            current.append(ch);
+            if (ch == '\u3002' || ch == '\uFF01' || ch == '\uFF1F' || ch == '!' || ch == '?' || ch == '\n') {
                 String sentence = current.toString().trim();
                 if (!sentence.isBlank()) {
                     sentences.add(sentence);
@@ -4529,6 +6214,22 @@ class ChatOrchestrator {
                 + "\"\u3002\u5982\u679c\u4e0a\u4e00\u53e5\u5df2\u7ecf\u627f\u63a5\u6216\u6267\u884c\u4e86\u4e00\u4e2a\u8ba1\u5212\uff0c"
                 + "\u5fc3\u8df3\u53ea\u80fd\u987a\u7740\u5df2\u7ecf\u53d1\u751f\u7684\u52a8\u4f5c\u8f7b\u8f7b\u7eed\u4e0a\uff0c"
                 + "\u4e0d\u8981\u91cd\u65b0\u8be2\u95ee\u662f\u5426\u8981\u505a\u540c\u4e00\u4ef6\u4e8b\u3002";
+    }
+
+    private boolean assistantAwaitsUserReply(String text) {
+        String compact = blankTo(text, "").replaceAll("\\s+", "");
+        if (compact.isBlank()) {
+            return false;
+        }
+        boolean hasQuestionMark = compact.contains("?") || compact.contains("\uff1f");
+        boolean directToUser = compact.contains("\u4f60") || compact.contains("\u4f60\u4eec");
+        boolean questionCue = compact.contains("\u5417")
+                || compact.contains("\u4f60\u5462")
+                || compact.contains("\u8981\u4e0d\u8981")
+                || compact.contains("\u60f3\u4e0d\u60f3")
+                || compact.contains("\u613f\u4e0d\u613f\u610f")
+                || compact.contains("\u53ef\u4ee5\u5417");
+        return hasQuestionMark || directToUser && questionCue;
     }
 
     private String quickJudgeMode(Map<String, Object> payload) {

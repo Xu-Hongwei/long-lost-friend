@@ -83,6 +83,7 @@ C:\Users\Administrator\Desktop\chat
 新增测试数据与工具：
 
 - `testdata/local-rules/`：本地规则测试样例库，保存改写后的 CampusPulse 风格 JSONL 样例。
+- `testdata/memory-pane-replay/`：会话记忆窗格与 Prompt Stack 固定回放脚本，用于验证 `memory.session`、场景锚点、心跳和主回复上下文稳定性。
 - `tools/dataset-mining/`：从公开数据集标签/任务结构生成本地规则测试样例的辅助工具。
 - `raw-datasets/`：可选原始公开数据集下载目录，已加入 `.gitignore`，不应提交。
 
@@ -230,6 +231,7 @@ java-server/src/main/java/com/campuspulse/
 - `POST /api/visitor/context`
 - `POST /api/session/start`
 - `GET /api/session/state`
+- `POST /api/session/memory-pane`
 - `GET /api/session/export`
 - `POST /api/chat/send`
 - `POST /api/session/presence`
@@ -244,6 +246,7 @@ java-server/src/main/java/com/campuspulse/
 
 - `PORT`
 - `DASHSCOPE_*`
+- `DEEPSEEK_*`
 - `ARK_*`
 - `OPENAI_*`
 - `PLOT_LLM_*`
@@ -300,18 +303,38 @@ java-server/src/main/java/com/campuspulse/
 
 主要负责记忆提取、关系评分、安全检查和 LLM 降级组合。
 
-### 6.7 `ExpressiveLlmClient.java`
+### 6.7 `WorldInfoServices.java`
+
+可配置背景候选层，负责：
+
+- 读取 `data/world-info.json`，按角色、关系阶段、好感门槛和最近上下文激活候选背景。
+- 把关键词从“直接裁判”降级为“召回证据”：命中关键词只说明该背景可以进入候选，不直接决定当前轮转场、剧情推进或主回复行为。
+- 将高相关背景写入 `world.info` prompt slot 和 `memoryPaneState.loreNotes`，方便前端观察。
+- 可把配置里的 `eventCandidate` 转为动态剧情候选池条目，但仍需要后续剧情门控裁决。
+
+### 6.8 `ContextComposer.java`
+
+主回复上下文组装层，负责：
+
+- 通过 `ContextSlot / PromptBundle` 组装角色、关系、记忆、剧情、场景、Quick Judge 修正、WorldInfo、时间天气等上下文。
+- 将人设、记忆、剧情、场景、可配置背景和结构化理解拆成可导出的 prompt slots，方便复盘最终 prompt 由哪些模块贡献。
+- 新增 `memory.session` 会话工作记忆槽，用来承接当前几轮的事实、计划、场景锚点、角色义务、WorldInfo 候选和晚到修正；它比长期摘要更靠近当前轮，但仍由后端结构化生成。
+- 新增 `world.info` 候选背景槽，来源于 `data/world-info.json`。它只告诉主回复“可以自然借用哪些背景细节”，不能覆盖 `localGuards`、用户明确问题或当前事实。
+- `lastPromptSlotsUsed / lastPromptSlotSummary` 会随 session state 返回，非沉浸模式的 `Prompt Stack Viewer` 可直接查看最新主回复的 slot 注入与裁剪结果。
+- `PromptBundle` 会按优先级做轻量 token 预算治理；超长记忆等低优先级 slot 可被标记为 `included=false`，避免挤掉人设、结构化理解和回复规则。
+
+### 6.9 `ExpressiveLlmClient.java`
 
 主回复生成层，负责：
 
-- 组装角色、关系、记忆、剧情、场景、Quick Judge 修正、时间天气等上下文。
 - 调用远程模型或本地 mock。
+- 通过 `ContextComposer` 获取最终系统提示词和 `promptSlotsUsed`。
 - 解析 `[[SCENE]]...[[/SCENE]]`、兼容解析 `[[ACTION]]...[[/ACTION]]` 和正文。
 - 当前推荐只把纯场景转移放入 `[[SCENE]]`；角色动作应自然融合进正文，不再作为单独动作气泡展示。
 - 屏蔽内部模块名，避免回复里出现 `QuickJudge`、`意图修正`、系统提示词等内部实现。
 - 清洗重复句、重复场景、过度旁白和明显不自然表达。
 
-### 6.8 关系与事件
+### 6.10 关系与事件
 
 - `NarrativeRelationshipService.java`
   - 关系数值和关系阶段更新。
@@ -319,11 +342,14 @@ java-server/src/main/java/com/campuspulse/
 - `EventNarrativeRegistry.java`
   - 角色事件、路线反馈、剧情事件叙事。
 
-### 6.9 测试
+### 6.10 测试
 
 ```text
 java-server/src/test/java/com/campuspulse/
 ├─ SmokeTest.java
+├─ PromptSlotSimulationTest.java
+├─ MemoryPaneReplayTest.java
+├─ ExportReplayTool.java
 ├─ HumanizationRegressionTest.java
 └─ ClosedLoopAgentTest.java
 ```
@@ -331,6 +357,8 @@ java-server/src/test/java/com/campuspulse/
 测试重点：
 
 - API 基础链路。
+- 真实导出会话回放。
+- 会话记忆窗格与 Prompt Stack 固定回放。
 - 角色回复人性化回归。
 - 闭环剧情/关系/记忆行为。
 
@@ -437,9 +465,10 @@ POST /api/session/presence
 
 主回复优先级：
 
-1. 如果配置了 `DASHSCOPE_API_KEY` 或相关 `DASHSCOPE_*`，主回复优先使用 DashScope OpenAI-Compatible 链路。
-2. 未配置 DashScope 时，回退到 `ARK_*`。
-3. 再回退到 `OPENAI_*`。
+1. 如果配置了 `DEEPSEEK_API_KEY` 或相关 `DEEPSEEK_*`，主回复优先使用 DeepSeek OpenAI-Compatible 链路。
+2. 未配置 DeepSeek 时，如果配置了 `DASHSCOPE_API_KEY` 或相关 `DASHSCOPE_*`，主回复使用 DashScope OpenAI-Compatible 链路。
+3. 再回退到 `ARK_*`。
+4. 最后回退到 `OPENAI_*`。
 4. 没有可用远程模型或请求失败时，使用本地 mock。
 
 默认主回复模型：
@@ -456,6 +485,10 @@ qwen-plus-character
 - `DASHSCOPE_BASE_URL`
 - `DASHSCOPE_MODEL`
 - `DASHSCOPE_TIMEOUT_MS`
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_MODEL`
+- `DEEPSEEK_TIMEOUT_MS`
 - `ARK_API_KEY`
 - `ARK_MODEL`
 - `ARK_BASE_URL`

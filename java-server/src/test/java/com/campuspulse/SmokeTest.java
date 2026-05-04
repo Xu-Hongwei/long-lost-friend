@@ -53,9 +53,16 @@ public class SmokeTest {
         shouldUseDimensionGateForInternalStageUpdates(orchestrator);
         shouldApplyOnlyMeaningfulQuickJudgeCorrections();
         shouldKeepSceneSummaryWhenAlreadyAtTarget();
+        shouldAnchorReferentialFollowupBeforeSearch();
+        shouldKeepFuturePlanOutOfCurrentSceneTransition();
+        shouldBuildTransitionLineFromStructuredSceneCandidate();
+        shouldPreferDynamicStoryEventCandidates();
         shouldOfferChoiceInteraction(orchestrator);
         shouldApplyChoiceOutcome(orchestrator);
         shouldSoftBlockUnsafeInput(orchestrator);
+        shouldClassifyReplyConfusionAsMetaRepair();
+        PromptSlotSimulationTest.run();
+        MemoryPaneReplayTest.run();
         ClosedLoopAgentTest.run(orchestrator);
         HumanizationRegressionTest.run(orchestrator);
         System.out.println("Java smoke tests passed.");
@@ -233,9 +240,38 @@ public class SmokeTest {
         Map<String, Object> snapshot = orchestrator.exportSessionDebugData(String.valueOf(session.get("sessionId")));
         assertTrue("session_debug_snapshot".equals(String.valueOf(snapshot.get("purpose"))), "debug export should identify its purpose");
         assertTrue(castMap(snapshot.get("summary")).containsKey("quickJudgeStatus"), "debug export should include summary signals");
-        assertTrue(!Json.asArray(snapshot.get("turnTimeline")).isEmpty(), "debug export should include turn timeline");
+        List<Object> turnTimeline = Json.asArray(snapshot.get("turnTimeline"));
+        assertTrue(!turnTimeline.isEmpty(), "debug export should include turn timeline");
+        boolean foundPromptSlots = false;
+        for (Object turn : turnTimeline) {
+            for (Object reply : Json.asArray(castMap(turn).get("assistantReplies"))) {
+                Map<String, Object> assistantReply = castMap(reply);
+                if (!Json.asArray(assistantReply.get("promptSlotsUsed")).isEmpty()) {
+                    assertTrue(castMap(assistantReply.get("promptSlotSummary")).containsKey("included"), "debug export should include prompt slot summary");
+                    foundPromptSlots = true;
+                    break;
+                }
+            }
+            if (foundPromptSlots) {
+                break;
+            }
+        }
+        assertTrue(foundPromptSlots, "debug export should include prompt slots used");
         assertTrue(castMap(snapshot.get("latestSignals")).containsKey("turnContext"), "debug export should include latest signal snapshot");
-        assertTrue(castMap(snapshot.get("session")).containsKey("history"), "debug export should include full session payload");
+        Map<String, Object> sessionPayload = castMap(snapshot.get("session"));
+        assertTrue(sessionPayload.containsKey("history"), "debug export should include full session payload");
+        List<Object> latestPromptSlots = Json.asArray(sessionPayload.get("lastPromptSlotsUsed"));
+        assertTrue(!latestPromptSlots.isEmpty(), "session payload should expose latest prompt stack");
+        boolean foundSessionMemorySlot = false;
+        for (Object slotValue : latestPromptSlots) {
+            Map<String, Object> slot = castMap(slotValue);
+            if ("memory.session".equals(String.valueOf(slot.get("key")))) {
+                foundSessionMemorySlot = true;
+                assertTrue(Boolean.TRUE.equals(slot.get("included")), "memory.session should be included in latest prompt stack");
+                break;
+            }
+        }
+        assertTrue(foundSessionMemorySlot, "latest prompt stack should include memory.session");
     }
 
     private static void shouldPersistVisitorContext(ChatOrchestrator orchestrator) throws Exception {
@@ -273,7 +309,9 @@ public class SmokeTest {
         ));
 
         assertTrue(Boolean.TRUE.equals(castMap(result.get("presenceState")).get("online")), "presence should remain online");
-        assertTrue(result.get("proactive_message") != null, "presence heartbeat should be able to emit a proactive message");
+        assertTrue(result.get("proactive_message") != null
+                        || "awaiting_user_answer".equals(String.valueOf(result.get("blocked_reason"))),
+                "presence heartbeat should emit or intentionally wait for user answer");
     }
 
     private static void shouldHoldPlotOnEarlyTurns(ChatOrchestrator orchestrator) throws Exception {
@@ -464,6 +502,141 @@ public class SmokeTest {
         assertTrue(current.sceneSummary.equals(next.sceneSummary), "duplicate scene move should keep existing summary");
     }
 
+    private static void shouldAnchorReferentialFollowupBeforeSearch() {
+        TurnUnderstandingService understandingService = new TurnUnderstandingService();
+        SearchDecisionService searchDecisionService = new SearchDecisionService();
+        IntentState intentState = new IntentState();
+        intentState.primaryIntent = "question_check";
+        DialogueContinuityState continuity = new DialogueContinuityState();
+        SceneState sceneState = new SceneState();
+        List<ConversationSnippet> recentContext = List.of(
+                new ConversationSnippet("assistant", "好呀，我觉得那首诗有意思的地方，是它把离别写得很轻，却让人后劲很深。")
+        );
+
+        TurnUnderstandingState understanding = understandingService.understand(
+                "这是什么原因呢？",
+                recentContext,
+                intentState,
+                continuity,
+                sceneState,
+                IsoTimes.now()
+        );
+        assertTrue(understanding.referentialFollowup, "deictic follow-up should anchor to the last assistant message");
+        assertTrue(understanding.referentAnchor.contains("离别"), "referent anchor should preserve the last assistant topic");
+
+        TurnContext turnContext = new TurnContext();
+        turnContext.referentialFollowup = understanding.referentialFollowup;
+        turnContext.referentAnchor = understanding.referentAnchor;
+        SearchDecision anchored = searchDecisionService.decide("这是什么原因呢？", "user_turn", sceneState, intentState, turnContext);
+        assertTrue(!anchored.enabled && "referential_followup".equals(anchored.reason), "anchored follow-up should not trigger unrelated factual search");
+
+        TurnUnderstandingState standaloneUnderstanding = understandingService.understand(
+                "什么是认知失调？",
+                recentContext,
+                intentState,
+                continuity,
+                sceneState,
+                IsoTimes.now()
+        );
+        assertTrue(!standaloneUnderstanding.referentialFollowup, "standalone factual question should not be treated as a deictic follow-up");
+        SearchDecision standalone = searchDecisionService.decide("什么是认知失调？", "user_turn", sceneState, intentState, null);
+        assertTrue(standalone.enabled && "factual".equals(standalone.reason), "standalone factual question should still be searchable");
+    }
+
+    private static void shouldBuildTransitionLineFromStructuredSceneCandidate() {
+        PlotDirectorAgentService director = new PlotDirectorAgentService();
+        TurnContext context = new TurnContext();
+        context.sceneMoveKind = "move_to";
+        context.sceneMoveTarget = "图书馆";
+
+        PlotDirectorAgentDecision decision = director.decide(
+                "我们去图书馆吧",
+                "user_turn",
+                3,
+                0,
+                7,
+                true,
+                0,
+                0,
+                new EmotionState(),
+                new RelationshipState(),
+                new MemorySummary(),
+                context
+        );
+
+        assertTrue("transition_only".equals(decision.action), "explicit scene move should stay transition-only");
+        assertTrue(decision.transitionLine.contains("图书馆"), "transition line should use structured scene target");
+        assertTrue(!decision.transitionLine.contains("脚步都不自觉放轻"), "transition line should no longer come from hard-coded location template");
+    }
+
+    private static void shouldKeepFuturePlanOutOfCurrentSceneTransition() {
+        SceneMoveIntentService sceneMoveIntentService = new SceneMoveIntentService();
+        DialogueContinuityService continuityService = new DialogueContinuityService();
+        SceneState sceneState = new SceneState();
+        sceneState.location = "聊天现场";
+        sceneState.interactionMode = "face_to_face";
+
+        SceneMoveIntent futurePlan = sceneMoveIntentService.classify(
+                "多呆几天，我们一起去玩怎么样？",
+                new DialogueContinuityState(),
+                sceneState
+        );
+        assertTrue(!futurePlan.shouldMove, "future travel proposal should not change the current scene");
+        assertTrue("no_change".equals(futurePlan.moveType), "future travel proposal should stay in no_change scene axis");
+        assertTrue(!"聊天现场".equals(futurePlan.targetLocation), "future travel proposal should not use current scene as fake target");
+
+        DialogueContinuityState continuity = continuityService.update(
+                new DialogueContinuityState(),
+                "多呆几天，我们一起去玩怎么样？",
+                List.of(),
+                sceneState,
+                IsoTimes.now()
+        );
+        assertTrue(!continuity.sceneTransitionNeeded, "future travel plan should not require immediate scene transition");
+        assertTrue(continuity.currentObjective.contains("出去玩"), "future travel plan should still become shared objective");
+
+        SceneMoveIntent concreteMove = sceneMoveIntentService.classify(
+                "我们去图书馆吧",
+                new DialogueContinuityState(),
+                sceneState
+        );
+        assertTrue(concreteMove.shouldMove, "concrete local destination should still change scene");
+        assertTrue("图书馆".equals(concreteMove.targetLocation), "concrete local destination should keep target");
+
+        SceneMoveIntent externalDestination = sceneMoveIntentService.classify(
+                "那就去日光山谷吧",
+                continuity,
+                sceneState
+        );
+        assertTrue(!externalDestination.shouldMove, "external future destination should update plan without current scene jump");
+        assertTrue("日光山谷".equals(externalDestination.targetLocation), "external destination should be retained as plan target");
+    }
+
+    private static void shouldPreferDynamicStoryEventCandidates() {
+        EventEngine engine = new EventEngine();
+        AgentProfile agent = new AgentConfigService().getAgentById("healing");
+        SessionRecord session = new SessionRecord();
+        session.userTurnCount = 0;
+        session.relationshipState = new RelationshipState();
+        session.relationshipState.affectionScore = 0;
+        session.relationshipState.relationshipStage = "初识";
+        session.memorySummary = new MemorySummary();
+        session.storyEventProgress = new StoryEventProgress();
+        session.dynamicStoryEvents = new java.util.ArrayList<>();
+        session.dynamicStoryEvents.add(Domain.event(
+                "dynamic_test_library",
+                "临场图书馆候选",
+                1,
+                0,
+                "顺着用户刚刚提出的图书馆方向自然生成的临场事件。",
+                List.of("图书馆"),
+                2
+        ));
+
+        StoryEvent event = engine.findTriggeredEvent(agent, session, "我们去图书馆吧");
+        assertTrue(event != null && event.id.startsWith("dynamic_"), "dynamic story candidate should be preferred over static keyword pool");
+    }
+
     private static void shouldOfferChoiceInteraction(ChatOrchestrator orchestrator) throws Exception {
         Map<String, Object> visitor = orchestrator.initVisitor("");
         Map<String, Object> session = orchestrator.startSession((String) visitor.get("visitorId"), "healing");
@@ -539,6 +712,31 @@ public class SmokeTest {
         assertTrue(Boolean.TRUE.equals(result.get("fallback_used")), "unsafe input should use fallback");
         assertTrue(String.valueOf(result.get("reply_text")).length() > 0, "unsafe reply should redirect");
         assertTrue(((Number) relationshipState.get("affectionScore")).intValue() == 0, "unsafe input should not change affection");
+    }
+
+    private static void shouldClassifyReplyConfusionAsMetaRepair() {
+        IntentInferenceService service = new IntentInferenceService();
+        IntentState confused = service.infer(
+                "这是什么情况？",
+                List.of(new ConversationSnippet("assistant", "那……你觉得那边会有什么不一样的风景呢？")),
+                new RelationshipState(),
+                new SceneState(),
+                new RelationalTensionState(),
+                new MemorySummary(),
+                IsoTimes.now()
+        );
+        assertTrue("meta_repair".equals(confused.primaryIntent), "reply confusion should be classified as meta_repair");
+
+        IntentState weatherQuestion = service.infer(
+                "今天天气什么情况？",
+                List.of(new ConversationSnippet("assistant", "晚上操场人少，比较安静。")),
+                new RelationshipState(),
+                new SceneState(),
+                new RelationalTensionState(),
+                new MemorySummary(),
+                IsoTimes.now()
+        );
+        assertTrue(!"meta_repair".equals(weatherQuestion.primaryIntent), "weather question should not be classified as meta_repair");
     }
 
     @SuppressWarnings("unchecked")

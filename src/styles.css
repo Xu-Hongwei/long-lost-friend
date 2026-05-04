@@ -19,6 +19,7 @@ body,
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background: #0c0d19;
   font-family: "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   text-rendering: optimizeLegibility;

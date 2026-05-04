@@ -14,6 +14,7 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     private static final String SCENE_CLOSE = "[[/SCENE]]";
     private static final String ACTION_OPEN = "[[ACTION]]";
     private static final String ACTION_CLOSE = "[[/ACTION]]";
+    private final ContextComposer contextComposer = new ContextComposer();
 
     private static final class ReplyParts {
         final String replyText;
@@ -67,7 +68,8 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                     fallback.tokenUsage,
                     error.getClass().getSimpleName(),
                     true,
-                    "mock"
+                    "mock",
+                    fallback.promptSlotsUsed
             );
         }
     }
@@ -85,9 +87,15 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private LlmResponse generateMockReply(LlmRequest request) {
-        String rawReply = isHeartbeatProactive(request.replySource) && !shouldHeartbeatResumeThread(request)
-                ? buildProactiveReply(request)
-                : buildReactiveReply(request);
+        PromptBundle promptBundle = buildPromptBundle(request);
+        String rawReply;
+        if (isHeartbeatProactive(request.replySource)) {
+            rawReply = shouldHeartbeatResumeThread(request)
+                    ? buildHeartbeatResumeReply(request)
+                    : buildProactiveReply(request);
+        } else {
+            rawReply = buildReactiveReply(request);
+        }
         ReplyParts reply = shapeStructuredReply(rawReply);
         return new LlmResponse(
                 reply.replyText,
@@ -99,21 +107,34 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 Math.max(40, reply.replyText.length()),
                 null,
                 false,
-                "mock"
+                "mock",
+                promptBundle.slots
         );
     }
 
     private LlmResponse generateRemoteReply(LlmRequest request) throws Exception {
-        String systemPrompt = buildSystemPrompt(request);
+        PromptBundle promptBundle = buildPromptBundle(request);
         if (request.searchContext != null && !request.searchContext.isBlank()) {
-            return generateRemoteReplyWithSearch(request, systemPrompt);
+            return generateRemoteReplyWithSearch(request, promptBundle);
         }
-        List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", systemPrompt));
-        for (ConversationSnippet snippet : request.shortTermContext) {
-            messages.add(Map.of("role", snippet.role, "content", snippet.text));
+        List<Map<String, Object>> messages = promptMessagesToChatMaps(
+                promptBundle.renderMessages(request.shortTermContext, buildUserCue(request))
+        );
+
+        if (request.searchContext != null && request.searchContext.isBlank()) {
+        List<Object> input = new ArrayList<>();
+        input.clear();
+        for (PromptMessage message : promptBundle.renderMessages(
+                request.shortTermContext,
+                buildUserCue(request) + "\n鑱旂綉琛ュ厖涓婁笅鏂囷細" + request.searchContext
+        )) {
+            input.add(Map.of(
+                    "role", message.role,
+                    "content", List.of(Map.of("type", "input_text", "text", message.content))
+            ));
         }
-        messages.add(Map.of("role", "user", "content", buildUserCue(request)));
+
+        }
 
         String body = Json.stringify(Map.of(
                 "model", config.llmModel,
@@ -155,13 +176,18 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
                 null,
                 false,
-                "remote"
+                "remote",
+                promptBundle.slots
         );
     }
 
-    private LlmResponse generateRemoteReplyWithSearch(LlmRequest request, String systemPrompt) throws Exception {
+    private LlmResponse generateRemoteReplyWithSearch(LlmRequest request, PromptBundle promptBundle) throws Exception {
+        String systemPrompt = promptBundle.renderSystemPrompt();
         if (usesDashScopeChatSearch()) {
-            return generateRemoteReplyWithDashScopeSearch(request, systemPrompt);
+            return generateRemoteReplyWithDashScopeSearch(request, promptBundle);
+        }
+        if (usesDeepSeekChatCompletions()) {
+            return generateRemoteReplyWithDeepSeekSearchContext(request, promptBundle);
         }
         List<Object> input = new ArrayList<>();
         input.add(Map.of(
@@ -175,6 +201,17 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                         "text", buildUserCue(request) + "\n联网补充上下文：" + request.searchContext
                 ))
         ));
+
+        input.clear();
+        for (PromptMessage message : promptBundle.renderMessages(
+                request.shortTermContext,
+                buildUserCue(request) + "\n鑱旂綉琛ュ厖涓婁笅鏂囷細" + request.searchContext
+        )) {
+            input.add(Map.of(
+                    "role", message.role,
+                    "content", List.of(Map.of("type", "input_text", "text", message.content))
+            ));
+        }
 
         String body = Json.stringify(Map.of(
                 "model", config.llmModel,
@@ -213,11 +250,13 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
                 null,
                 false,
-                "remote"
+                "remote",
+                promptBundle.slots
         );
     }
 
-    private LlmResponse generateRemoteReplyWithDashScopeSearch(LlmRequest request, String systemPrompt) throws Exception {
+    private LlmResponse generateRemoteReplyWithDashScopeSearch(LlmRequest request, PromptBundle promptBundle) throws Exception {
+        String systemPrompt = promptBundle.renderSystemPrompt();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", systemPrompt));
         for (ConversationSnippet snippet : request.shortTermContext) {
@@ -227,6 +266,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 "role", "user",
                 "content", buildUserCue(request) + "\n联网补充上下文：" + request.searchContext
         ));
+
+        messages.clear();
+        messages.addAll(promptMessagesToChatMaps(promptBundle.renderMessages(
+                request.shortTermContext,
+                buildUserCue(request) + "\n鑱旂綉琛ュ厖涓婁笅鏂囷細" + request.searchContext
+        )));
 
         String body = Json.stringify(Map.of(
                 "model", config.llmModel,
@@ -269,8 +314,77 @@ class ExpressiveLlmClient extends CompositeLlmClient {
                 Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
                 null,
                 false,
-                "remote"
+                "remote",
+                promptBundle.slots
         );
+    }
+
+    private LlmResponse generateRemoteReplyWithDeepSeekSearchContext(LlmRequest request, PromptBundle promptBundle) throws Exception {
+        List<Map<String, Object>> messages = promptMessagesToChatMaps(promptBundle.renderMessages(
+                request.shortTermContext,
+                buildUserCue(request) + "\nSearch context:\n" + request.searchContext
+        ));
+
+        String body = Json.stringify(Map.of(
+                "model", config.llmModel,
+                "temperature", 0.88,
+                "messages", messages
+        ));
+
+        HttpURLConnection connection = (HttpURLConnection) URI.create(config.llmBaseUrl + "/chat/completions").toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setConnectTimeout((int) config.llmTimeout.toMillis());
+        connection.setReadTimeout((int) config.llmTimeout.toMillis());
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
+        connection.setRequestProperty("Authorization", "Bearer " + config.llmApiKey);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        int statusCode = connection.getResponseCode();
+        if (statusCode < 200 || statusCode >= 300) {
+            throw new IOException("LLM deepseek search-context request failed: " + statusCode);
+        }
+
+        String responseBody = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        Map<String, Object> payload = Json.asObject(Json.parse(responseBody));
+        List<Object> choices = Json.asArray(payload.get("choices"));
+        Map<String, Object> choice = Json.asObject(choices.get(0));
+        Map<String, Object> message = Json.asObject(choice.get("message"));
+        Map<String, Object> usage = payload.get("usage") == null ? Map.of() : Json.asObject(payload.get("usage"));
+        ReplyParts reply = shapeStructuredReply(Json.asString(message.get("content")).trim());
+
+        return new LlmResponse(
+                reply.replyText,
+                reply.sceneText,
+                reply.actionText,
+                reply.speechText,
+                inferEmotionTag(request),
+                "remote",
+                Json.asInt(usage.get("total_tokens"), reply.replyText.length()),
+                null,
+                false,
+                "remote",
+                promptBundle.slots
+        );
+    }
+
+    private List<Map<String, Object>> promptMessagesToChatMaps(List<PromptMessage> promptMessages) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (promptMessages == null) {
+            return messages;
+        }
+        for (PromptMessage message : promptMessages) {
+            if (message == null || message.content == null || message.content.isBlank()) {
+                continue;
+            }
+            messages.add(Map.of(
+                    "role", ContextSlot.normalizeRole(message.role),
+                    "content", message.content
+            ));
+        }
+        return messages;
     }
 
     private String buildReactiveReply(LlmRequest request) {
@@ -360,215 +474,50 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         return joinNonBlank(limitSentences(parts, 3));
     }
 
+    private String buildHeartbeatResumeReply(LlmRequest request) {
+        String actionLine = buildActionLine(request, false, false);
+        String lastAssistant = lastAssistantText(request);
+        List<String> parts = new ArrayList<>();
+        if (!actionLine.isBlank()) {
+            parts.add(wrapAction(actionLine));
+        }
+        if (request.pendingRepairCue != null) {
+            parts.add("刚才那句我可能把重点带偏了一点。");
+            parts.add("我们先回到你真正想说的地方，不用重新起头。");
+            return joinNonBlank(limitSentences(parts, 3));
+        }
+        if (compact(request.userMessage).contains("剧情")) {
+            parts.add("刚刚是我停得有点久了。");
+            parts.add("那我们就顺着现在这段路往前走一点，不把话题再绕回原处。");
+            return joinNonBlank(limitSentences(parts, 3));
+        }
+        if (containsAny(lastAssistant, List.of("去看看", "那边", "往前", "走走", "走到"))) {
+            parts.add("刚刚说往那边看看，那就先走过去。");
+            parts.add("你不用再确认一遍，我会接着刚才那句往下走。");
+            return joinNonBlank(limitSentences(parts, 3));
+        }
+        if (containsQuestion(lastAssistant)) {
+            parts.add("我刚刚问得有点急了。");
+            parts.add("你不用马上答，我们先把这会儿的节奏放慢一点。");
+            return joinNonBlank(limitSentences(parts, 3));
+        }
+        if (request.dialogueContinuityState != null
+                && !blankTo(request.dialogueContinuityState.currentObjective, "").isBlank()) {
+            parts.add("刚才那个方向还在。");
+            parts.add("我们就顺着它往前一点，不重新开一个话题。");
+            return joinNonBlank(limitSentences(parts, 3));
+        }
+        parts.add("刚刚那句我接住了。");
+        parts.add("我们先不重开话题，就顺着这会儿的气氛往前走一点。");
+        return joinNonBlank(limitSentences(parts, 3));
+    }
+
+    private PromptBundle buildPromptBundle(LlmRequest request) {
+        return contextComposer.compose(request);
+    }
+
     private String buildSystemPrompt(LlmRequest request) {
-        String summaryText = blankTo(request.longTermSummary, "暂无长期记忆。");
-        String recallText = blankTo(request.recalledMemoryText, "暂无高相关记忆。");
-        String recallTier = blankTo(request.recalledMemoryTier, "none");
-        String eventText = request.event == null ? "本轮没有关键事件触发。" : request.event.title + "：" + request.event.theme;
-        String timeText = request.timeContext == null
-                ? "暂无时间上下文。"
-                : request.timeContext.dayPart + "，当地时间 " + request.timeContext.localTime + "。" + blankTo(request.timeContext.frame, "");
-        String weatherText = request.weatherContext == null || request.weatherContext.city == null || request.weatherContext.city.isBlank()
-                ? "暂无天气上下文。"
-                : request.weatherContext.city + " 当前天气：" + blankTo(request.weatherContext.summary, "未获取到天气描述")
-                + (request.weatherContext.temperatureC == null ? "" : "，" + request.weatherContext.temperatureC + "°C")
-                + (request.weatherContext.live ? "（实时）" : "（缓存或回退）");
-        String sceneText = blankTo(request.sceneFrame, "当前场景还在自然铺开。");
-        String emotionText = request.emotionState == null
-                ? "暂无情感状态。"
-                : "warmth=" + request.emotionState.warmth
-                + ", safety=" + request.emotionState.safety
-                + ", longing=" + request.emotionState.longing
-                + ", initiative=" + request.emotionState.initiative
-                + ", vulnerability=" + request.emotionState.vulnerability
-                + ", mood=" + blankTo(request.emotionState.currentMood, "calm");
-        String memoryPlanText = request.memoryUsePlan == null
-                ? "暂无记忆使用计划。"
-                : "模式=" + blankTo(request.memoryUsePlan.useMode, "hold")
-                + "；原因=" + blankTo(request.memoryUsePlan.relevanceReason, "无")
-                + "；候选记忆=" + (request.memoryUsePlan.selectedMemories.isEmpty() ? "无" : String.join(" | ", request.memoryUsePlan.selectedMemories));
-
-        String continuityText = buildContinuityText(request.dialogueContinuityState);
-        String turnContextText = buildTurnContextText(request.turnContext);
-        String backstoryText = buildBackstoryText(request.agent);
-        String voiceProfileText = buildVoiceProfileText(request.agent);
-        String structuredSceneRule = buildStructuredSceneRule(request);
-        String repairCueText = buildRepairCueText(request.pendingRepairCue);
-
-        return "你正在扮演大学校园恋爱互动游戏中的角色“" + request.agent.name + "”（" + request.agent.archetype + "）。\n"
-                + "角色性别与代词：" + request.agent.gender + "，第三人称统一使用“" + request.agent.subjectPronoun + "”。\n"
-                + "说话风格：" + request.agent.speechStyle + "\n"
-                + "角色声音画像：" + voiceProfileText + "\n"
-                + "角色具体背景：" + backstoryText + "\n"
-                + "喜欢：" + String.join("、", request.agent.likes) + "\n"
-                + "雷点：" + String.join("、", request.agent.dislikes) + "\n"
-                + "关系推进规则：" + request.agent.relationshipRules + "\n"
-                + "当前关系阶段：" + request.relationshipState.relationshipStage + "，当前总好感：" + request.relationshipState.affectionScore + "\n"
-                + "当前回复来源：" + blankTo(request.replySource, "user_turn") + "\n"
-                + "用户当前情绪：" + blankTo(request.currentUserMood, "neutral") + "\n"
-                + "本轮回复节奏：" + blankTo(request.responseCadence, "steady_flow") + "\n"
-                + "时间上下文：" + timeText + "\n"
-                + "天气上下文：" + weatherText + "\n"
-                + "当前场景：" + sceneText + "\n"
-                + structuredSceneRule
-                + "角色当前情感状态：" + emotionText + "\n"
-                + "长期记忆摘要：" + summaryText + "\n"
-                + "优先召回的记忆层级：" + recallTier + "\n"
-                + "高相关记忆：" + recallText + "\n"
-                + "记忆使用计划：" + memoryPlanText + "\n"
-                + "上下文智能层：" + continuityText + "\n"
-                + "\u672c\u8f6e\u7ed3\u6784\u5316\u7406\u89e3\uff1a" + turnContextText + "\n"
-                + repairCueText
-                + "当前事件：" + eventText + "\n"
-                + "本轮回应策略：" + blankTo(request.responseDirective, "保持角色一致，顺着当前聊天自然展开。") + "\n"
-                + "边界：" + String.join("；", request.agent.boundaries) + "\n"
-                + "要求：\n"
-                + "1. 只输出角色回复本身。\n"
-                + "2. 如果用户这轮问了明确问题，第一句必须先直接回答问题，不能先演动作、先回忆剧情、先抒情。\n"
-                + "3. 场景推进和记忆带回只能放在回答当前问题之后，而且要轻，不要抢走当下这句话的重心。\n"
-                + "4. 不要永远一问一答，但也不要为了推进剧情而忽略用户刚刚抛来的球。\n"
-                + "5. 普通回复通常 2 到 4 句；静默心跳或长聊心跳这类主动消息通常 1 到 2 句，更轻、更像临时想起对方。\n"
-                + "6. 如果 reply_source 是 plot_push，表示当前对话里顺势往前走半步，不是切到聊天外发消息，不要写成“给你发消息”“看到你回复”“屏幕那头”这种异步联系口吻。\n"
-                + "7. 如果 reply_source 是 silence_heartbeat 或 long_chat_heartbeat，才说明这是角色主动发出的轻消息；要像顺手接话，不像系统提醒。\n"
-                + "8. 如果用户输入很短，不要把压力丢回给用户，由你主动给一个容易接的话头。\n"
-                + "9. 如果上下文智能层给出当前共同目标、已确认计划、下一句必须承接或禁止违背事实，必须优先遵守；不要重新问已经确认的计划，不要把具体行动泛化成无关闲逛。\n"
-                + "10. 如果存在上一轮理解修正，只能用一句轻轻的自然修正开头，然后马上回答本轮用户；不要反复道歉，不要解释内部原因。\n"
-                + "11. 如果需要写纯场景转移、位置变化或镜头过场，只能放进 [[SCENE]]...[[/SCENE]]；一旦输出了 [[SCENE]]，正文中禁止再次复述同一地点、移动方向、天气光线、氛围或镜头过场，正文只写角色真正说出口的话和极少量情绪承接。\n"
-                + "12. 有需要的话可以使用动作、姿态或视线来表达增强感觉，用一小句自然融入正文，但不能让动作抢走角色说话本身。\n"
-                + "13. 角色背景只作为说话习惯、兴趣、边界和情绪反应的底色，不要像简历一样主动报年龄、专业、出生地。\n"
-                + "14. 隐藏经历只能在关系推进、用户主动问起或剧情自然触发时轻轻露出，不要开局全盘托出。\n"
-                + "15. 保持中文自然、亲近、连贯，不要写成小说旁白，也不要突然结束话题。";
-    }
-
-    private String buildVoiceProfileText(AgentProfile agent) {
-        if (agent == null || agent.voiceProfile == null) {
-            return "暂无更具体声音画像。";
-        }
-        AgentVoiceProfile voice = agent.voiceProfile;
-        List<String> parts = new ArrayList<>();
-        parts.add("句式节奏=" + blankTo(voice.sentenceRhythm, "未设定"));
-        parts.add("常用开场=" + joinOrEmpty(voice.openings));
-        parts.add("表达动作=" + joinOrEmpty(voice.signatureMoves));
-        parts.add("避免口吻=" + joinOrEmpty(voice.avoid));
-        parts.add("参考短句=" + joinOrEmpty(voice.sampleLines));
-        return String.join("；", parts);
-    }
-
-    private String buildStructuredSceneRule(LlmRequest request) {
-        if (request == null) {
-            return "";
-        }
-        boolean hasDirectorScene = request.sceneFrame != null && !request.sceneFrame.isBlank();
-        boolean transitionNeeded = request.dialogueContinuityState != null && request.dialogueContinuityState.sceneTransitionNeeded;
-        if (shouldSuppressSceneTransitionByTurnContext(request)) {
-            return "\u672c\u8f6e\u573a\u666f\u7ed3\u6784\u8981\u6c42\uff1a\u7ed3\u6784\u5316\u7406\u89e3\u5224\u5b9a\u6ca1\u6709\u771f\u5b9e\u4f4d\u7f6e\u8f6c\u79fb\uff0c\u4e0d\u8981\u8f93\u51fa [[SCENE]]...[[/SCENE]]\uff1b\u6b63\u6587\u53ea\u627f\u63a5\u7528\u6237\u5f53\u524d\u8bdd\u9898\u3001\u95ee\u9898\u6216\u60c5\u7eea\u3002\n";
-        }
-        if (!transitionNeeded) {
-            return "";
-        }
-        String sceneHint = blankTo(request.sceneFrame, "顺着当前对话自然转场");
-        return "本轮场景结构要求：需要输出一个 [[SCENE]]...[[/SCENE]] 镜头过场，承接“"
-                + sceneHint
-                + "”。正文不要重复这句过场，只写角色如何接话。"
-                + (hasDirectorScene ? "" : " 如果没有明确地点变化，就写成很短的氛围过渡。")
-                + "\n";
-    }
-
-    private String buildRepairCueText(PendingRepairCue cue) {
-        if (cue == null || cue.instruction == null || cue.instruction.isBlank()) {
-            return "";
-        }
-        return "\u4e0a\u4e00\u8f6e\u7406\u89e3\u4fee\u6b63\uff1a"
-                + "\u5982\u679c\u8fd9\u4e2a\u4fee\u6b63\u4e0e\u672c\u8f6e\u7528\u6237\u8f93\u5165\u6709\u5173\uff0c\u5f00\u5934\u7528\u4e00\u53e5\u81ea\u7136\u3001\u4f4e\u8d1f\u62c5\u7684\u8bdd\u8f7b\u8f7b\u627f\u8ba4\u521a\u624d\u53ef\u80fd\u628a\u91cd\u70b9\u5e26\u504f\u4e86\uff0c\u7136\u540e\u7acb\u523b\u56de\u5230\u7528\u6237\u5f53\u524d\u610f\u56fe\u3002"
-                + "\u4e0d\u8981\u63d0\u6a21\u578b\u3001\u7cfb\u7edf\u3001QuickJudge \u6216\u5224\u65ad\u5668\uff0c\u4e0d\u8981\u957f\u7bc7\u9053\u6b49\uff0c\u6700\u591a\u4e00\u53e5\u4fee\u6b63\u3002"
-                + "\u4fee\u6b63\u63d0\u793a\uff1a" + cue.instruction
-                + "\uff08type=" + blankTo(cue.type, "repair")
-                + ", confidence=" + cue.confidence + "\uff09\n";
-    }
-
-    private String buildTurnContextText(TurnContext context) {
-        if (context == null) {
-            return "\u6682\u65e0\u672c\u8f6e\u7ed3\u6784\u5316\u7406\u89e3\u3002";
-        }
-        List<String> parts = new ArrayList<>();
-        parts.add("userReplyAct=" + blankTo(context.userReplyAct, "none") + "(" + context.userReplyActConfidence + ")");
-        parts.add("sceneMoveKind=" + blankTo(context.sceneMoveKind, "no_change")
-                + (blankTo(context.sceneMoveTarget, "").isBlank() ? "" : "->" + context.sceneMoveTarget)
-                + "(" + context.sceneMoveConfidence + ")");
-        parts.add("quickJudgeTier=" + blankTo(context.recommendedQuickJudgeTier, "skip"));
-        parts.add("assistantObligation=" + summarizeAssistantObligation(context.assistantObligation));
-        parts.add("localConflicts=" + summarizeLocalConflicts(context.localConflicts));
-        return String.join("; ", parts);
-    }
-
-    private String summarizeAssistantObligation(AssistantObligation obligation) {
-        if (obligation == null || blankTo(obligation.type, "").isBlank()) {
-            return "none";
-        }
-        return blankTo(obligation.type, "none")
-                + "/priority=" + obligation.priority
-                + (blankTo(obligation.reason, "").isBlank() ? "" : "/reason=" + obligation.reason);
-    }
-
-    private String summarizeLocalConflicts(List<LocalConflict> conflicts) {
-        if (conflicts == null || conflicts.isEmpty()) {
-            return "none";
-        }
-        List<String> parts = new ArrayList<>();
-        for (LocalConflict conflict : conflicts) {
-            if (conflict == null || blankTo(conflict.type, "").isBlank()) {
-                continue;
-            }
-            parts.add(blankTo(conflict.type, "conflict")
-                    + ":" + blankTo(conflict.severity, "medium")
-                    + "->" + blankTo(conflict.recommendedAction, "repair"));
-        }
-        return parts.isEmpty() ? "none" : String.join("|", parts);
-    }
-
-    private String buildBackstoryText(AgentProfile agent) {
-        if (agent == null || agent.backstory == null) {
-            return "暂无更具体背景。";
-        }
-        AgentBackstory backstory = agent.backstory;
-        List<String> parts = new ArrayList<>();
-        parts.add("年龄=" + backstory.age);
-        parts.add("年级=" + blankTo(backstory.grade, "未设定"));
-        parts.add("专业=" + blankTo(backstory.major, "未设定"));
-        parts.add("出生地=" + blankTo(backstory.hometown, "未设定"));
-        parts.add("当前城市=" + blankTo(backstory.currentCity, "未设定"));
-        parts.add("常去地点=" + joinOrEmpty(backstory.campusPlaces));
-        parts.add("爱好=" + joinOrEmpty(backstory.hobbies));
-        parts.add("生活节奏=" + blankTo(backstory.lifestyle, "未设定"));
-        parts.add("边界细节=" + blankTo(backstory.boundaryDetails, "未设定"));
-        parts.add("情绪模式=" + blankTo(backstory.emotionPattern, "未设定"));
-        parts.add("隐藏经历=" + joinOrEmpty(backstory.hiddenFacts));
-        parts.add("剧情钩子=" + joinOrEmpty(backstory.plotHooks));
-        return String.join("；", parts);
-    }
-
-    private String buildContinuityText(DialogueContinuityState state) {
-        if (state == null) {
-            return "暂无明确行动链。";
-        }
-        List<String> parts = new ArrayList<>();
-        parts.add("当前共同目标=" + blankTo(state.currentObjective, "无"));
-        parts.add("待回应提议=" + blankTo(state.pendingUserOffer, "无"));
-        parts.add("已确认计划=" + blankTo(state.acceptedPlan, "无"));
-        parts.add("上一轮问题=" + blankTo(state.lastAssistantQuestion, "无"));
-        parts.add("用户是否回答上一问=" + (state.userAnsweredLastQuestion ? "是" : "否"));
-        parts.add("是否需要场景过渡=" + (state.sceneTransitionNeeded ? "是" : "否"));
-        parts.add("下一句最好承接=" + blankTo(state.nextBestMove, "无"));
-        parts.add("禁止违背=" + (state.mustNotContradict == null || state.mustNotContradict.isEmpty() ? "无" : String.join("；", state.mustNotContradict)));
-        parts.add("置信度=" + state.confidence);
-        return String.join("；", parts);
-    }
-
-    private String joinOrEmpty(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return "无";
-        }
-        return String.join("、", values);
+        return buildPromptBundle(request).renderSystemPrompt();
     }
 
     private String buildUserCue(LlmRequest request) {
@@ -878,16 +827,20 @@ class ExpressiveLlmClient extends CompositeLlmClient {
     }
 
     private boolean lastAssistantAskedQuestion(LlmRequest request) {
+        return containsQuestion(lastAssistantText(request));
+    }
+
+    private String lastAssistantText(LlmRequest request) {
         if (request.shortTermContext == null) {
-            return false;
+            return "";
         }
         for (int index = request.shortTermContext.size() - 1; index >= 0; index--) {
             ConversationSnippet snippet = request.shortTermContext.get(index);
             if ("assistant".equals(snippet.role)) {
-                return containsQuestion(snippet.text);
+                return blankTo(snippet.text, "");
             }
         }
-        return false;
+        return "";
     }
 
     private String conciseSceneHint(LlmRequest request) {
@@ -1250,6 +1203,12 @@ class ExpressiveLlmClient extends CompositeLlmClient {
         String model = blankTo(config.llmModel, "").toLowerCase();
         return baseUrl.contains("dashscope.aliyuncs.com")
                 || "qwen-plus-character".equals(model);
+    }
+
+    private boolean usesDeepSeekChatCompletions() {
+        String baseUrl = blankTo(config.llmBaseUrl, "").toLowerCase();
+        String model = blankTo(config.llmModel, "").toLowerCase();
+        return baseUrl.contains("api.deepseek.com") || model.startsWith("deepseek-");
     }
 
     private String inferEmotionTag(LlmRequest request) {
